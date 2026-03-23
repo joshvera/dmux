@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import React, { Fragment, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { render, Box, Text, useApp, useInput } from 'ink';
 import fs from 'fs';
 import { pathToFileURL } from 'url';
@@ -20,12 +20,13 @@ export interface FocusNavigatorPopupData {
   projectRoot: string;
   projectName: string;
   selectedPaneId?: string;
+  selectedProjectRoot?: string;
 }
 
 export type FocusNavigatorPopupResult =
   | {
       kind: 'pane';
-      action: 'view' | 'close' | 'merge' | 'menu';
+      action: 'view' | 'close' | 'merge' | 'more';
       paneId: string;
     }
   | {
@@ -42,30 +43,38 @@ type FocusNavigatorRow =
   | {
       kind: 'focus';
       label: string;
+      detail: string;
+    }
+  | {
+      kind: 'project';
+      projectRoot: string;
+      label: string;
+      detail: string;
     }
   | {
       kind: 'pane';
       paneId: string;
       projectRoot: string;
-      groupLabel: string;
       label: string;
       detail: string;
       attention: boolean;
-    }
-  | {
-      kind: 'project';
-      action: 'new-agent' | 'terminal' | 'reopen';
-      projectRoot: string;
-      groupLabel: string;
-      label: string;
-      detail: string;
     };
+
+function formatPaneDetail(pane: DmuxPane): string {
+  const detailParts: string[] = [];
+  if (pane.hidden) detailParts.push('hidden');
+  if (pane.agent) detailParts.push(pane.agent);
+  if (pane.branchName) detailParts.push(pane.branchName);
+  else detailParts.push(pane.slug);
+  return detailParts.join(' | ');
+}
 
 function buildRows(data: FocusNavigatorPopupData): FocusNavigatorRow[] {
   const rows: FocusNavigatorRow[] = [
     {
       kind: 'focus',
       label: 'Exit focus mode',
+      detail: 'Return to your previous presentation mode',
     },
   ];
 
@@ -77,51 +86,26 @@ function buildRows(data: FocusNavigatorPopupData): FocusNavigatorRow[] {
   );
 
   for (const group of groups) {
-    for (const entry of group.panes) {
-      const pane = entry.pane;
-      const detailParts: string[] = [];
-      if (pane.hidden) detailParts.push('hidden');
-      if (pane.agent) detailParts.push(pane.agent);
-      if (pane.branchName) detailParts.push(pane.branchName);
-      else detailParts.push(pane.slug);
+    rows.push({
+      kind: 'project',
+      projectRoot: group.projectRoot,
+      label: group.projectName,
+      detail:
+        group.panes.length === 0
+          ? 'No panes'
+          : `${group.panes.length} pane${group.panes.length === 1 ? '' : 's'}`,
+    });
 
+    for (const entry of group.panes) {
       rows.push({
         kind: 'pane',
-        paneId: pane.id,
+        paneId: entry.pane.id,
         projectRoot: group.projectRoot,
-        groupLabel: group.projectName,
-        label: getPaneDisplayName(pane),
-        detail: detailParts.join(' | '),
-        attention: pane.needsAttention === true,
+        label: getPaneDisplayName(entry.pane),
+        detail: formatPaneDetail(entry.pane),
+        attention: entry.pane.needsAttention === true,
       });
     }
-
-    rows.push(
-      {
-        kind: 'project',
-        action: 'new-agent',
-        projectRoot: group.projectRoot,
-        groupLabel: group.projectName,
-        label: 'New agent',
-        detail: `Create a worktree in ${group.projectName}`,
-      },
-      {
-        kind: 'project',
-        action: 'terminal',
-        projectRoot: group.projectRoot,
-        groupLabel: group.projectName,
-        label: 'New terminal',
-        detail: `Open a shell in ${group.projectName}`,
-      },
-      {
-        kind: 'project',
-        action: 'reopen',
-        projectRoot: group.projectRoot,
-        groupLabel: group.projectName,
-        label: 'Reopen worktree',
-        detail: `Resume a closed branch in ${group.projectName}`,
-      }
-    );
   }
 
   return rows;
@@ -129,23 +113,48 @@ function buildRows(data: FocusNavigatorPopupData): FocusNavigatorRow[] {
 
 function findInitialIndex(
   rows: FocusNavigatorRow[],
-  selectedPaneId?: string
+  selectedPaneId?: string,
+  selectedProjectRoot?: string
 ): number {
-  if (!selectedPaneId) {
-    return Math.min(1, rows.length - 1);
+  if (selectedPaneId) {
+    const paneIndex = rows.findIndex(
+      (row) => row.kind === 'pane' && row.paneId === selectedPaneId
+    );
+    if (paneIndex >= 0) {
+      return paneIndex;
+    }
   }
 
-  const targetIndex = rows.findIndex(
-    (row) => row.kind === 'pane' && row.paneId === selectedPaneId
-  );
-  return targetIndex >= 0 ? targetIndex : Math.min(1, rows.length - 1);
+  if (selectedProjectRoot) {
+    const projectIndex = rows.findIndex(
+      (row) => row.kind === 'project' && row.projectRoot === selectedProjectRoot
+    );
+    if (projectIndex >= 0) {
+      return projectIndex;
+    }
+  }
+
+  const firstActionableIndex = rows.findIndex((row) => row.kind !== 'focus');
+  return firstActionableIndex >= 0 ? firstActionableIndex : 0;
 }
 
 function getProjectRootForRow(row: FocusNavigatorRow): string | null {
-  if (row.kind === 'pane' || row.kind === 'project') {
+  if (row.kind === 'project' || row.kind === 'pane') {
     return row.projectRoot;
   }
   return null;
+}
+
+function getFooterForRow(row: FocusNavigatorRow | undefined): string {
+  if (!row || row.kind === 'focus') {
+    return 'Enter exit focus | Esc cancel';
+  }
+
+  if (row.kind === 'project') {
+    return 'n new agent | t new terminal | r reopen | Esc cancel';
+  }
+
+  return 'Enter switch | x close | g merge | m more | n/t/r project actions | Esc cancel';
 }
 
 export const FocusNavigatorPopupApp: React.FC<{
@@ -155,9 +164,8 @@ export const FocusNavigatorPopupApp: React.FC<{
   const { exit } = useApp();
   const rows = useMemo(() => buildRows(data), [data]);
   const [selectedIndex, setSelectedIndex] = useState(() =>
-    findInitialIndex(rows, data.selectedPaneId)
+    findInitialIndex(rows, data.selectedPaneId, data.selectedProjectRoot)
   );
-
   const selectedRow = rows[selectedIndex];
 
   const submitRow = (row: FocusNavigatorRow) => {
@@ -171,15 +179,6 @@ export const FocusNavigatorPopupApp: React.FC<{
     }
 
     if (row.kind === 'project') {
-      writeSuccessAndExit<FocusNavigatorPopupResult>(
-        resultFile,
-        {
-          kind: 'project',
-          action: row.action,
-          projectRoot: row.projectRoot,
-        },
-        exit
-      );
       return;
     }
 
@@ -244,7 +243,7 @@ export const FocusNavigatorPopupApp: React.FC<{
     if (selectedRow?.kind === 'pane' && input === 'm') {
       writeSuccessAndExit<FocusNavigatorPopupResult>(
         resultFile,
-        { kind: 'pane', action: 'menu', paneId: selectedRow.paneId },
+        { kind: 'pane', action: 'more', paneId: selectedRow.paneId },
         exit
       );
       return;
@@ -282,49 +281,53 @@ export const FocusNavigatorPopupApp: React.FC<{
     }
   });
 
-  let lastGroupLabel: string | null = null;
-
   return (
     <PopupWrapper resultFile={resultFile}>
-      <PopupContainer footer="Enter switch/select | x close | g merge | m pane menu | n/t/r project actions | F exit focus | Esc cancel">
+      <PopupContainer footer={getFooterForRow(selectedRow)}>
         {rows.map((row, index) => {
-          const groupLabel =
-            row.kind === 'focus'
-              ? null
-              : row.groupLabel;
-          const showGroupLabel = groupLabel && groupLabel !== lastGroupLabel;
-          if (groupLabel) {
-            lastGroupLabel = groupLabel;
+          const isSelected = selectedIndex === index;
+          const labelColor = isSelected ? POPUP_CONFIG.titleColor : 'white';
+          const prefix = isSelected ? '> ' : '  ';
+
+          if (row.kind === 'focus') {
+            return (
+              <Box key={`focus-${index}`} marginBottom={1}>
+                <Box flexGrow={1}>
+                  <Text color={labelColor} bold={isSelected}>
+                    {prefix}
+                    {row.label}
+                  </Text>
+                </Box>
+                <Text dimColor>{row.detail}</Text>
+              </Box>
+            );
+          }
+
+          if (row.kind === 'project') {
+            return (
+              <Box key={`project-${row.projectRoot}`} marginTop={1} width="100%">
+                <Box flexGrow={1}>
+                  <Text color={labelColor} bold>
+                    {prefix}
+                    {row.label}
+                  </Text>
+                </Box>
+                <Text dimColor>{row.detail}</Text>
+              </Box>
+            );
           }
 
           return (
-            <Fragment key={`${row.kind}-${index}`}>
-              {showGroupLabel ? (
-                <Box marginTop={1}>
-                  <Text bold color={POPUP_CONFIG.titleColor}>
-                    {groupLabel}
-                  </Text>
-                </Box>
-              ) : null}
-              <Box width="100%">
-                <Box flexGrow={1}>
-                  <Text
-                    color={selectedIndex === index ? POPUP_CONFIG.titleColor : 'white'}
-                    bold={selectedIndex === index}
-                  >
-                    {selectedIndex === index ? '> ' : '  '}
-                    {row.kind === 'project' ? '+ ' : ''}
-                    {row.label}
-                    {row.kind === 'pane' && row.attention ? ' [!]' : ''}
-                  </Text>
-                </Box>
-                {'detail' in row ? (
-                  <Text dimColor>
-                    {row.detail}
-                  </Text>
-                ) : null}
+            <Box key={`pane-${row.paneId}`} marginLeft={2} width="100%">
+              <Box flexGrow={1}>
+                <Text color={labelColor} bold={isSelected}>
+                  {prefix}
+                  {row.label}
+                  {row.attention ? ' [!]' : ''}
+                </Text>
               </Box>
-            </Fragment>
+              <Text dimColor>{row.detail}</Text>
+            </Box>
           );
         })}
       </PopupContainer>

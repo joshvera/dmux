@@ -11,7 +11,11 @@ import { LogService } from "./LogService.js"
 import { TmuxService } from "./TmuxService.js"
 import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
 import type { DmuxPane, ProjectSettings } from "../types.js"
-import { getPaneMenuActions, type PaneMenuActionId } from "../actions/index.js"
+import {
+  getPaneMenuActions,
+  PaneAction,
+  type PaneMenuActionId,
+} from "../actions/index.js"
 import { INPUT_IGNORE_DELAY } from "../constants/timing.js"
 import {
   getAgentDefinitions,
@@ -401,6 +405,75 @@ export class PopupManager {
 
       this.ignoreInputBriefly()
       return this.handleResult(result)
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchFocusActionSheetPopup(
+    pane: DmuxPane,
+    panes: DmuxPane[]
+  ): Promise<PaneMenuActionId | null> {
+    if (!this.checkPopupSupport()) return null
+
+    try {
+      const tmuxService = TmuxService.getInstance()
+      const excludedActions = new Set<PaneMenuActionId>([
+        PaneAction.VIEW,
+        PaneAction.CLOSE,
+        PaneAction.MERGE,
+        PaneAction.OPEN_OUTPUT,
+      ])
+      const actions = getPaneMenuActions(
+        pane,
+        panes,
+        this.config.projectSettings,
+        this.config.isDevMode,
+        this.config.projectRoot
+      ).filter((action) => !excludedActions.has(action.id))
+      const baseHeight = Math.min(28, Math.max(16, actions.length + 8))
+      let popupWidth = 96
+      let popupHeight = baseHeight
+
+      try {
+        const dims = await tmuxService.getAllDimensions()
+        popupWidth = Math.min(96, Math.max(20, dims.clientWidth - 4))
+        popupHeight = Math.min(baseHeight, Math.max(8, dims.clientHeight - 2))
+      } catch {
+        popupWidth = Math.min(96, Math.max(20, this.config.terminalWidth - 4))
+        popupHeight = Math.min(
+          baseHeight,
+          Math.max(8, this.config.terminalHeight - 2)
+        )
+      }
+
+      const result = await this.launchPopup<string>(
+        "focusActionSheetPopup.js",
+        [getPaneDisplayName(pane), JSON.stringify(actions)],
+        {
+          width: popupWidth,
+          height: popupHeight,
+          title: `Actions: ${getPaneDisplayName(pane)}`,
+          positioning: "focus",
+        },
+        undefined,
+        getPaneProjectRoot(pane, this.config.projectRoot)
+      )
+
+      this.ignoreInputBriefly()
+      const actionId = this.handleResult(
+        result,
+        (data) => {
+          LogService.getInstance().debug(`Focus action selected: ${data}`, "FocusActionSheet")
+          return data
+        },
+        (error) => {
+          LogService.getInstance().error(error, "FocusActionSheet")
+          this.showTempMessage(error)
+        }
+      )
+      return actionId as PaneMenuActionId | null
     } catch (error: any) {
       this.showTempMessage(`Failed to launch popup: ${error.message}`)
       return null

@@ -49,6 +49,19 @@ export interface PopupHandle<T> {
   kill: () => void;
 }
 
+type PopupReadyState =
+  | { status: 'ready' }
+  | { status: 'timed-out' }
+  | {
+      status: 'closed-before-ready';
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }
+  | {
+      status: 'error-before-ready';
+      error: string;
+    };
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -418,7 +431,7 @@ export function launchPopupNonBlocking(
 function waitForPopupReady(
   child: ChildProcess,
   readyFile: string
-): Promise<void> {
+): Promise<PopupReadyState> {
   return new Promise((resolve) => {
     let settled = false;
 
@@ -434,24 +447,57 @@ function waitForPopupReady(
       }
     };
 
-    const finish = () => {
+    const finish = (state: PopupReadyState) => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve();
+      resolve(state);
     };
 
     const pollInterval = setInterval(() => {
       if (fs.existsSync(readyFile)) {
-        finish();
+        finish({ status: 'ready' });
       }
     }, POPUP_READY_POLL_INTERVAL_MS);
 
-    const timeout = setTimeout(finish, POPUP_READY_TIMEOUT_MS);
+    const timeout = setTimeout(() => {
+      finish({ status: 'timed-out' });
+    }, POPUP_READY_TIMEOUT_MS);
 
-    child.once('close', finish);
-    child.once('error', finish);
+    child.once('close', (code, signal) => {
+      finish({
+        status: 'closed-before-ready',
+        code,
+        signal,
+      });
+    });
+    child.once('error', (error) => {
+      finish({
+        status: 'error-before-ready',
+        error: error.message,
+      });
+    });
   });
+}
+
+function getPopupLaunchFailureMessage(state: PopupReadyState): string {
+  switch (state.status) {
+    case 'timed-out':
+      return `Popup failed to become ready within ${POPUP_READY_TIMEOUT_MS}ms`;
+    case 'error-before-ready':
+      return `Popup failed before ready: ${state.error}`;
+    case 'closed-before-ready': {
+      if (state.signal) {
+        return `Popup exited before ready (signal ${state.signal})`;
+      }
+      if (state.code !== null) {
+        return `Popup exited before ready (code ${state.code})`;
+      }
+      return 'Popup exited before ready';
+    }
+    case 'ready':
+      return 'Popup exited without a result';
+  }
 }
 
 /**
@@ -546,12 +592,13 @@ export function launchNodePopupNonBlocking<T = any>(
   const child = spawn('sh', ['-c', fullCommand], {
     stdio: 'inherit',
   });
-  const readyPromise = waitForPopupReady(child, readyFile);
+  const readyStatePromise = waitForPopupReady(child, readyFile);
+  const readyPromise = readyStatePromise.then(() => undefined);
 
   const resultPromise = new Promise<PopupResult<T>>((resolve) => {
-    child.on('close', () => {
+    child.on('close', async () => {
       // Small delay to ensure file is written
-      setTimeout(() => {
+      setTimeout(async () => {
         // Read result from temp file using the SAME resultFile path we passed to the script
         if (fs.existsSync(resultFile)) {
           try {
@@ -575,11 +622,18 @@ export function launchNodePopupNonBlocking<T = any>(
             });
           }
         } else {
-          // No result file = cancelled
-          console.error(`[popup] Result file not found: ${resultFile}`);
+          const readyState = await readyStatePromise;
+          if (readyState.status === 'ready') {
+            resolve({
+              success: false,
+              cancelled: true,
+            });
+            return;
+          }
+
           resolve({
             success: false,
-            cancelled: true,
+            error: getPopupLaunchFailureMessage(readyState),
           });
         }
       }, 100); // Wait 100ms for file to be written

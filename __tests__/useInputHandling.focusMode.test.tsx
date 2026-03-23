@@ -564,6 +564,96 @@ describe('useInputHandling focus mode', () => {
     unmount();
   });
 
+  it('opens the focus action sheet for pane-row more actions and dispatches the selected pane action', async () => {
+    const savePanes = vi.fn(async () => {});
+    const loadPanes = vi.fn(async () => {});
+    const popupManager = {
+      launchFocusNavigatorPopup: vi.fn(async () => ({
+        kind: 'pane',
+        action: 'more',
+        paneId: '1',
+      })),
+      launchFocusActionSheetPopup: vi.fn(async () => 'toggle_visibility'),
+    };
+
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([{
+        type: 'pane-shortcut',
+        targetPaneId: '%1',
+        shortcut: 'm',
+        createdAt: '2026-03-23T03:00:00.000Z',
+      }])
+      .mockResolvedValue([]);
+
+    const { unmount } = render(
+      <Harness
+        panes={[pane('1')]}
+        presentationMode="focus"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+      />
+    );
+
+    await vi.waitFor(() => {
+      expect(popupManager.launchFocusNavigatorPopup).toHaveBeenCalled();
+      expect(popupManager.launchFocusActionSheetPopup).toHaveBeenCalledWith(
+        expect.objectContaining({ id: '1' }),
+        expect.arrayContaining([expect.objectContaining({ id: '1' })])
+      );
+      expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith('%1', 'dmux-hidden-1');
+      expect(savePanes).toHaveBeenCalled();
+      expect(loadPanes).toHaveBeenCalled();
+    });
+
+    unmount();
+  });
+
+  it('keeps the standard pane-anchored kebab menu outside focus mode', async () => {
+    const popupManager = {
+      launchFocusNavigatorPopup: vi.fn(),
+      launchKebabMenuPopup: vi.fn(async () => null),
+    };
+
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([{
+        type: 'pane-shortcut',
+        targetPaneId: '%1',
+        shortcut: 'm',
+        createdAt: '2026-03-23T03:00:00.000Z',
+      }])
+      .mockResolvedValue([]);
+
+    const { unmount } = render(
+      <Harness
+        panes={[pane('1')]}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+      />
+    );
+
+    await vi.waitFor(() => {
+      expect(popupManager.launchKebabMenuPopup).toHaveBeenCalledWith(
+        expect.objectContaining({ id: '1' }),
+        expect.arrayContaining([expect.objectContaining({ id: '1' })]),
+        expect.objectContaining({ anchorToPane: true })
+      );
+    });
+    expect(popupManager.launchFocusNavigatorPopup).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
   it('isolates and activates a newly created pane in single-pane mode', async () => {
     const setSelectedIndex = vi.fn();
     const savePanes = vi.fn(async () => {});

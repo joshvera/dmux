@@ -16,6 +16,7 @@ import {
 } from "../constants/timing.js"
 import {
   isPaneAction,
+  type PaneMenuActionId,
   PaneAction,
   TOGGLE_PANE_VISIBILITY_ACTION,
 } from "../actions/index.js"
@@ -42,6 +43,11 @@ import {
   getProjectVisibilityAction,
   partitionPanesByProject,
 } from "../utils/paneVisibility.js"
+import {
+  applyBulkVisibilityToggle,
+  applyPaneVisibilityToggle,
+  applyProjectVisibilityToggle,
+} from "../utils/paneVisibilityMutations.js"
 import { buildFilesOnlyCommand } from "../utils/dmuxCommand.js"
 import {
   addSidebarProject,
@@ -74,7 +80,7 @@ type PersistentPresentationMode = Exclude<PresentationMode, "focus">
 type FocusNavigatorResult =
   | {
       kind: "pane"
-      action: "view" | "close" | "merge" | "menu"
+      action: "view" | "close" | "merge" | "more"
       paneId: string
     }
   | {
@@ -996,8 +1002,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
   ])
 
   const togglePaneVisibility = async (selectedPane: DmuxPane) => {
-    const tmuxService = TmuxService.getInstance()
-
     try {
       setIsCreatingPane(true)
       setStatusMessage(
@@ -1006,31 +1010,20 @@ export function useInputHandling(params: UseInputHandlingParams) {
           : `Hiding ${getPaneDisplayName(selectedPane)}...`
       )
 
-      if (selectedPane.hidden) {
-        const targetPaneId = await getPaneShowTarget(selectedPane.paneId)
-        if (!targetPaneId) {
-          throw new Error("No target pane is available to show this pane")
-        }
-        await tmuxService.joinPaneToTarget(selectedPane.paneId, targetPaneId)
-      } else {
-        await tmuxService.breakPaneToWindow(
-          selectedPane.paneId,
-          `dmux-hidden-${selectedPane.id}`
-        )
-      }
-
-      await savePanes(
-        panes.map((pane) =>
-          pane.id === selectedPane.id
-            ? { ...pane, hidden: !selectedPane.hidden }
-            : pane
-        )
+      const result = await applyPaneVisibilityToggle(
+        {
+          panes,
+          tmuxService: TmuxService.getInstance(),
+          getPaneShowTarget,
+          savePanes,
+          loadPanes,
+          refreshPaneLayout,
+        },
+        selectedPane
       )
-      await refreshPaneLayout()
-      await loadPanes()
 
       setStatusMessage(
-        selectedPane.hidden
+        result.hidden
           ? `Showing ${getPaneDisplayName(selectedPane)}`
           : `Hid ${getPaneDisplayName(selectedPane)}`
       )
@@ -1062,42 +1055,31 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    const tmuxService = TmuxService.getInstance()
-    const hidden = action === "hide-others"
-
     try {
       setIsCreatingPane(true)
-      setStatusMessage(hidden ? "Hiding other panes..." : "Showing other panes...")
+      setStatusMessage(action === "hide-others" ? "Hiding other panes..." : "Showing other panes...")
 
-      for (const pane of targetPanes) {
-        if (hidden) {
-          await tmuxService.breakPaneToWindow(
-            pane.paneId,
-            `dmux-hidden-${pane.id}`
-          )
-          continue
-        }
-
-        const targetPaneId = await getPaneShowTarget(pane.paneId)
-        if (!targetPaneId) {
-          throw new Error("No target pane is available to show hidden panes")
-        }
-        await tmuxService.joinPaneToTarget(pane.paneId, targetPaneId)
+      const result = await applyBulkVisibilityToggle(
+        {
+          panes,
+          tmuxService: TmuxService.getInstance(),
+          getPaneShowTarget,
+          savePanes,
+          loadPanes,
+          refreshPaneLayout,
+        },
+        selectedPane
+      )
+      if (!result) {
+        setStatusMessage("No other panes to toggle")
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+        return
       }
 
-      const targetPaneIds = new Set(targetPanes.map((pane) => pane.id))
-      await savePanes(
-        panes.map((pane) =>
-          targetPaneIds.has(pane.id) ? { ...pane, hidden } : pane
-        )
-      )
-      await refreshPaneLayout()
-      await loadPanes()
-
       setStatusMessage(
-        hidden
-          ? `Hid ${targetPanes.length} other pane${targetPanes.length === 1 ? "" : "s"}`
-          : `Showed ${targetPanes.length} other pane${targetPanes.length === 1 ? "" : "s"}`
+        result.action === "hide-others"
+          ? `Hid ${result.targetPanes.length} other pane${result.targetPanes.length === 1 ? "" : "s"}`
+          : `Showed ${result.targetPanes.length} other pane${result.targetPanes.length === 1 ? "" : "s"}`
       )
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
     } catch (error: any) {
@@ -1150,45 +1132,29 @@ export function useInputHandling(params: UseInputHandlingParams) {
           : "Showing all panes..."
       )
 
-      // Show target project panes before hiding others so we always have
-      // an attached pane available for tmux join targets.
-      for (const pane of panesToShow) {
-        const targetPaneId = await getPaneShowTarget(pane.paneId)
-        if (!targetPaneId) {
-          throw new Error("No target pane is available to show hidden panes")
-        }
-        await TmuxService.getInstance().joinPaneToTarget(pane.paneId, targetPaneId)
-      }
-
-      for (const pane of panesToHide) {
-        await TmuxService.getInstance().breakPaneToWindow(
-          pane.paneId,
-          `dmux-hidden-${pane.id}`
-        )
-      }
-
-      const shownPaneIds = new Set(panesToShow.map((pane) => pane.id))
-      const hiddenPaneIds = new Set(panesToHide.map((pane) => pane.id))
-
-      await savePanes(
-        panes.map((pane) => {
-          if (shownPaneIds.has(pane.id)) {
-            return { ...pane, hidden: false }
-          }
-          if (hiddenPaneIds.has(pane.id)) {
-            return { ...pane, hidden: true }
-          }
-          return pane
-        })
+      const result = await applyProjectVisibilityToggle(
+        {
+          panes,
+          tmuxService: TmuxService.getInstance(),
+          getPaneShowTarget,
+          savePanes,
+          loadPanes,
+          refreshPaneLayout,
+        },
+        targetProjectRoot,
+        projectRoot
       )
-      await refreshPaneLayout()
-      await loadPanes()
+      if (!result) {
+        setStatusMessage("No project panes to toggle")
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+        return
+      }
 
       setStatusMessage(
-        action === "focus-project"
-          ? panesToHide.length > 0
-            ? `Showing only ${projectName} panes`
-            : `Showed ${projectName} panes`
+        result.action === "focus-project"
+          ? result.panesToHide.length > 0
+            ? `Showing only ${result.projectName} panes`
+            : `Showed ${result.projectName} panes`
           : "Showed all panes"
       )
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
@@ -1227,6 +1193,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         projectRoot,
         projectName: path.basename(projectRoot),
         selectedPaneId: selectedPane.id,
+        selectedProjectRoot: getPaneProjectRoot(selectedPane, projectRoot),
       },
       getPaneProjectRoot(selectedPane, projectRoot)
     ) as FocusNavigatorResult | null
@@ -1273,11 +1240,16 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    if (result.action === "menu") {
-      await openPaneMenu(targetPane, {
-        anchorToPane: true,
-        forceStandardMenu: true,
-      })
+    if (result.action === "more") {
+      const actionId = await popupManager.launchFocusActionSheetPopup(
+        targetPane,
+        panes
+      )
+      if (!actionId) {
+        return
+      }
+
+      await executePaneMenuAction(targetPane, actionId)
       return
     }
 
@@ -1295,28 +1267,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
-  const openPaneMenu = async (
+  const executePaneMenuAction = async (
     pane: DmuxPane,
-    options: { anchorToPane?: boolean; forceStandardMenu?: boolean } = {}
+    actionId: PaneMenuActionId
   ) => {
-    if (
-      effectivePresentationMode === "focus"
-      && options.anchorToPane
-      && !options.forceStandardMenu
-    ) {
-      await openFocusNavigator(pane)
-      return
-    }
-
-    const actionId = await popupManager.launchKebabMenuPopup(
-      pane,
-      panes,
-      options
-    )
-    if (!actionId) {
-      return
-    }
-
     if (actionId === TOGGLE_PANE_VISIBILITY_ACTION) {
       await togglePaneVisibility(pane)
       return
@@ -1371,6 +1325,31 @@ export function useInputHandling(params: UseInputHandlingParams) {
     await actionSystem.executeAction(actionId, pane, {
       mainBranch: getMainBranch(),
     })
+  }
+
+  const openPaneMenu = async (
+    pane: DmuxPane,
+    options: { anchorToPane?: boolean; forceStandardMenu?: boolean } = {}
+  ) => {
+    if (
+      effectivePresentationMode === "focus"
+      && options.anchorToPane
+      && !options.forceStandardMenu
+    ) {
+      await openFocusNavigator(pane)
+      return
+    }
+
+    const actionId = await popupManager.launchKebabMenuPopup(
+      pane,
+      panes,
+      options
+    )
+    if (!actionId) {
+      return
+    }
+
+    await executePaneMenuAction(pane, actionId)
   }
 
   const attachAgentsToPane = async (selectedPane: DmuxPane): Promise<DmuxPane[]> => {
