@@ -29,6 +29,10 @@ import { getPaneProjectRoot } from "../utils/paneProject.js"
 import { getPaneDisplayName } from "../utils/paneTitle.js"
 import type { TrackProjectActivity } from "../types/activity.js"
 import type {
+  FocusNavigatorPopupData,
+  FocusNavigatorPopupResult,
+} from "../components/popups/focusNavigatorPopup.js"
+import type {
   ReopenWorktreePopupResult,
   ReopenWorktreePopupState,
 } from "../components/popups/reopenWorktreePopup.js"
@@ -51,7 +55,7 @@ interface PopupOptions {
   width?: number
   height?: number
   title: string
-  positioning?: "standard" | "centered" | "large" | "pane"
+  positioning?: "standard" | "centered" | "large" | "pane" | "focus"
   targetPaneId?: string
 }
 
@@ -179,6 +183,8 @@ export class PopupManager {
             dims.clientWidth,
             dims.clientHeight
           )
+        } else if (options.positioning === "focus") {
+          positioning = POPUP_POSITIONING.fullyCentered()
         } else if (options.positioning === "centered") {
           positioning = POPUP_POSITIONING.centeredWithSidebar(
             this.config.sidebarWidth
@@ -355,6 +361,46 @@ export class PopupManager {
         }
       )
       return actionId as PaneMenuActionId | null
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchFocusNavigatorPopup(
+    data: FocusNavigatorPopupData,
+    projectRoot?: string
+  ): Promise<FocusNavigatorPopupResult | null> {
+    if (!this.checkPopupSupport()) return null
+
+    try {
+      const tmuxService = TmuxService.getInstance()
+      let popupWidth = 96
+      let popupHeight = Math.max(18, Math.floor(this.config.terminalHeight * 0.88))
+
+      try {
+        const dims = await tmuxService.getAllDimensions()
+        popupWidth = Math.max(60, Math.min(dims.clientWidth - 4, 110))
+        popupHeight = Math.max(18, Math.min(dims.clientHeight - 2, Math.floor(dims.clientHeight * 0.92)))
+      } catch {
+        popupWidth = Math.max(60, Math.min(this.config.terminalWidth - 4, 96))
+      }
+
+      const result = await this.launchPopup<FocusNavigatorPopupResult>(
+        "focusNavigatorPopup.js",
+        [],
+        {
+          width: popupWidth,
+          height: popupHeight,
+          title: "Focus Navigator",
+          positioning: "focus",
+        },
+        data,
+        projectRoot
+      )
+
+      this.ignoreInputBriefly()
+      return this.handleResult(result)
     } catch (error: any) {
       this.showTempMessage(`Failed to launch popup: ${error.message}`)
       return null

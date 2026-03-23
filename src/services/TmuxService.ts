@@ -521,10 +521,15 @@ export class TmuxService {
     targetPane?: string;
     cwd?: string;
     command?: string;
+    preserveZoom?: boolean;
   } = {}): Promise<string> {
     return this.executeWithRetry(
       () => {
         let cmd = 'tmux split-window -h -P -F \'#{pane_id}\'';
+
+        if (options.preserveZoom) {
+          cmd += ' -Z';
+        }
 
         if (options.targetPane) {
           cmd += ` -t '${options.targetPane}'`;
@@ -603,13 +608,42 @@ export class TmuxService {
   /**
    * Select a pane (make it active)
    */
-  async selectPane(paneId: string): Promise<void> {
+  async selectPane(
+    paneId: string,
+    options: { preserveZoom?: boolean } = {}
+  ): Promise<void> {
     await this.executeWithRetry(
       () => {
-        this.execute(`tmux select-pane -t '${paneId}'`);
+        const zoomFlag = options.preserveZoom ? ' -Z' : '';
+        this.execute(`tmux select-pane -t '${paneId}'${zoomFlag}`);
       },
       RetryStrategy.FAST,
       `selectPane(${paneId})`
+    );
+  }
+
+  async togglePaneZoom(targetPaneId?: string): Promise<void> {
+    await this.executeWithRetry(
+      () => {
+        const target = targetPaneId ? ` -t '${targetPaneId}'` : '';
+        this.execute(`tmux resize-pane${target} -Z`);
+      },
+      RetryStrategy.FAST,
+      `togglePaneZoom(${targetPaneId || 'current'})`
+    );
+  }
+
+  async isWindowZoomed(targetPaneId?: string): Promise<boolean> {
+    return this.executeWithRetry(
+      () => {
+        const target = targetPaneId ? ` -t '${targetPaneId}'` : '';
+        const result = this.execute(
+          `tmux display-message${target} -p '#{window_zoomed_flag}'`
+        ).trim();
+        return result === '1';
+      },
+      RetryStrategy.IDEMPOTENT,
+      `isWindowZoomed(${targetPaneId || 'current'})`
     );
   }
 
@@ -809,13 +843,15 @@ export class TmuxService {
   async joinPaneToTarget(
     sourcePaneId: string,
     targetPaneId: string,
-    horizontal: boolean = true
+    horizontal: boolean = true,
+    preserveZoom: boolean = false
   ): Promise<void> {
     await this.executeWithRetry(
       () => {
         const direction = horizontal ? '-h' : '-v';
+        const zoomFlag = preserveZoom ? ' -Z' : '';
         this.execute(
-          `tmux join-pane -d ${direction} -s '${sourcePaneId}' -t '${targetPaneId}'`
+          `tmux join-pane -d${zoomFlag} ${direction} -s '${sourcePaneId}' -t '${targetPaneId}'`
         );
       },
       RetryStrategy.FAST,
@@ -1118,8 +1154,13 @@ export class TmuxService {
     targetPane?: string;
     cwd?: string;
     command?: string;
+    preserveZoom?: boolean;
   } = {}): string {
     let cmd = 'tmux split-window -h -P -F \'#{pane_id}\'';
+
+    if (options.preserveZoom) {
+      cmd += ' -Z';
+    }
 
     if (options.targetPane) {
       cmd += ` -t '${options.targetPane}'`;

@@ -86,6 +86,10 @@ import {
   getProjectActionByIndex,
 } from "./utils/projectActions.js"
 import { getPaneProjectRoot } from "./utils/paneProject.js"
+import {
+  getFallbackPaneAfterRemoval,
+  resolvePresentationMode,
+} from "./utils/presentationMode.js"
 
 const DmuxApp: React.FC<DmuxAppProps> = ({
   panesFile,
@@ -114,6 +118,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const [settingsManager] = useState(() => new SettingsManager(projectRoot))
   const { projectSettings, saveSettings } = useProjectSettings(settingsFile)
   const settings = settingsManager.getSettings()
+  const configuredPresentationMode = resolvePresentationMode(settings.presentationMode)
 
   // Dialog state management
   const dialogState = useDialogState()
@@ -159,6 +164,10 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // Popup support detection
   const [popupsSupported, setPopupsSupported] = useState(false)
+  const presentationMode =
+    !popupsSupported && configuredPresentationMode === "focus"
+      ? "grid"
+      : configuredPresentationMode
 
   // Track terminal dimensions for responsive layout
   const terminalWidth = useTerminalWidth()
@@ -932,7 +941,10 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         const targetPane = panes.find(p => p.id === result.targetPaneId)
         if (targetPane) {
           try {
-            TmuxService.getInstance().selectPane(targetPane.paneId)
+            await TmuxService.getInstance().selectPane(
+              targetPane.paneId,
+              presentationMode === "focus" ? { preserveZoom: true } : undefined
+            )
           } catch {}
         }
       }
@@ -970,20 +982,49 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       // Mark pane as closing to prevent race condition with worker
       await lifecycleManager.beginClose(paneId, 'user requested')
 
-      // Adjust selectedIndex before removing from list
+      // Remove from panes list
+      const updatedPanes = panes.filter((p) => p.paneId !== paneId)
+      await savePanes(updatedPanes)
+
+      // Mark close as completed (no more lock needed)
+      await lifecycleManager.completeClose(paneId)
+
+      if (presentationMode === "focus") {
+        try {
+          const fallbackPane = getFallbackPaneAfterRemoval(
+            updatedPanes,
+            paneId,
+            selectedIndex
+          )
+
+          if (fallbackPane) {
+            const fallbackIndex = updatedPanes.findIndex(
+              (pane) => pane.id === fallbackPane.id
+            )
+            if (fallbackIndex >= 0) {
+              setSelectedIndex(fallbackIndex)
+            }
+            await TmuxService.getInstance().selectPane(fallbackPane.paneId, {
+              preserveZoom: true,
+            })
+          } else if (
+            controlPaneId
+            && await TmuxService.getInstance().isWindowZoomed(controlPaneId)
+          ) {
+            await TmuxService.getInstance().togglePaneZoom(controlPaneId)
+          }
+        } catch {
+          // Ignore - pane/window may already be gone
+        }
+        return
+      }
+
+      // Adjust selectedIndex before returning to the control pane
       const removedIndex = panes.findIndex((p) => p.paneId === paneId)
       if (removedIndex >= 0 && selectedIndex >= panes.length - 1) {
         setSelectedIndex(Math.max(0, panes.length - 2))
       }
 
-      // Remove from panes list
-      const updatedPanes = panes.filter((p) => p.paneId !== paneId)
-      savePanes(updatedPanes)
-
-      // Mark close as completed (no more lock needed)
-      await lifecycleManager.completeClose(paneId)
-
-      // Return focus to control pane
       if (controlPaneId) {
         try {
           await TmuxService.getInstance().selectPane(controlPaneId)
@@ -1032,7 +1073,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // Periodic enforcement of control pane size and content pane rebalancing (left sidebar at 40 chars)
   useLayoutManagement({
-    controlPaneId,
+    controlPaneId: presentationMode === "focus" ? undefined : controlPaneId,
     hasActiveDialog:
       actionSystem.actionState.showConfirmDialog ||
       actionSystem.actionState.showChoiceDialog ||
@@ -1199,6 +1240,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     projectRoot: sessionProjectRoot,
     projectActionItems: projectActionLayout.actionItems,
     findCardInDirection,
+    presentationMode,
+    popupsSupported,
   })
 
   // Calculate available height for content (terminal height - footer lines - active status messages)

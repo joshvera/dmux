@@ -1,0 +1,46 @@
+import { describe, expect, it } from 'vitest';
+import type { DmuxPane } from '../src/types.js';
+import {
+  getFallbackPaneAfterRemoval,
+  getPresentationTargetPane,
+  resolvePresentationMode,
+} from '../src/utils/presentationMode.js';
+
+function pane(id: string, hidden = false): DmuxPane {
+  return {
+    id,
+    slug: `pane-${id}`,
+    prompt: `prompt-${id}`,
+    paneId: `%${id}`,
+    hidden,
+  };
+}
+
+describe('presentationMode helpers', () => {
+  it('falls back to grid for unknown presentation modes', () => {
+    expect(resolvePresentationMode('grid')).toBe('grid');
+    expect(resolvePresentationMode('single-pane')).toBe('single-pane');
+    expect(resolvePresentationMode('focus')).toBe('focus');
+    expect(resolvePresentationMode('unknown')).toBe('grid');
+  });
+
+  it('prefers the selected pane, then a visible pane, then the first pane', () => {
+    const panes = [
+      pane('1', true),
+      pane('2', false),
+      pane('3', false),
+    ];
+
+    expect(getPresentationTargetPane(panes, 2)?.id).toBe('3');
+    expect(getPresentationTargetPane(panes, 9)?.id).toBe('2');
+    expect(getPresentationTargetPane([pane('4', true)], 3)?.id).toBe('4');
+  });
+
+  it('returns the nearest remaining pane after removal', () => {
+    const panes = [pane('1'), pane('2'), pane('3')];
+
+    expect(getFallbackPaneAfterRemoval(panes, '%2', 1)?.id).toBe('2');
+    expect(getFallbackPaneAfterRemoval(panes.slice(0, 2), '%3', 5)?.id).toBe('2');
+    expect(getFallbackPaneAfterRemoval([], '%1', 0)).toBeUndefined();
+  });
+});

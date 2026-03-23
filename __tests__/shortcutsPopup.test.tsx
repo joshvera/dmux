@@ -17,7 +17,7 @@ describe('ShortcutsPopupApp', () => {
     const output = stripAnsi(lastFrame() ?? '');
 
     expect(output).toContain('[Alt+Shift+M]');
-    expect(output).toContain('Open the pane menu for the focused tmux pane');
+    expect(output).toContain('Open the focused-pane menu or focus navigator');
     expect(output).toContain('Press Alt+Shift+M in any focused pane');
     expect(output).not.toContain('[M-D]');
   });

@@ -68,6 +68,7 @@ export const splitPane = (options: {
   targetPane?: string;
   cwd?: string;
   command?: string;
+  preserveZoom?: boolean;
 } = {}): string => {
   return TmuxService.getInstance().splitPaneSync(options);
 };
@@ -116,7 +117,11 @@ export const ensurePaneBorderStatusForCurrentSession = (): void => {
  * @param cwd Optional working directory for the new content pane
  * @returns The newly created content area pane ID
  */
-export const setupSidebarLayout = (controlPaneId: string, cwd?: string): string => {
+export const setupSidebarLayout = (
+  controlPaneId: string,
+  cwd?: string,
+  options: { preserveZoom?: boolean } = {}
+): string => {
   try {
     const tmuxService = TmuxService.getInstance();
 
@@ -132,6 +137,7 @@ export const setupSidebarLayout = (controlPaneId: string, cwd?: string): string 
     const newPaneId = tmuxService.splitPaneSync({
       targetPane: controlPaneId,
       cwd,
+      preserveZoom: options.preserveZoom,
     });
 
     // Resize control pane to fixed width (sync version for initial setup)
