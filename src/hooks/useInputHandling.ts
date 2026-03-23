@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import path from "path"
 import { useInput } from "ink"
 import type {
@@ -87,6 +87,13 @@ type FocusNavigatorResult =
       action: "exit"
     }
 
+type PendingPaneActivation = {
+  paneId: string
+  dmuxPaneId: string
+  expectedIndex: number
+  mode: "focus" | "single-pane"
+}
+
 interface UseInputHandlingParams {
   // State
   panes: DmuxPane[]
@@ -129,12 +136,12 @@ interface UseInputHandlingParams {
   setStatusMessage: (message: string) => void
   copyNonGitFiles: (worktreePath: string, sourceProjectRoot?: string) => Promise<void>
   runCommandInternal: (type: "test" | "dev", pane: DmuxPane) => Promise<void>
-  handlePaneCreationWithAgent: (prompt: string, targetProjectRoot?: string) => Promise<void>
-  handleCreateChildWorktree: (pane: DmuxPane) => Promise<void>
+  handlePaneCreationWithAgent: (prompt: string, targetProjectRoot?: string) => Promise<DmuxPane[]>
+  handleCreateChildWorktree: (pane: DmuxPane) => Promise<DmuxPane[]>
   handleReopenWorktree: (
     candidate: ResumableBranchCandidate,
     targetProjectRoot?: string
-  ) => Promise<void>
+  ) => Promise<DmuxPane | null>
   setDevSourceFromPane: (pane: DmuxPane) => Promise<void>
   savePanes: (panes: DmuxPane[]) => Promise<void>
   sidebarProjects: SidebarProject[]
@@ -224,6 +231,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
       : "global"
   )
   const presentationSyncKeyRef = useRef("")
+  const pendingPaneActivationRef = useRef<PendingPaneActivation | null>(null)
+  const [pendingPaneActivationVersion, setPendingPaneActivationVersion] = useState(0)
   const paneVisibilitySignature = panes
     .map((pane) => `${pane.id}:${pane.hidden ? "1" : "0"}`)
     .join("|")
@@ -276,14 +285,45 @@ export function useInputHandling(params: UseInputHandlingParams) {
   const getPresentationPane = (preferredPane?: DmuxPane): DmuxPane | undefined =>
     preferredPane || getPresentationTargetPane(panes, selectedIndex)
 
-  const handleCreateAgentPane = async (targetProjectRoot: string) => {
-    const promptValue = await popupManager.launchNewPanePopup(targetProjectRoot)
-    if (promptValue) {
-      await handlePaneCreationWithAgent(promptValue, targetProjectRoot)
+  const queueCreatedPaneActivation = (
+    created: DmuxPane | DmuxPane[] | null
+  ) => {
+    if (
+      effectivePresentationMode !== "focus"
+      && effectivePresentationMode !== "single-pane"
+    ) {
+      return
     }
+
+    const createdPanes = Array.isArray(created)
+      ? created
+      : created
+        ? [created]
+        : []
+    const targetPane = createdPanes[0]
+    if (!targetPane) {
+      return
+    }
+
+    pendingPaneActivationRef.current = {
+      paneId: targetPane.paneId,
+      dmuxPaneId: targetPane.id,
+      expectedIndex: panes.length,
+      mode: effectivePresentationMode,
+    }
+    setPendingPaneActivationVersion((version) => version + 1)
   }
 
-  const handleCreateTerminalPane = async (targetProjectRoot: string) => {
+  const handleCreateAgentPane = async (targetProjectRoot: string): Promise<DmuxPane[]> => {
+    const promptValue = await popupManager.launchNewPanePopup(targetProjectRoot)
+    if (!promptValue) {
+      return []
+    }
+
+    return await handlePaneCreationWithAgent(promptValue, targetProjectRoot)
+  }
+
+  const handleCreateTerminalPane = async (targetProjectRoot: string): Promise<DmuxPane | null> => {
     try {
       setIsCreatingPane(true)
       setStatusMessage("Creating terminal pane...")
@@ -311,10 +351,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
       // Force a reload to ensure tmux metadata and pane IDs are in sync
       await loadPanes()
+      return shellPane
     } catch (error: any) {
-      setIsCreatingPane(false)
       setStatusMessage(`Failed to create terminal pane: ${error.message}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+      return null
+    } finally {
+      setIsCreatingPane(false)
     }
   }
 
@@ -338,11 +381,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
-  const openTerminalInWorktree = async (selectedPane: DmuxPane) => {
+  const openTerminalInWorktree = async (selectedPane: DmuxPane): Promise<DmuxPane | null> => {
     if (!selectedPane.worktreePath) {
       setStatusMessage("Cannot open terminal: this pane has no worktree")
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-      return
+      return null
     }
 
     const targetProjectRoot = getPaneProjectRoot(selectedPane, projectRoot)
@@ -372,19 +415,21 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
       // Force a reload to ensure tmux metadata and pane IDs are in sync
       await loadPanes()
+      return shellPane
     } catch (error: any) {
       setStatusMessage(`Failed to open terminal in worktree: ${error.message}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+      return null
     } finally {
       setIsCreatingPane(false)
     }
   }
 
-  const openFileBrowserInWorktree = async (selectedPane: DmuxPane) => {
+  const openFileBrowserInWorktree = async (selectedPane: DmuxPane): Promise<DmuxPane | null> => {
     if (!selectedPane.worktreePath) {
       setStatusMessage("Cannot open file browser: this pane has no worktree")
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-      return
+      return null
     }
 
     const existingBrowserPane = panes.find((pane) =>
@@ -405,7 +450,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         setStatusMessage(`Failed to focus file browser: ${error?.message || String(error)}`)
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
       }
-      return
+      return existingBrowserPane
     }
 
     const targetProjectRoot = getPaneProjectRoot(selectedPane, projectRoot)
@@ -450,9 +495,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
       setStatusMessage(`Opened file browser for ${getPaneDisplayName(selectedPane)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      return browserPane
     } catch (error: any) {
       setStatusMessage(`Failed to open file browser: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+      return null
     } finally {
       setIsCreatingPane(false)
     }
@@ -590,7 +637,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     const prompt =
       "I would like to create or edit my dmux hooks in .dmux-hooks. Please read AGENTS.md or CLAUDE.md first, then ask me what I want to create or modify."
-    await handlePaneCreationWithAgent(prompt, hooksProjectRoot)
+    queueCreatedPaneActivation(
+      await handlePaneCreationWithAgent(prompt, hooksProjectRoot)
+    )
   }
 
   const refreshPaneLayout = async () => {
@@ -767,6 +816,59 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
     }
   }
+
+  useEffect(() => {
+    const pendingActivation = pendingPaneActivationRef.current
+    if (!pendingActivation) {
+      return
+    }
+
+    if (isCreatingPane) {
+      return
+    }
+
+    if (effectivePresentationMode !== pendingActivation.mode) {
+      pendingPaneActivationRef.current = null
+      return
+    }
+
+    const targetPane =
+      panes.find((pane) => pane.id === pendingActivation.dmuxPaneId)
+      || panes.find((pane) => pane.paneId === pendingActivation.paneId)
+      || panes[pendingActivation.expectedIndex]
+
+    if (!targetPane) {
+      return
+    }
+
+    pendingPaneActivationRef.current = null
+    presentationSyncKeyRef.current = ""
+
+    const activatePendingPane = async () => {
+      if (pendingActivation.mode === "focus") {
+        await focusPane(targetPane, { suppressStatus: true })
+        return
+      }
+
+      await isolatePane(targetPane, {
+        activatePane: true,
+        suppressStatus: true,
+      })
+    }
+
+    void activatePendingPane().catch((error: any) => {
+      setStatusMessage(`Failed to activate created pane: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    })
+  }, [
+    effectivePresentationMode,
+    focusPane,
+    isolatePane,
+    isCreatingPane,
+    panes,
+    pendingPaneActivationVersion,
+    setStatusMessage,
+  ])
 
   const applyPresentationModeChange = async (
     nextMode: PresentationMode,
@@ -1144,11 +1246,17 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     if (result.kind === "project") {
       if (result.action === "new-agent") {
-        await handleCreateAgentPane(result.projectRoot)
+        queueCreatedPaneActivation(
+          await handleCreateAgentPane(result.projectRoot)
+        )
       } else if (result.action === "terminal") {
-        await handleCreateTerminalPane(result.projectRoot)
+        queueCreatedPaneActivation(
+          await handleCreateTerminalPane(result.projectRoot)
+        )
       } else if (result.action === "reopen") {
-        await reopenClosedWorktreesInProject(result.projectRoot)
+        queueCreatedPaneActivation(
+          await reopenClosedWorktreesInProject(result.projectRoot)
+        )
       }
       return
     }
@@ -1235,22 +1343,22 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     if (actionId === PaneAction.ATTACH_AGENT) {
-      await attachAgentsToPane(pane)
+      queueCreatedPaneActivation(await attachAgentsToPane(pane))
       return
     }
 
     if (actionId === PaneAction.CREATE_CHILD_WORKTREE) {
-      await handleCreateChildWorktree(pane)
+      queueCreatedPaneActivation(await handleCreateChildWorktree(pane))
       return
     }
 
     if (actionId === PaneAction.OPEN_TERMINAL_IN_WORKTREE) {
-      await openTerminalInWorktree(pane)
+      queueCreatedPaneActivation(await openTerminalInWorktree(pane))
       return
     }
 
     if (actionId === PaneAction.OPEN_FILE_BROWSER) {
-      await openFileBrowserInWorktree(pane)
+      queueCreatedPaneActivation(await openFileBrowserInWorktree(pane))
       return
     }
 
@@ -1265,11 +1373,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
     })
   }
 
-  const attachAgentsToPane = async (selectedPane: DmuxPane) => {
+  const attachAgentsToPane = async (selectedPane: DmuxPane): Promise<DmuxPane[]> => {
     if (!selectedPane.worktreePath) {
       setStatusMessage("Cannot attach agent: this pane has no worktree")
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-      return
+      return []
     }
 
     const targetProjectRoot = getPaneProjectRoot(selectedPane, projectRoot)
@@ -1283,32 +1391,32 @@ export function useInputHandling(params: UseInputHandlingParams) {
         "Cancel",
         targetProjectRoot
       )
-      if (!confirmed) return
+      if (!confirmed) return []
     }
 
     let selectedAgents: AgentName[] = []
     if (availableAgents.length === 0) {
       setStatusMessage("No agents available")
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-      return
+      return []
     } else if (availableAgents.length === 1) {
       selectedAgents = [availableAgents[0]]
     } else {
       const agents = await popupManager.launchAgentChoicePopup(targetProjectRoot)
       if (agents === null) {
-        return
+        return []
       }
       if (agents.length === 0) {
         setStatusMessage("Select at least one agent")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-        return
+        return []
       }
       selectedAgents = agents
     }
 
     // Prompt input
     const promptValue = await popupManager.launchNewPanePopup(targetProjectRoot)
-    if (!promptValue) return
+    if (!promptValue) return []
 
     try {
       setIsCreatingPane(true)
@@ -1360,9 +1468,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
         )
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
       }
+      return createdPanes
     } catch (error: any) {
       setStatusMessage(`Failed to attach agent: ${error.message}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+      return []
     } finally {
       setIsCreatingPane(false)
     }
@@ -1377,7 +1487,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
     || showFileCopyPrompt
     || showCommandPrompt !== null
 
-  const reopenClosedWorktreesInProject = async (targetProjectRoot: string) => {
+  const reopenClosedWorktreesInProject = async (
+    targetProjectRoot: string
+  ): Promise<DmuxPane | null> => {
     const activeSlugs = panes
       .filter((pane) => sameSidebarProjectRoot(getPaneProjectRoot(pane, projectRoot), targetProjectRoot))
       .map((pane) => pane.slug)
@@ -1402,10 +1514,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
       activeSlugs
     )
     if (!result) {
-      return
+      return null
     }
 
-    await handleReopenWorktree({
+    return await handleReopenWorktree({
       branchName: result.candidate.branchName,
       slug: result.candidate.slug,
       path: result.candidate.path,
@@ -1427,16 +1539,16 @@ export function useInputHandling(params: UseInputHandlingParams) {
   ) => {
     switch (shortcut) {
       case "a":
-        await attachAgentsToPane(selectedPane)
+        queueCreatedPaneActivation(await attachAgentsToPane(selectedPane))
         return
       case "b":
-        await handleCreateChildWorktree(selectedPane)
+        queueCreatedPaneActivation(await handleCreateChildWorktree(selectedPane))
         return
       case "f":
-        await openFileBrowserInWorktree(selectedPane)
+        queueCreatedPaneActivation(await openFileBrowserInWorktree(selectedPane))
         return
       case "A":
-        await openTerminalInWorktree(selectedPane)
+        queueCreatedPaneActivation(await openTerminalInWorktree(selectedPane))
         return
       case "m":
         await openPaneMenu(selectedPane, {
@@ -1453,7 +1565,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
         await toggleProjectPanesVisibility(getPaneProjectRoot(selectedPane, projectRoot))
         return
       case "r":
-        await reopenClosedWorktreesInProject(getPaneProjectRoot(selectedPane, projectRoot))
+        queueCreatedPaneActivation(
+          await reopenClosedWorktreesInProject(getPaneProjectRoot(selectedPane, projectRoot))
+        )
         return
       case "S":
         if (!isDevMode) {
@@ -1833,7 +1947,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await executePaneShortcut("S", panes[selectedIndex])
       return
     } else if (input === "r") {
-      await reopenClosedWorktreesInProject(getActiveProjectRoot())
+      queueCreatedPaneActivation(
+        await reopenClosedWorktreesInProject(getActiveProjectRoot())
+      )
       return
     } else if (
       !isLoading &&
@@ -1849,10 +1965,14 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await handleRemoveProjectFromSidebar(getActiveProjectRoot())
       return
     } else if (!isLoading && input === "n") {
-      await handleCreateAgentPane(getActiveProjectRoot())
+      queueCreatedPaneActivation(
+        await handleCreateAgentPane(getActiveProjectRoot())
+      )
       return
     } else if (!isLoading && input === "t") {
-      await handleCreateTerminalPane(getActiveProjectRoot())
+      queueCreatedPaneActivation(
+        await handleCreateTerminalPane(getActiveProjectRoot())
+      )
       return
     } else if (
       !isLoading &&
@@ -1861,9 +1981,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
     ) {
       const selectedAction = getProjectActionByIndex(projectActionItems, selectedIndex)!
       if (selectedAction.kind === "new-agent") {
-        await handleCreateAgentPane(selectedAction.projectRoot)
+        queueCreatedPaneActivation(
+          await handleCreateAgentPane(selectedAction.projectRoot)
+        )
       } else if (selectedAction.kind === "terminal") {
-        await handleCreateTerminalPane(selectedAction.projectRoot)
+        queueCreatedPaneActivation(
+          await handleCreateTerminalPane(selectedAction.projectRoot)
+        )
       } else if (selectedAction.kind === "remove-project") {
         await handleRemoveProjectFromSidebar(selectedAction.projectRoot)
       }

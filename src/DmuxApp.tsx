@@ -584,7 +584,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       startPointBranch?: string
       mergeTargetChain?: MergeTargetReference[]
     }
-  ): Promise<number> => {
+  ): Promise<DmuxPane[]> => {
     if (selectedAgents.length === 0) {
       const pane = await createNewPaneHook(prompt, undefined, {
         targetProjectRoot,
@@ -592,16 +592,15 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         startPointBranch: createOptions?.startPointBranch,
         mergeTargetChain: createOptions?.mergeTargetChain,
       })
-      return pane ? 1 : 0
+      return pane ? [pane] : []
     }
 
-    const createdPanes = await createPanesForAgentsHook(prompt, selectedAgents, {
+    return await createPanesForAgentsHook(prompt, selectedAgents, {
       existingPanes: panes,
       targetProjectRoot,
       startPointBranch: createOptions?.startPointBranch,
       mergeTargetChain: createOptions?.mergeTargetChain,
     })
-    return createdPanes.length
   }
 
   const handlePaneCreationWithAgent = async (
@@ -611,13 +610,13 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       startPointBranch?: string
       mergeTargetChain?: MergeTargetReference[]
     }
-  ) => {
+  ): Promise<DmuxPane[]> => {
     const selectedAgents = await selectAgentsForPaneCreation(targetProjectRoot)
     if (selectedAgents === null) {
-      return
+      return []
     }
 
-    await createPaneSelection(
+    return await createPaneSelection(
       prompt,
       selectedAgents,
       targetProjectRoot,
@@ -625,26 +624,30 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     )
   }
 
-  const handleCreateChildWorktree = async (parentPane: DmuxPane) => {
+  const handleCreateChildWorktree = async (
+    parentPane: DmuxPane
+  ): Promise<DmuxPane[]> => {
     if (!parentPane.worktreePath) {
       setStatusMessage("Selected pane has no worktree path")
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-      return
+      return []
     }
 
     const targetProjectRoot = getPaneProjectRoot(parentPane, sessionProjectRoot)
     const promptValue = await popupManager.launchNewPanePopup(targetProjectRoot)
     if (!promptValue) {
-      return
+      return []
     }
 
     const selectedAgents = await selectAgentsForPaneCreation(targetProjectRoot)
     if (selectedAgents === null) {
-      return
+      return []
     }
 
+    let createdPanes: DmuxPane[] = []
+
     const createSubWorktree = async (): Promise<ActionResult> => {
-      const createdCount = await createPaneSelection(
+      createdPanes = await createPaneSelection(
         promptValue,
         selectedAgents,
         targetProjectRoot,
@@ -653,6 +656,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
           mergeTargetChain: createMergeTargetChain(parentPane, targetProjectRoot),
         }
       )
+      const createdCount = createdPanes.length
 
       if (createdCount > 0) {
         return {
@@ -674,7 +678,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         showProgress: false,
         projectRoot: targetProjectRoot,
       })
-      return
+      return createdPanes
     }
 
     const branchFromDirtyResult: ActionResult = {
@@ -742,13 +746,15 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       async () => branchFromDirtyResult,
       { showProgress: false, projectRoot: targetProjectRoot }
     )
+
+    return createdPanes
   }
 
   // Helper function to reopen a closed worktree
   const handleReopenWorktree = async (
     candidate: ResumableBranchCandidate,
     targetProjectRoot?: string
-  ) => {
+  ): Promise<DmuxPane | null> => {
     const reopenProjectRoot = targetProjectRoot || projectRoot || process.cwd()
     let selectedAgent: AgentName | undefined
 
@@ -756,7 +762,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       if (availableAgents.length === 0) {
         setStatusMessage("No enabled agents available for opening this branch")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-        return
+        return null
       }
 
       const chosenAgent = await popupManager.launchSingleAgentChoicePopup(
@@ -765,7 +771,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         reopenProjectRoot
       )
       if (!chosenAgent) {
-        return
+        return null
       }
       selectedAgent = chosenAgent
     }
@@ -803,9 +809,11 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         `${candidate.path ? "Reopened" : "Opened"} ${getPaneDisplayName(result.pane)}`
       )
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+      return result.pane
     } catch (error: any) {
       setStatusMessage(`Failed to open branch: ${error.message}`)
       setTimeout(() => setStatusMessage(""), 3000)
+      return null
     } finally {
       setIsCreatingPane(false)
     }

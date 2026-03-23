@@ -5,11 +5,54 @@ import { Text } from 'ink';
 import { useInputHandling } from '../src/hooks/useInputHandling.js';
 import { TmuxService } from '../src/services/TmuxService.js';
 import type { DmuxPane } from '../src/types.js';
+import {
+  createShellPane,
+} from '../src/utils/shellPaneDetection.js';
+import {
+  drainRemotePaneActions,
+  getCurrentTmuxSessionName,
+} from '../src/utils/remotePaneActions.js';
+import {
+  getResumableBranches,
+} from '../src/utils/resumeBranches.js';
+
+vi.mock('../src/utils/tmux.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/utils/tmux.js')>('../src/utils/tmux.js');
+  return {
+    ...actual,
+    enforceControlPaneSize: vi.fn(async () => {}),
+  };
+});
+
+vi.mock('../src/utils/shellPaneDetection.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/utils/shellPaneDetection.js')>('../src/utils/shellPaneDetection.js');
+  return {
+    ...actual,
+    createShellPane: vi.fn(async (paneId: string, nextId: number) => ({
+      id: `dmux-${nextId}`,
+      slug: `shell-${nextId}`,
+      prompt: '',
+      paneId,
+      projectRoot: '/repo',
+      projectName: 'repo',
+      type: 'shell',
+      shellType: 'zsh',
+    })),
+  };
+});
 
 vi.mock('../src/utils/remotePaneActions.js', () => ({
   drainRemotePaneActions: vi.fn(async () => []),
   getCurrentTmuxSessionName: vi.fn(() => null),
 }));
+
+vi.mock('../src/utils/resumeBranches.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/utils/resumeBranches.js')>('../src/utils/resumeBranches.js');
+  return {
+    ...actual,
+    getResumableBranches: vi.fn(() => []),
+  };
+});
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -27,27 +70,37 @@ function pane(id: string, options: Partial<DmuxPane> = {}): DmuxPane {
 
 function Harness({
   panes,
+  selectedIndex = 0,
   presentationMode,
   popupManager,
   settingsManager,
   controlPaneId = '%0',
+  setSelectedIndex = vi.fn(),
   setStatusMessage = vi.fn(),
   savePanes = vi.fn(async () => {}),
   loadPanes = vi.fn(async () => {}),
+  handlePaneCreationWithAgent = vi.fn(async () => []),
+  handleCreateChildWorktree = vi.fn(async () => []),
+  handleReopenWorktree = vi.fn(async () => null),
 }: {
   panes: DmuxPane[];
+  selectedIndex?: number;
   presentationMode: 'grid' | 'single-pane' | 'focus';
   popupManager: any;
   settingsManager: any;
   controlPaneId?: string;
+  setSelectedIndex?: ReturnType<typeof vi.fn>;
   setStatusMessage?: ReturnType<typeof vi.fn>;
   savePanes?: ReturnType<typeof vi.fn>;
   loadPanes?: ReturnType<typeof vi.fn>;
+  handlePaneCreationWithAgent?: ReturnType<typeof vi.fn>;
+  handleCreateChildWorktree?: ReturnType<typeof vi.fn>;
+  handleReopenWorktree?: ReturnType<typeof vi.fn>;
 }) {
   useInputHandling({
     panes,
-    selectedIndex: 0,
-    setSelectedIndex: vi.fn(),
+    selectedIndex,
+    setSelectedIndex,
     isCreatingPane: false,
     setIsCreatingPane: vi.fn(),
     runningCommand: false,
@@ -84,9 +137,9 @@ function Harness({
     setStatusMessage,
     copyNonGitFiles: vi.fn(),
     runCommandInternal: vi.fn(),
-    handlePaneCreationWithAgent: vi.fn(),
-    handleCreateChildWorktree: vi.fn(),
-    handleReopenWorktree: vi.fn(),
+    handlePaneCreationWithAgent,
+    handleCreateChildWorktree,
+    handleReopenWorktree,
     setDevSourceFromPane: vi.fn(),
     savePanes,
     sidebarProjects: [{ projectRoot: '/repo', projectName: 'repo' }],
@@ -115,6 +168,9 @@ describe('useInputHandling focus mode', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue(null);
+    vi.mocked(drainRemotePaneActions).mockResolvedValue([]);
+    vi.mocked(getResumableBranches).mockReturnValue([]);
     vi.spyOn(TmuxService, 'getInstance').mockReturnValue(
       tmuxServiceMock as unknown as TmuxService
     );
@@ -266,6 +322,362 @@ describe('useInputHandling focus mode', () => {
     expect(savePanes).toHaveBeenCalled();
     expect(loadPanes).toHaveBeenCalled();
     expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%1', true);
+
+    unmount();
+  });
+
+  it('keeps the first newly created agent pane active after a focus navigator action reloads panes', async () => {
+    const setSelectedIndex = vi.fn();
+    const createdPanes = [pane('2'), pane('3')];
+    const handlePaneCreationWithAgent = vi.fn(async () => createdPanes);
+    const popupManager = {
+      launchFocusNavigatorPopup: vi.fn(async () => ({
+        kind: 'project',
+        action: 'new-agent',
+        projectRoot: '/repo',
+      })),
+      launchNewPanePopup: vi.fn(async () => 'Build the feature'),
+    };
+
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([{
+        type: 'pane-shortcut',
+        targetPaneId: '%1',
+        shortcut: 'm',
+        createdAt: '2026-03-23T03:00:00.000Z',
+      }])
+      .mockResolvedValue([]);
+
+    const { rerender, unmount } = render(
+      <Harness
+        panes={[pane('1')]}
+        presentationMode="focus"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+      />
+    );
+
+    await sleep(80);
+    expect(handlePaneCreationWithAgent).toHaveBeenCalledWith('Build the feature', '/repo');
+
+    tmuxServiceMock.selectPane.mockClear();
+    tmuxServiceMock.setPaneZoom.mockClear();
+    setSelectedIndex.mockClear();
+
+    rerender(
+      <Harness
+        panes={[pane('1'), ...createdPanes]}
+        presentationMode="focus"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+      />
+    );
+
+    await sleep(80);
+
+    expect(setSelectedIndex).toHaveBeenCalledWith(1);
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%2', undefined);
+    expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%2', true);
+
+    unmount();
+  });
+
+  it('keeps a new terminal active after a focus navigator action reloads panes', async () => {
+    const setSelectedIndex = vi.fn();
+    const savePanes = vi.fn(async () => {});
+    const loadPanes = vi.fn(async () => {});
+    const createdShellPane: DmuxPane = {
+      id: 'dmux-2',
+      slug: 'shell-2',
+      prompt: '',
+      paneId: '%2',
+      projectRoot: '/repo',
+      projectName: 'repo',
+      type: 'shell',
+      shellType: 'zsh',
+    };
+    const popupManager = {
+      launchFocusNavigatorPopup: vi.fn(async () => ({
+        kind: 'project',
+        action: 'terminal',
+        projectRoot: '/repo',
+      })),
+    };
+
+    vi.mocked(createShellPane).mockResolvedValue(createdShellPane);
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([{
+        type: 'pane-shortcut',
+        targetPaneId: '%1',
+        shortcut: 'm',
+        createdAt: '2026-03-23T03:00:00.000Z',
+      }])
+      .mockResolvedValue([]);
+
+    const { rerender, unmount } = render(
+      <Harness
+        panes={[pane('1')]}
+        presentationMode="focus"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+      />
+    );
+
+    await vi.waitFor(() => {
+      expect(createShellPane).toHaveBeenCalledWith('%2', 1);
+    });
+
+    tmuxServiceMock.selectPane.mockClear();
+    tmuxServiceMock.setPaneZoom.mockClear();
+    setSelectedIndex.mockClear();
+
+    rerender(
+      <Harness
+        panes={[pane('1'), createdShellPane]}
+        presentationMode="focus"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+      />
+    );
+
+    await vi.waitFor(() => {
+      expect(setSelectedIndex).toHaveBeenCalledWith(1);
+      expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%2', undefined);
+      expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%2', true);
+    });
+
+    unmount();
+  });
+
+  it('activates a reopened pane after a focus navigator reopen action reloads panes', async () => {
+    const setSelectedIndex = vi.fn();
+    const reopenedPane = pane('2');
+    const handleReopenWorktree = vi.fn(async () => reopenedPane);
+    const popupManager = {
+      launchFocusNavigatorPopup: vi.fn(async () => ({
+        kind: 'project',
+        action: 'reopen',
+        projectRoot: '/repo',
+      })),
+      launchReopenWorktreePopup: vi.fn(async () => ({
+        action: 'select',
+        candidate: {
+          branchName: 'feature-a',
+          slug: 'feature-a',
+          path: '/repo/.dmux/worktrees/feature-a',
+          lastModified: '2026-03-12T12:00:00.000Z',
+          hasUncommittedChanges: false,
+          hasWorktree: true,
+          hasLocalBranch: true,
+          hasRemoteBranch: false,
+          isRemote: false,
+        },
+      })),
+    };
+
+    vi.mocked(getResumableBranches).mockReturnValue([{
+      branchName: 'feature-a',
+      slug: 'feature-a',
+      path: '/repo/.dmux/worktrees/feature-a',
+      lastModified: new Date('2026-03-12T12:00:00.000Z'),
+      hasUncommittedChanges: false,
+      hasWorktree: true,
+      hasLocalBranch: true,
+      hasRemoteBranch: false,
+      isRemote: false,
+    }]);
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([{
+        type: 'pane-shortcut',
+        targetPaneId: '%1',
+        shortcut: 'm',
+        createdAt: '2026-03-23T03:00:00.000Z',
+      }])
+      .mockResolvedValue([]);
+
+    const { rerender, unmount } = render(
+      <Harness
+        panes={[pane('1')]}
+        presentationMode="focus"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        handleReopenWorktree={handleReopenWorktree}
+      />
+    );
+
+    await sleep(80);
+    expect(handleReopenWorktree).toHaveBeenCalled();
+
+    tmuxServiceMock.selectPane.mockClear();
+    tmuxServiceMock.setPaneZoom.mockClear();
+    setSelectedIndex.mockClear();
+
+    rerender(
+      <Harness
+        panes={[pane('1'), reopenedPane]}
+        presentationMode="focus"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        handleReopenWorktree={handleReopenWorktree}
+      />
+    );
+
+    await sleep(80);
+
+    expect(setSelectedIndex).toHaveBeenCalledWith(1);
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%2', undefined);
+    expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%2', true);
+
+    unmount();
+  });
+
+  it('isolates and activates a newly created pane in single-pane mode', async () => {
+    const setSelectedIndex = vi.fn();
+    const savePanes = vi.fn(async () => {});
+    const loadPanes = vi.fn(async () => {});
+    const handlePaneCreationWithAgent = vi.fn(async () => [pane('2')]);
+    const popupManager = {
+      launchNewPanePopup: vi.fn(async () => 'Draft the plan'),
+    };
+
+    const { stdin, rerender, unmount } = render(
+      <Harness
+        panes={[pane('1')]}
+        presentationMode="single-pane"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+      />
+    );
+
+    await sleep(40);
+    stdin.write('n');
+    await sleep(60);
+
+    tmuxServiceMock.breakPaneToWindow.mockClear();
+    tmuxServiceMock.selectPane.mockClear();
+    setSelectedIndex.mockClear();
+    savePanes.mockClear();
+    loadPanes.mockClear();
+
+    rerender(
+      <Harness
+        panes={[pane('1'), pane('2')]}
+        presentationMode="single-pane"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+      />
+    );
+
+    await sleep(80);
+
+    expect(setSelectedIndex).toHaveBeenCalledWith(1);
+    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith('%1', 'dmux-hidden-1');
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%2');
+    expect(savePanes).toHaveBeenCalledWith([
+      expect.objectContaining({ id: '1', hidden: true }),
+      expect.objectContaining({ id: '2', hidden: false }),
+    ]);
+
+    unmount();
+  });
+
+  it('does not auto-switch to new panes in grid mode', async () => {
+    const setSelectedIndex = vi.fn();
+    const handlePaneCreationWithAgent = vi.fn(async () => [pane('2')]);
+    const popupManager = {
+      launchNewPanePopup: vi.fn(async () => 'Draft the plan'),
+    };
+
+    const { stdin, rerender, unmount } = render(
+      <Harness
+        panes={[pane('1')]}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+      />
+    );
+
+    await sleep(40);
+    stdin.write('n');
+    await sleep(60);
+
+    tmuxServiceMock.selectPane.mockClear();
+    tmuxServiceMock.setPaneZoom.mockClear();
+    setSelectedIndex.mockClear();
+
+    rerender(
+      <Harness
+        panes={[pane('1'), pane('2')]}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+      />
+    );
+
+    await sleep(60);
+
+    expect(setSelectedIndex).not.toHaveBeenCalledWith(1);
+    expect(
+      tmuxServiceMock.selectPane.mock.calls.some(([paneId]) => paneId === '%2')
+    ).toBe(false);
+    expect(tmuxServiceMock.setPaneZoom).not.toHaveBeenCalledWith('%2', true);
 
     unmount();
   });
