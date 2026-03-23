@@ -37,11 +37,21 @@ describe('presentationMode helpers', () => {
     expect(getPresentationTargetPane([pane('4', true)], 3)).toBeUndefined();
   });
 
-  it('returns the nearest remaining pane after removal', () => {
+  it('returns the nearest remaining visible pane after removal', () => {
     const panes = [pane('1'), pane('2'), pane('3')];
 
     expect(getFallbackPaneAfterRemoval(panes, '%2', 1)?.id).toBe('2');
     expect(getFallbackPaneAfterRemoval(panes.slice(0, 2), '%3', 5)?.id).toBe('2');
     expect(getFallbackPaneAfterRemoval([], '%1', 0)).toBeUndefined();
+  });
+
+  it('skips hidden panes when choosing a fallback after removal', () => {
+    expect(
+      getFallbackPaneAfterRemoval([pane('1'), pane('2', true), pane('3')], '%removed', 1)?.id
+    ).toBe('3');
+    expect(
+      getFallbackPaneAfterRemoval([pane('1'), pane('2', true), pane('3', true)], '%removed', 2)?.id
+    ).toBe('1');
+    expect(getFallbackPaneAfterRemoval([pane('1', true), pane('2', true)], '%1', 0)).toBeUndefined();
   });
 });

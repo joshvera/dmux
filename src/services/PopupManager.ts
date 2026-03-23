@@ -118,6 +118,39 @@ export class PopupManager {
     this.trackProjectActivity = config.trackProjectActivity
   }
 
+  private clampFocusPopupSize(
+    availableWidth: number,
+    availableHeight: number,
+    preferredWidth: number,
+    preferredHeight: number
+  ): { width: number; height: number } {
+    const width = Math.max(1, Math.min(preferredWidth, availableWidth - 4))
+    const height = Math.max(1, Math.min(preferredHeight, availableHeight - 2))
+    return { width, height }
+  }
+
+  private async getFocusPopupSize(
+    preferredWidth: number,
+    preferredHeight: number
+  ): Promise<{ width: number; height: number }> {
+    try {
+      const dims = await TmuxService.getInstance().getAllDimensions()
+      return this.clampFocusPopupSize(
+        dims.clientWidth,
+        dims.clientHeight,
+        preferredWidth,
+        preferredHeight
+      )
+    } catch {
+      return this.clampFocusPopupSize(
+        this.config.terminalWidth,
+        this.config.terminalHeight,
+        preferredWidth,
+        preferredHeight
+      )
+    }
+  }
+
   /**
    * Get the popup script path from project root
    */
@@ -378,24 +411,17 @@ export class PopupManager {
     if (!this.checkPopupSupport()) return null
 
     try {
-      const tmuxService = TmuxService.getInstance()
-      let popupWidth = 96
-      let popupHeight = Math.max(18, Math.floor(this.config.terminalHeight * 0.88))
-
-      try {
-        const dims = await tmuxService.getAllDimensions()
-        popupWidth = Math.max(60, Math.min(dims.clientWidth - 4, 110))
-        popupHeight = Math.max(18, Math.min(dims.clientHeight - 2, Math.floor(dims.clientHeight * 0.92)))
-      } catch {
-        popupWidth = Math.max(60, Math.min(this.config.terminalWidth - 4, 96))
-      }
+      const popupSize = await this.getFocusPopupSize(
+        110,
+        Math.floor(this.config.terminalHeight * 0.92)
+      )
 
       const result = await this.launchPopup<FocusNavigatorPopupResult>(
         "focusNavigatorPopup.js",
         [],
         {
-          width: popupWidth,
-          height: popupHeight,
+          width: popupSize.width,
+          height: popupSize.height,
           title: "Focus Navigator",
           positioning: "focus",
         },
@@ -418,7 +444,6 @@ export class PopupManager {
     if (!this.checkPopupSupport()) return null
 
     try {
-      const tmuxService = TmuxService.getInstance()
       const excludedActions = new Set<PaneMenuActionId>([
         PaneAction.VIEW,
         PaneAction.CLOSE,
@@ -433,27 +458,14 @@ export class PopupManager {
         this.config.projectRoot
       ).filter((action) => !excludedActions.has(action.id))
       const baseHeight = Math.min(28, Math.max(16, actions.length + 8))
-      let popupWidth = 96
-      let popupHeight = baseHeight
-
-      try {
-        const dims = await tmuxService.getAllDimensions()
-        popupWidth = Math.min(96, Math.max(20, dims.clientWidth - 4))
-        popupHeight = Math.min(baseHeight, Math.max(8, dims.clientHeight - 2))
-      } catch {
-        popupWidth = Math.min(96, Math.max(20, this.config.terminalWidth - 4))
-        popupHeight = Math.min(
-          baseHeight,
-          Math.max(8, this.config.terminalHeight - 2)
-        )
-      }
+      const popupSize = await this.getFocusPopupSize(96, baseHeight)
 
       const result = await this.launchPopup<string>(
         "focusActionSheetPopup.js",
         [getPaneDisplayName(pane), JSON.stringify(actions)],
         {
-          width: popupWidth,
-          height: popupHeight,
+          width: popupSize.width,
+          height: popupSize.height,
           title: `Actions: ${getPaneDisplayName(pane)}`,
           positioning: "focus",
         },

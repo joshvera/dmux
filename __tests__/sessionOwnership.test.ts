@@ -1,7 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { classifySessionOwnership } from '../src/utils/sessionOwnership.js';
 
 describe('sessionOwnership', () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const tempDir of tempDirs.splice(0)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('publishes metadata for dmux-prefixed host sessions without a managed-session context', () => {
     const classification = classifySessionOwnership({
       sessionName: 'dmux-devv',
@@ -69,6 +80,30 @@ describe('sessionOwnership', () => {
         sessionProjectRoot: '/Users/vera/github/dmux',
       },
       currentProjectRoot: '/Users/vera/github/dmux',
+    });
+
+    expect(classification.isForeignManagedSession).toBe(false);
+    expect(classification.shouldOfferAttachToCurrentSession).toBe(false);
+    expect(classification.shouldPublishRuntimeMetadata).toBe(true);
+  });
+
+  it('treats canonical-equivalent project roots as the same project', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dmux-session-ownership-'));
+    tempDirs.push(tempDir);
+
+    const realProjectRoot = path.join(tempDir, 'real-project');
+    const linkedProjectRoot = path.join(tempDir, 'linked-project');
+    fs.mkdirSync(realProjectRoot, { recursive: true });
+    fs.symlinkSync(realProjectRoot, linkedProjectRoot);
+
+    const classification = classifySessionOwnership({
+      sessionName: 'dmux-devv',
+      currentPaneId: '%17',
+      controlPaneId: '%17',
+      sessionContext: {
+        sessionProjectRoot: linkedProjectRoot,
+      },
+      currentProjectRoot: realProjectRoot,
     });
 
     expect(classification.isForeignManagedSession).toBe(false);

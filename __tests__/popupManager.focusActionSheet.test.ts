@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PopupManager, type PopupManagerConfig } from '../src/services/PopupManager.js';
 import { TmuxService } from '../src/services/TmuxService.js';
 import { createCanonicalFocusModeFixture } from './fixtures/focusMode.js';
@@ -25,6 +25,10 @@ function createPopupManager(): PopupManager {
 }
 
 describe('PopupManager launchFocusActionSheetPopup', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('uses pane menu actions as the source of truth while filtering primary and legacy actions', async () => {
     const manager = createPopupManager() as any;
     const fixture = createCanonicalFocusModeFixture({ includeRunningProcess: true });
@@ -77,5 +81,29 @@ describe('PopupManager launchFocusActionSheetPopup', () => {
     expect(popupOptions.width).toBeLessThanOrEqual(76);
     expect(popupOptions.height).toBeGreaterThanOrEqual(16);
     expect(getAllDimensions).toHaveBeenCalledOnce();
+  });
+
+  it('never exceeds the available client area on very small clients', async () => {
+    const manager = createPopupManager() as any;
+    const fixture = createCanonicalFocusModeFixture({ includeRunningProcess: true });
+    const pane = fixture.selectedPane;
+
+    manager.checkPopupSupport = vi.fn(() => true);
+    manager.launchPopup = vi.fn().mockResolvedValue({
+      success: true,
+      data: 'toggle_visibility',
+    });
+    vi.spyOn(TmuxService, 'getInstance').mockReturnValue({
+      getAllDimensions: vi.fn().mockResolvedValue({
+        clientWidth: 22,
+        clientHeight: 9,
+      }),
+    } as unknown as TmuxService);
+
+    await manager.launchFocusActionSheetPopup(pane, fixture.panes);
+
+    const [, , popupOptions] = manager.launchPopup.mock.calls[0];
+    expect(popupOptions.width).toBe(18);
+    expect(popupOptions.height).toBe(7);
   });
 });

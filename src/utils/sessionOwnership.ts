@@ -1,3 +1,4 @@
+import fs from 'fs';
 import path from 'path';
 
 export interface SessionOwnershipContext {
@@ -20,7 +21,11 @@ export interface SessionOwnershipClassification {
 }
 
 function normalizeProjectRoot(projectRoot: string): string {
-  return path.resolve(projectRoot);
+  try {
+    return fs.realpathSync.native(projectRoot);
+  } catch {
+    return path.resolve(projectRoot);
+  }
 }
 
 export function classifySessionOwnership({

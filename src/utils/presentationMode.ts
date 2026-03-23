@@ -40,9 +40,37 @@ export function getFallbackPaneAfterRemoval(
 
   const removedIndex = panes.findIndex((pane) => pane.paneId === removedPaneId);
   if (removedIndex === -1) {
-    return panes[Math.min(selectedIndex, panes.length - 1)];
+    const visibleSelectedPane = panes[Math.min(selectedIndex, panes.length - 1)];
+    if (visibleSelectedPane && !visibleSelectedPane.hidden) {
+      return visibleSelectedPane;
+    }
+
+    for (let index = Math.min(selectedIndex, panes.length - 1); index < panes.length; index += 1) {
+      if (!panes[index]?.hidden) {
+        return panes[index];
+      }
+    }
+
+    for (let index = Math.min(selectedIndex, panes.length - 1) - 1; index >= 0; index -= 1) {
+      if (!panes[index]?.hidden) {
+        return panes[index];
+      }
+    }
+
+    return undefined;
   }
 
-  const fallbackIndex = Math.min(removedIndex, panes.length - 1);
-  return panes[fallbackIndex];
+  for (let index = Math.min(removedIndex, panes.length - 1); index < panes.length; index += 1) {
+    if (!panes[index]?.hidden) {
+      return panes[index];
+    }
+  }
+
+  for (let index = Math.min(removedIndex, panes.length - 1) - 1; index >= 0; index -= 1) {
+    if (!panes[index]?.hidden) {
+      return panes[index];
+    }
+  }
+
+  return undefined;
 }
