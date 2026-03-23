@@ -24,7 +24,7 @@ describe('presentationMode helpers', () => {
     expect(resolvePresentationMode('unknown')).toBe('grid');
   });
 
-  it('prefers the selected pane, then a visible pane, then the first pane', () => {
+  it('prefers the selected visible pane, then falls back to the first visible pane', () => {
     const panes = [
       pane('1', true),
       pane('2', false),
@@ -33,7 +33,8 @@ describe('presentationMode helpers', () => {
 
     expect(getPresentationTargetPane(panes, 2)?.id).toBe('3');
     expect(getPresentationTargetPane(panes, 9)?.id).toBe('2');
-    expect(getPresentationTargetPane([pane('4', true)], 3)?.id).toBe('4');
+    expect(getPresentationTargetPane(panes, 0)?.id).toBe('2');
+    expect(getPresentationTargetPane([pane('4', true)], 3)).toBeUndefined();
   });
 
   it('returns the nearest remaining pane after removal', () => {

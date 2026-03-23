@@ -982,7 +982,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     if (effectivePresentationMode === "single-pane") {
       const visiblePaneCount = panes.filter((pane) => !pane.hidden).length
-      if (visiblePaneCount > 1 || targetPane.hidden) {
+      const selectedPane = panes[selectedIndex]
+      if (visiblePaneCount > 1 || targetPane.hidden || selectedPane?.hidden) {
         void isolatePane(targetPane, { suppressStatus: true })
       }
       return
@@ -1022,10 +1023,41 @@ export function useInputHandling(params: UseInputHandlingParams) {
         selectedPane
       )
 
+      if (result.hidden) {
+        const fallbackPane = getPresentationTargetPane(
+          result.updatedPanes,
+          selectedIndex
+        )
+
+        if (fallbackPane && fallbackPane.id !== selectedPane.id) {
+          const fallbackIndex = result.updatedPanes.findIndex(
+            (pane) => pane.id === fallbackPane.id
+          )
+
+          if (fallbackIndex >= 0) {
+            setSelectedIndex(fallbackIndex)
+          }
+
+          presentationSyncKeyRef.current = ""
+
+          if (effectivePresentationMode === "focus") {
+            const tmuxService = TmuxService.getInstance()
+            const alreadyZoomed = await tmuxService.isWindowZoomed(
+              fallbackPane.paneId
+            )
+            await tmuxService.selectPane(
+              fallbackPane.paneId,
+              alreadyZoomed ? { preserveZoom: true } : undefined
+            )
+            await tmuxService.setPaneZoom(fallbackPane.paneId, true)
+          }
+        }
+      }
+
       setStatusMessage(
         result.hidden
-          ? `Showing ${getPaneDisplayName(selectedPane)}`
-          : `Hid ${getPaneDisplayName(selectedPane)}`
+          ? `Hid ${getPaneDisplayName(selectedPane)}`
+          : `Showing ${getPaneDisplayName(selectedPane)}`
       )
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
     } catch (error: any) {

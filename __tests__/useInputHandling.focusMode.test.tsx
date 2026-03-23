@@ -326,6 +326,249 @@ describe('useInputHandling focus mode', () => {
     unmount();
   });
 
+  it('falls back to another visible pane in focus mode instead of re-showing the hidden selection', async () => {
+    const setSelectedIndex = vi.fn();
+    const settingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => 'global'),
+    };
+
+    const { rerender, unmount } = render(
+      <Harness
+        panes={[pane('1'), pane('2')]}
+        selectedIndex={0}
+        presentationMode="focus"
+        popupManager={{}}
+        settingsManager={settingsManager}
+        setSelectedIndex={setSelectedIndex}
+      />
+    );
+
+    await sleep(40);
+    tmuxServiceMock.selectPane.mockClear();
+    tmuxServiceMock.setPaneZoom.mockClear();
+    tmuxServiceMock.joinPaneToTarget.mockClear();
+    setSelectedIndex.mockClear();
+
+    rerender(
+      <Harness
+        panes={[pane('1', { hidden: true }), pane('2')]}
+        selectedIndex={0}
+        presentationMode="focus"
+        popupManager={{}}
+        settingsManager={settingsManager}
+        setSelectedIndex={setSelectedIndex}
+      />
+    );
+
+    await sleep(60);
+
+    expect(setSelectedIndex).toHaveBeenCalledWith(1);
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%2', undefined);
+    expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%2', true);
+    expect(
+      tmuxServiceMock.joinPaneToTarget.mock.calls.some(
+        ([sourcePaneId]) => sourcePaneId === '%1'
+      )
+    ).toBe(false);
+
+    unmount();
+  });
+
+  it('reanchors focus on a visible fallback immediately after hiding the active pane', async () => {
+    const setSelectedIndex = vi.fn();
+    const savePanes = vi.fn(async () => {});
+    const loadPanes = vi.fn(async () => {});
+    const settingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => 'global'),
+    };
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane('1'), pane('2')]}
+        selectedIndex={1}
+        presentationMode="focus"
+        popupManager={{}}
+        settingsManager={settingsManager}
+        setSelectedIndex={setSelectedIndex}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+      />
+    );
+
+    await sleep(40);
+    tmuxServiceMock.breakPaneToWindow.mockClear();
+    tmuxServiceMock.selectPane.mockClear();
+    tmuxServiceMock.setPaneZoom.mockClear();
+    setSelectedIndex.mockClear();
+
+    stdin.write('h');
+    await sleep(80);
+
+    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith('%2', 'dmux-hidden-2');
+    expect(setSelectedIndex).toHaveBeenCalledWith(0);
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1', undefined);
+    expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%1', true);
+    expect(savePanes).toHaveBeenCalledWith([
+      expect.objectContaining({ id: '1' }),
+      expect.objectContaining({ id: '2', hidden: true }),
+    ]);
+    expect(loadPanes).toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('updates stale single-pane selection to another visible pane without re-showing the hidden one', async () => {
+    const setSelectedIndex = vi.fn();
+    const settingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => 'global'),
+    };
+
+    const { rerender, unmount } = render(
+      <Harness
+        panes={[pane('1'), pane('2')]}
+        selectedIndex={0}
+        presentationMode="single-pane"
+        popupManager={{}}
+        settingsManager={settingsManager}
+        setSelectedIndex={setSelectedIndex}
+      />
+    );
+
+    await sleep(40);
+    tmuxServiceMock.breakPaneToWindow.mockClear();
+    tmuxServiceMock.joinPaneToTarget.mockClear();
+    tmuxServiceMock.selectPane.mockClear();
+    setSelectedIndex.mockClear();
+
+    rerender(
+      <Harness
+        panes={[pane('1', { hidden: true }), pane('2')]}
+        selectedIndex={0}
+        presentationMode="single-pane"
+        popupManager={{}}
+        settingsManager={settingsManager}
+        setSelectedIndex={setSelectedIndex}
+      />
+    );
+
+    await sleep(60);
+
+    expect(setSelectedIndex).toHaveBeenCalledWith(1);
+    expect(
+      tmuxServiceMock.joinPaneToTarget.mock.calls.some(
+        ([sourcePaneId]) => sourcePaneId === '%1'
+      )
+    ).toBe(false);
+    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('does not re-focus hidden panes when every pane is hidden', async () => {
+    const setSelectedIndex = vi.fn();
+    const settingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => 'global'),
+    };
+
+    const { rerender, unmount } = render(
+      <Harness
+        panes={[pane('1'), pane('2')]}
+        selectedIndex={0}
+        presentationMode="focus"
+        popupManager={{}}
+        settingsManager={settingsManager}
+        setSelectedIndex={setSelectedIndex}
+      />
+    );
+
+    await sleep(40);
+    tmuxServiceMock.selectPane.mockClear();
+    tmuxServiceMock.setPaneZoom.mockClear();
+    tmuxServiceMock.joinPaneToTarget.mockClear();
+    setSelectedIndex.mockClear();
+
+    rerender(
+      <Harness
+        panes={[pane('1', { hidden: true }), pane('2', { hidden: true })]}
+        selectedIndex={0}
+        presentationMode="focus"
+        popupManager={{}}
+        settingsManager={settingsManager}
+        setSelectedIndex={setSelectedIndex}
+      />
+    );
+
+    await sleep(60);
+
+    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalled();
+    expect(tmuxServiceMock.setPaneZoom).not.toHaveBeenCalled();
+    expect(tmuxServiceMock.joinPaneToTarget).not.toHaveBeenCalled();
+    expect(setSelectedIndex).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('reports the corrected hide/show status messages', async () => {
+    const hideStatus = vi.fn();
+    const showStatus = vi.fn();
+    const settingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => 'global'),
+    };
+    const savePanes = vi.fn(async () => {});
+    const loadPanes = vi.fn(async () => {});
+
+    const hiddenPane = pane('1', { hidden: true });
+    const visiblePane = pane('2');
+
+    const { stdin: hideStdin, unmount: unmountHide } = render(
+      <Harness
+        panes={[pane('1')]}
+        presentationMode="grid"
+        popupManager={{}}
+        settingsManager={settingsManager}
+        setStatusMessage={hideStatus}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+      />
+    );
+
+    await sleep(40);
+    hideStatus.mockClear();
+    hideStdin.write('h');
+    await sleep(60);
+
+    expect(hideStatus).toHaveBeenCalledWith('Hid pane-1');
+
+    unmountHide();
+
+    const { stdin: showStdin, unmount: unmountShow } = render(
+      <Harness
+        panes={[hiddenPane, visiblePane]}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={{}}
+        settingsManager={settingsManager}
+        setStatusMessage={showStatus}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+      />
+    );
+
+    await sleep(40);
+    showStatus.mockClear();
+    showStdin.write('h');
+    await sleep(60);
+
+    expect(showStatus).toHaveBeenCalledWith('Showing pane-1');
+
+    unmountShow();
+  });
+
   it('keeps the first newly created agent pane active after a focus navigator action reloads panes', async () => {
     const setSelectedIndex = vi.fn();
     const createdPanes = [pane('2'), pane('3')];

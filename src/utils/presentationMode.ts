@@ -21,9 +21,12 @@ export function getPresentationTargetPane(
   panes: DmuxPane[],
   selectedIndex: number
 ): DmuxPane | undefined {
-  return panes[selectedIndex]
-    || panes.find((pane) => !pane.hidden)
-    || panes[0];
+  const selectedPane = panes[selectedIndex];
+  if (selectedPane && !selectedPane.hidden) {
+    return selectedPane;
+  }
+
+  return panes.find((pane) => !pane.hidden);
 }
 
 export function getFallbackPaneAfterRemoval(
