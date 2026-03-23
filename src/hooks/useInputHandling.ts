@@ -753,9 +753,14 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setSelectedIndex(targetIndex)
     }
 
-    await TmuxService.getInstance().selectPane(resolvedTargetPane.paneId, {
-      preserveZoom: true,
-    })
+    const tmuxService = TmuxService.getInstance()
+    const alreadyZoomed = await tmuxService.isWindowZoomed(resolvedTargetPane.paneId)
+
+    await tmuxService.selectPane(
+      resolvedTargetPane.paneId,
+      alreadyZoomed ? { preserveZoom: true } : undefined
+    )
+    await tmuxService.setPaneZoom(resolvedTargetPane.paneId, true)
 
     if (!options.suppressStatus) {
       setStatusMessage(`Focused ${getPaneDisplayName(resolvedTargetPane)}`)
@@ -813,11 +818,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
     if (effectivePresentationMode === "focus") {
       try {
         const zoomTargetPaneId = targetPane?.paneId || controlPaneId
-        if (
-          zoomTargetPaneId
-          && await tmuxService.isWindowZoomed(zoomTargetPaneId)
-        ) {
-          await tmuxService.togglePaneZoom(zoomTargetPaneId)
+        if (zoomTargetPaneId) {
+          await tmuxService.setPaneZoom(zoomTargetPaneId, false)
         }
       } catch {
         // Ignore - tmux may already have unzoomed the window

@@ -647,6 +647,15 @@ export class TmuxService {
     );
   }
 
+  async setPaneZoom(targetPaneId: string | undefined, zoomed: boolean): Promise<void> {
+    const currentlyZoomed = await this.isWindowZoomed(targetPaneId);
+    if (currentlyZoomed === zoomed) {
+      return;
+    }
+
+    await this.togglePaneZoom(targetPaneId);
+  }
+
   /**
    * Get the current foreground command for a pane as reported by tmux.
    */
@@ -846,17 +855,24 @@ export class TmuxService {
     horizontal: boolean = true,
     preserveZoom: boolean = false
   ): Promise<void> {
+    const shouldRestoreZoom = preserveZoom
+      ? await this.isWindowZoomed(targetPaneId)
+      : false;
+
     await this.executeWithRetry(
       () => {
         const direction = horizontal ? '-h' : '-v';
-        const zoomFlag = preserveZoom ? ' -Z' : '';
         this.execute(
-          `tmux join-pane -d${zoomFlag} ${direction} -s '${sourcePaneId}' -t '${targetPaneId}'`
+          `tmux join-pane -d ${direction} -s '${sourcePaneId}' -t '${targetPaneId}'`
         );
       },
       RetryStrategy.FAST,
       `joinPaneToTarget(${sourcePaneId})`
     );
+
+    if (shouldRestoreZoom) {
+      await this.setPaneZoom(targetPaneId, true);
+    }
   }
 
   /**

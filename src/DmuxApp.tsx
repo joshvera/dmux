@@ -941,10 +941,14 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         const targetPane = panes.find(p => p.id === result.targetPaneId)
         if (targetPane) {
           try {
-            await TmuxService.getInstance().selectPane(
+            const tmuxService = TmuxService.getInstance()
+            await tmuxService.selectPane(
               targetPane.paneId,
               presentationMode === "focus" ? { preserveZoom: true } : undefined
             )
+            if (presentationMode === "focus") {
+              await tmuxService.setPaneZoom(targetPane.paneId, true)
+            }
           } catch {}
         }
       }
@@ -991,6 +995,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
       if (presentationMode === "focus") {
         try {
+          const tmuxService = TmuxService.getInstance()
           const fallbackPane = getFallbackPaneAfterRemoval(
             updatedPanes,
             paneId,
@@ -1004,14 +1009,14 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
             if (fallbackIndex >= 0) {
               setSelectedIndex(fallbackIndex)
             }
-            await TmuxService.getInstance().selectPane(fallbackPane.paneId, {
+            await tmuxService.selectPane(fallbackPane.paneId, {
               preserveZoom: true,
             })
+            await tmuxService.setPaneZoom(fallbackPane.paneId, true)
           } else if (
             controlPaneId
-            && await TmuxService.getInstance().isWindowZoomed(controlPaneId)
           ) {
-            await TmuxService.getInstance().togglePaneZoom(controlPaneId)
+            await tmuxService.setPaneZoom(controlPaneId, false)
           }
         } catch {
           // Ignore - pane/window may already be gone

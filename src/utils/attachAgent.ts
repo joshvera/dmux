@@ -161,6 +161,9 @@ export async function attachAgentToWorktree(
 
   // Keep focus on the new pane
   await tmuxService.selectPane(paneInfo, { preserveZoom });
+  if (preserveZoom) {
+    await tmuxService.setPaneZoom(paneInfo, true);
+  }
 
   // Build the sibling pane object — shares worktree/branch with target
   const newPane: DmuxPane = {

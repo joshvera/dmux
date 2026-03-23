@@ -1,0 +1,51 @@
+import path from 'path';
+
+export interface SessionOwnershipContext {
+  sessionProjectRoot: string;
+}
+
+export interface SessionOwnershipInput {
+  sessionName?: string | null;
+  currentPaneId?: string | null;
+  controlPaneId?: string | null;
+  sessionContext?: SessionOwnershipContext | null;
+  currentProjectRoot: string;
+}
+
+export interface SessionOwnershipClassification {
+  isForeignManagedSession: boolean;
+  ownsCurrentSession: boolean;
+  shouldOfferAttachToCurrentSession: boolean;
+  shouldPublishRuntimeMetadata: boolean;
+}
+
+function normalizeProjectRoot(projectRoot: string): string {
+  return path.resolve(projectRoot);
+}
+
+export function classifySessionOwnership({
+  sessionName,
+  currentPaneId,
+  controlPaneId,
+  sessionContext,
+  currentProjectRoot,
+}: SessionOwnershipInput): SessionOwnershipClassification {
+  const isForeignManagedSession =
+    !!sessionName
+    && !!sessionContext?.sessionProjectRoot
+    && normalizeProjectRoot(sessionContext.sessionProjectRoot)
+      !== normalizeProjectRoot(currentProjectRoot);
+
+  const ownsCurrentSession =
+    !!sessionName
+    && !!currentPaneId
+    && !!controlPaneId
+    && currentPaneId === controlPaneId;
+
+  return {
+    isForeignManagedSession,
+    ownsCurrentSession,
+    shouldOfferAttachToCurrentSession: isForeignManagedSession,
+    shouldPublishRuntimeMetadata: ownsCurrentSession && !isForeignManagedSession,
+  };
+}

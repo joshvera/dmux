@@ -49,6 +49,10 @@ import {
   showTmuxMessage,
 } from './utils/remotePaneActions.js';
 import {
+  classifySessionOwnership,
+  type SessionOwnershipClassification,
+} from './utils/sessionOwnership.js';
+import {
   resolveEnabledAgentsSelection,
   type AgentName,
 } from './utils/agentLaunch.js';
@@ -197,6 +201,10 @@ class Dmux {
     const currentTmuxSessionName = inTmux
       ? this.getCurrentTmuxSessionName()
       : null;
+    // TMUX_PANE identifies the pane running this dmux process even when tmux focus moves elsewhere.
+    const currentTmuxPaneId = inTmux
+      ? (process.env.TMUX_PANE || getFocusedTmuxPaneId())
+      : null;
     const sessionNameForCurrentTmux = currentTmuxSessionName || this.sessionName;
 
     if (inTmux) {
@@ -208,8 +216,8 @@ class Dmux {
     if (
       inTmux &&
       currentTmuxSessionName &&
-      currentTmuxSessionName.startsWith('dmux-') &&
-      currentTmuxSessionName !== this.sessionName
+      this.classifySessionOwnership(currentTmuxSessionName, currentTmuxPaneId)
+        .shouldOfferAttachToCurrentSession
     ) {
       const shouldAttachToCurrent = await this.promptYesNo(
         `Detected active dmux session '${currentTmuxSessionName}'. Add project '${this.projectName}' to this session's sidebar?`,
@@ -600,9 +608,12 @@ class Dmux {
     }
 
     const metadataSessionName = currentTmuxSessionName || this.getCurrentTmuxSessionName() || this.sessionName;
-    const shouldPublishMetadata =
-      !metadataSessionName.startsWith('dmux-') || metadataSessionName === this.sessionName;
-    if (shouldPublishMetadata) {
+    const sessionOwnership = this.classifySessionOwnership(
+      metadataSessionName,
+      process.env.TMUX_PANE || getFocusedTmuxPaneId(),
+      controlPaneId
+    );
+    if (sessionOwnership.shouldPublishRuntimeMetadata) {
       this.publishSessionMetadata(metadataSessionName, controlPaneId);
       this.clearRemotePaneModeIndicators(metadataSessionName);
       this.setupRemotePaneActionBindings(metadataSessionName);
@@ -725,6 +736,24 @@ class Dmux {
     } catch {
       return null;
     }
+  }
+
+  private classifySessionOwnership(
+    sessionName: string | null,
+    currentPaneId: string | null,
+    controlPaneId?: string
+  ): SessionOwnershipClassification {
+    const sessionContext = sessionName
+      ? this.getExistingSessionContext(sessionName)
+      : null;
+
+    return classifySessionOwnership({
+      sessionName,
+      currentPaneId,
+      controlPaneId,
+      sessionContext,
+      currentProjectRoot: this.projectRoot,
+    });
   }
 
   private publishSessionMetadata(sessionName: string, controlPaneId?: string): void {

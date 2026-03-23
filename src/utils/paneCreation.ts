@@ -571,6 +571,9 @@ export async function createPane(
 
   // Keep focus on the new pane
   await tmuxService.selectPane(paneInfo, { preserveZoom });
+  if (preserveZoom) {
+    await tmuxService.setPaneZoom(paneInfo, true);
+  }
 
   // Create the pane object
   const newPane: DmuxPane = {
