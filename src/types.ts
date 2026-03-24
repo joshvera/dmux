@@ -88,6 +88,8 @@ export interface ProjectSettings {
   firstDevRun?: boolean;   // Track if dev has been run before
 }
 
+export type PresentationMode = 'grid' | 'single-pane' | 'focus';
+
 export interface DmuxSettings {
   // Agent permission mode
   // '' = agent default behavior (usually prompts for permissions)
@@ -117,6 +119,8 @@ export interface DmuxSettings {
   minPaneWidth?: number;
   // Preferred maximum content pane width in characters
   maxPaneWidth?: number;
+  // Overall pane presentation preset
+  presentationMode?: PresentationMode;
 }
 
 export type SettingsScope = 'global' | 'project';

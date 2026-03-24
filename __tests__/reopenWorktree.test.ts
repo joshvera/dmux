@@ -14,7 +14,14 @@ const tmuxServiceMock = vi.hoisted(() => ({
   sendShellCommand: vi.fn(async () => {}),
   sendTmuxKeys: vi.fn(async () => {}),
   selectPane: vi.fn(async () => {}),
+  setPaneZoom: vi.fn(async () => {}),
 }));
+
+const getSettingsMock = vi.hoisted(() => vi.fn(() => ({
+  permissionMode: 'plan',
+  enabledAgents: ['claude', 'codex'],
+  enableAutopilotByDefault: false,
+})));
 
 const splitPaneMock = vi.hoisted(() => vi.fn(() => '%1'));
 const setupSidebarLayoutMock = vi.hoisted(() => vi.fn(() => '%1'));
@@ -58,11 +65,7 @@ vi.mock('../src/utils/layoutManager.js', () => ({
 
 vi.mock('../src/utils/settingsManager.js', () => ({
   SettingsManager: vi.fn(() => ({
-    getSettings: vi.fn(() => ({
-      permissionMode: 'plan',
-      enabledAgents: ['claude', 'codex'],
-      enableAutopilotByDefault: false,
-    })),
+    getSettings: getSettingsMock,
   })),
 }));
 
@@ -99,6 +102,11 @@ describe('reopenWorktree', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fsMock.readFileSync.mockReturnValue(JSON.stringify({ controlPaneId: '%0' }));
+    getSettingsMock.mockReturnValue({
+      permissionMode: 'plan',
+      enabledAgents: ['claude', 'codex'],
+      enableAutopilotByDefault: false,
+    });
     readWorktreeMetadataMock.mockReturnValue({
       agent: 'codex',
       permissionMode: 'bypassPermissions',
@@ -129,5 +137,31 @@ describe('reopenWorktree', () => {
     );
     expect(result.pane.agent).toBe('codex');
     expect(result.pane.permissionMode).toBe('bypassPermissions');
+  });
+
+  it('keeps the reopened pane zoomed in focus mode', async () => {
+    getSettingsMock.mockReturnValue({
+      permissionMode: 'plan',
+      enabledAgents: ['claude', 'codex'],
+      enableAutopilotByDefault: false,
+      presentationMode: 'focus',
+    });
+
+    const { reopenWorktree } = await import('../src/utils/reopenWorktree.js');
+
+    await reopenWorktree({
+      slug: 'reopen-me',
+      worktreePath: '/repo/.dmux/worktrees/reopen-me',
+      projectRoot: '/repo',
+      existingPanes: [],
+      sessionProjectRoot: '/repo',
+      sessionConfigPath: '/repo/.dmux/dmux.config.json',
+    });
+
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1', {
+      preserveZoom: true,
+    });
+    expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%1', true);
+    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith('%0');
   });
 });

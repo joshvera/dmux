@@ -27,7 +27,47 @@ describe('SettingsManager defaults', () => {
       maxPaneWidth: 80,
       enabledNotificationSounds: ['default-system-sound'],
       showFooterTips: true,
+      presentationMode: 'grid',
     });
+  });
+
+  it('allows overriding presentationMode with a valid value', async () => {
+    vi.mock('fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('fs')>();
+      return {
+        ...actual,
+        existsSync: vi.fn(() => false),
+        readFileSync: vi.fn(),
+        writeFileSync: vi.fn(),
+        mkdirSync: vi.fn(),
+      };
+    });
+
+    const { SettingsManager } = await import('../src/utils/settingsManager.js');
+    const manager = new SettingsManager('/tmp/test-project');
+
+    manager.updateSetting('presentationMode', 'focus', 'project');
+    expect(manager.getSettings().presentationMode).toBe('focus');
+  });
+
+  it('rejects invalid presentationMode values', async () => {
+    vi.mock('fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('fs')>();
+      return {
+        ...actual,
+        existsSync: vi.fn(() => false),
+        readFileSync: vi.fn(),
+        writeFileSync: vi.fn(),
+        mkdirSync: vi.fn(),
+      };
+    });
+
+    const { SettingsManager } = await import('../src/utils/settingsManager.js');
+    const manager = new SettingsManager('/tmp/test-project');
+
+    expect(() =>
+      manager.updateSetting('presentationMode', 'zen' as any, 'global')
+    ).toThrow('Invalid presentationMode');
   });
 
   it('allows overriding showFooterTips', async () => {

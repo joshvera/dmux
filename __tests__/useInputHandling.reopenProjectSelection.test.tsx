@@ -41,7 +41,7 @@ function Harness({
   projectActionItems,
   popupManager,
   trackProjectActivity = vi.fn(async (work: () => unknown) => await work()),
-  handleReopenWorktree = vi.fn(),
+  handleReopenWorktree = vi.fn(async () => null),
   setStatusMessage = vi.fn(),
   saveSidebarProjects = vi.fn(async (projects) => projects),
 }: {
@@ -91,8 +91,8 @@ function Harness({
     setStatusMessage,
     copyNonGitFiles: vi.fn(),
     runCommandInternal: vi.fn(),
-    handlePaneCreationWithAgent: vi.fn(),
-    handleCreateChildWorktree: vi.fn(),
+    handlePaneCreationWithAgent: vi.fn(async () => []),
+    handleCreateChildWorktree: vi.fn(async () => []),
     handleReopenWorktree,
     setDevSourceFromPane: vi.fn(),
     savePanes: vi.fn(),
@@ -271,7 +271,7 @@ describe('useInputHandling reopen project selection', () => {
       lastModified: '2026-03-12T12:00:00.000Z',
     };
 
-    const handleReopenWorktree = vi.fn(async () => {});
+    const handleReopenWorktree = vi.fn(async () => null);
     const popupManager = {
       launchReopenWorktreePopup: vi.fn().mockResolvedValue({
         action: 'select',

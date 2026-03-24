@@ -18,6 +18,7 @@ import { recalculateAndApplyLayout } from './layoutManager.js';
 import { buildWorktreePaneTitle } from './paneTitle.js';
 import { SettingsManager } from './settingsManager.js';
 import { LogService } from '../services/LogService.js';
+import { resolvePresentationMode } from './presentationMode.js';
 
 export interface AttachAgentOptions {
   targetPane: DmuxPane;
@@ -74,6 +75,8 @@ export async function attachAgentToWorktree(
   const projectRoot = targetPane.projectRoot || sessionProjectRoot;
   const settingsManager = new SettingsManager(projectRoot);
   const settings = settingsManager.getSettings();
+  const presentationMode = resolvePresentationMode(settings.presentationMode);
+  const preserveZoom = presentationMode === 'focus';
 
   // Generate a unique slug for this sibling
   const slug = generateSiblingSlugForTargetPane(targetPane, existingPanes);
@@ -94,7 +97,11 @@ export async function attachAgentToWorktree(
   // Split from the last existing pane (standard grid placement)
   const dmuxPaneIds = existingPanes.map(p => p.paneId);
   const splitTarget = dmuxPaneIds[dmuxPaneIds.length - 1];
-  const paneInfo = splitPane({ targetPane: splitTarget, cwd: projectRoot });
+  const paneInfo = splitPane({
+    targetPane: splitTarget,
+    cwd: projectRoot,
+    preserveZoom,
+  });
 
   // Wait for pane to be ready
   const start = Date.now();
@@ -153,7 +160,10 @@ export async function attachAgentToWorktree(
   }
 
   // Keep focus on the new pane
-  await tmuxService.selectPane(paneInfo);
+  await tmuxService.selectPane(paneInfo, { preserveZoom });
+  if (preserveZoom) {
+    await tmuxService.setPaneZoom(paneInfo, true);
+  }
 
   // Build the sibling pane object — shares worktree/branch with target
   const newPane: DmuxPane = {
@@ -171,11 +181,13 @@ export async function attachAgentToWorktree(
   };
 
   // Switch focus back to control pane
-  await tmuxService.selectPane(originalPaneId);
+  if (!preserveZoom) {
+    await tmuxService.selectPane(originalPaneId);
+  }
 
   // Re-set the dmux sidebar title
   try {
-    await tmuxService.setPaneTitle(originalPaneId, "dmux");
+    await tmuxService.setPaneTitle(controlPaneId || originalPaneId, "dmux");
   } catch {
     // Ignore title errors
   }

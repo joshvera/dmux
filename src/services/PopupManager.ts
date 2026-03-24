@@ -11,7 +11,11 @@ import { LogService } from "./LogService.js"
 import { TmuxService } from "./TmuxService.js"
 import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
 import type { DmuxPane, ProjectSettings } from "../types.js"
-import { getPaneMenuActions, type PaneMenuActionId } from "../actions/index.js"
+import {
+  getPaneMenuActions,
+  PaneAction,
+  type PaneMenuActionId,
+} from "../actions/index.js"
 import { INPUT_IGNORE_DELAY } from "../constants/timing.js"
 import {
   getAgentDefinitions,
@@ -28,6 +32,10 @@ import { resolveDistPath } from "../utils/runtimePaths.js"
 import { getPaneProjectRoot } from "../utils/paneProject.js"
 import { getPaneDisplayName } from "../utils/paneTitle.js"
 import type { TrackProjectActivity } from "../types/activity.js"
+import type {
+  FocusNavigatorPopupData,
+  FocusNavigatorPopupResult,
+} from "../components/popups/focusNavigatorPopup.js"
 import type {
   ReopenWorktreePopupResult,
   ReopenWorktreePopupState,
@@ -47,11 +55,13 @@ export interface PopupManagerConfig {
   trackProjectActivity: TrackProjectActivity
 }
 
+export type BlankProjectActionId = "new-agent" | "terminal" | "reopen"
+
 interface PopupOptions {
   width?: number
   height?: number
   title: string
-  positioning?: "standard" | "centered" | "large" | "pane"
+  positioning?: "standard" | "centered" | "large" | "pane" | "focus"
   targetPaneId?: string
 }
 
@@ -108,6 +118,39 @@ export class PopupManager {
     this.setStatusMessage = setStatusMessage
     this.setIgnoreInput = setIgnoreInput
     this.trackProjectActivity = config.trackProjectActivity
+  }
+
+  private clampPopupSizeToClient(
+    availableWidth: number,
+    availableHeight: number,
+    preferredWidth: number,
+    preferredHeight: number
+  ): { width: number; height: number } {
+    const width = Math.max(1, Math.min(preferredWidth, availableWidth - 4))
+    const height = Math.max(1, Math.min(preferredHeight, availableHeight - 2))
+    return { width, height }
+  }
+
+  private async getClientFitPopupSize(
+    preferredWidth: number,
+    preferredHeight: number
+  ): Promise<{ width: number; height: number }> {
+    try {
+      const dims = await TmuxService.getInstance().getAllDimensions()
+      return this.clampPopupSizeToClient(
+        dims.clientWidth,
+        dims.clientHeight,
+        preferredWidth,
+        preferredHeight
+      )
+    } catch {
+      return this.clampPopupSizeToClient(
+        this.config.terminalWidth,
+        this.config.terminalHeight,
+        preferredWidth,
+        preferredHeight
+      )
+    }
   }
 
   /**
@@ -179,6 +222,8 @@ export class PopupManager {
             dims.clientWidth,
             dims.clientHeight
           )
+        } else if (options.positioning === "focus") {
+          positioning = POPUP_POSITIONING.fullyCentered()
         } else if (options.positioning === "centered") {
           positioning = POPUP_POSITIONING.centeredWithSidebar(
             this.config.sidebarWidth
@@ -355,6 +400,153 @@ export class PopupManager {
         }
       )
       return actionId as PaneMenuActionId | null
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchFocusNavigatorPopup(
+    data: FocusNavigatorPopupData,
+    projectRoot?: string
+  ): Promise<FocusNavigatorPopupResult | null> {
+    if (!this.checkPopupSupport()) return null
+
+    try {
+      const popupSize = await this.getClientFitPopupSize(
+        110,
+        Math.floor(this.config.terminalHeight * 0.92)
+      )
+
+      const result = await this.launchPopup<FocusNavigatorPopupResult>(
+        "focusNavigatorPopup.js",
+        [],
+        {
+          width: popupSize.width,
+          height: popupSize.height,
+          title: "Focus Navigator",
+          positioning: "focus",
+        },
+        data,
+        projectRoot
+      )
+
+      this.ignoreInputBriefly()
+      return this.handleResult(result)
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchFocusActionSheetPopup(
+    pane: DmuxPane,
+    panes: DmuxPane[]
+  ): Promise<PaneMenuActionId | null> {
+    if (!this.checkPopupSupport()) return null
+
+    try {
+      const excludedActions = new Set<PaneMenuActionId>([
+        PaneAction.VIEW,
+        PaneAction.CLOSE,
+        PaneAction.MERGE,
+        PaneAction.OPEN_OUTPUT,
+      ])
+      const actions = getPaneMenuActions(
+        pane,
+        panes,
+        this.config.projectSettings,
+        this.config.isDevMode,
+        this.config.projectRoot
+      ).filter((action) => !excludedActions.has(action.id))
+      const baseHeight = Math.min(28, Math.max(16, actions.length + 8))
+      const popupSize = await this.getClientFitPopupSize(96, baseHeight)
+
+      const result = await this.launchPopup<string>(
+        "focusActionSheetPopup.js",
+        [getPaneDisplayName(pane), JSON.stringify(actions)],
+        {
+          width: popupSize.width,
+          height: popupSize.height,
+          title: `Actions: ${getPaneDisplayName(pane)}`,
+          positioning: "focus",
+        },
+        undefined,
+        getPaneProjectRoot(pane, this.config.projectRoot)
+      )
+
+      this.ignoreInputBriefly()
+      const actionId = this.handleResult(
+        result,
+        (data) => {
+          LogService.getInstance().debug(`Focus action selected: ${data}`, "FocusActionSheet")
+          return data
+        },
+        (error) => {
+          LogService.getInstance().error(error, "FocusActionSheet")
+          this.showTempMessage(error)
+        }
+      )
+      return actionId as PaneMenuActionId | null
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchBlankProjectActionsPopup(
+    projectName: string,
+    projectRoot?: string
+  ): Promise<BlankProjectActionId | null> {
+    if (!this.checkPopupSupport()) return null
+
+    try {
+      const title = "Project Actions"
+      const message = `No dmux panes yet in ${projectName}. Choose an action.`
+      const options: Array<{
+        id: BlankProjectActionId
+        label: string
+        description: string
+        default?: boolean
+      }> = [
+        {
+          id: "new-agent",
+          label: "New agent",
+          description: "Create a new worktree pane",
+          default: true,
+        },
+        {
+          id: "terminal",
+          label: "New terminal",
+          description: "Open a shell pane in this project",
+        },
+        {
+          id: "reopen",
+          label: "Reopen worktree",
+          description: "Resume a closed branch in this project",
+        },
+      ]
+      const popupSize = await this.getClientFitPopupSize(70, 13)
+
+      const result = await this.launchPopup<BlankProjectActionId>(
+        "choicePopup.js",
+        [],
+        {
+          width: popupSize.width,
+          height: popupSize.height,
+          title,
+          positioning: "centered",
+        },
+        {
+          title,
+          message,
+          options,
+        },
+        projectRoot
+      )
+
+      this.ignoreInputBriefly()
+      return this.handleResult(result) as BlankProjectActionId | null
     } catch (error: any) {
       this.showTempMessage(`Failed to launch popup: ${error.message}`)
       return null
