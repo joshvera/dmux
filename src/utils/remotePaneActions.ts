@@ -289,8 +289,8 @@ export function buildRemotePaneActionBindingCommands(): string[] {
   );
 
   commands.push(
-    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} q detach-client -t "#{client_tty}"`,
-    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} C-c detach-client -t "#{client_tty}"`,
+    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} q detach-client`,
+    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} C-c detach-client`,
     `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} Escape switch-client -T root`,
     ...DETACH_CONFIRM_PASSTHROUGH_KEYS.map(
       (key) =>
