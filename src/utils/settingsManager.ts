@@ -180,7 +180,7 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
   {
     key: 'maxPaneWidth',
     label: 'Max Pane Width',
-    description: 'Global maximum content-pane width in characters before wrapping/spacer logic.',
+    description: 'Global maximum content-pane width in characters for multi-pane layouts before wrapping/spacer logic.',
     type: 'number',
     min: MIN_MAX_PANE_WIDTH,
     max: MAX_MAX_PANE_WIDTH,

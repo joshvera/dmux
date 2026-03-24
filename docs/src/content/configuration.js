@@ -105,7 +105,7 @@ export function render() {
       <tbody>
         <tr><td><strong>Type</strong></td><td><code>number</code></td></tr>
         <tr><td><strong>Default</strong></td><td><code>80</code></td></tr>
-        <tr><td><strong>Description</strong></td><td>Maximum content-pane width in characters. Controls when wrapping or spacer logic kicks in. Range: 40–300. This is a global-only setting (project overrides are ignored).</td></tr>
+        <tr><td><strong>Description</strong></td><td>Maximum content-pane width in characters for multi-pane layouts. Controls when wrapping or spacer logic kicks in. Range: 40–300. This is a global-only setting (project overrides are ignored).</td></tr>
       </tbody>
     </table>
 
