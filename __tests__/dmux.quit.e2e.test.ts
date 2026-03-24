@@ -126,7 +126,11 @@ describe.sequential("dmux quit runtime e2e", () => {
           "the secondary client to arm detach confirmation again"
         )
 
+        const detachAttemptOffset = await secondaryClient.markLog()
         await secondaryClient.sendInput("q")
+        expect((await secondaryClient.readLog()).slice(detachAttemptOffset)).not.toContain(
+          "Can't find client: #{client_tty}"
+        )
 
         await waitForCondition(
           async () => {
