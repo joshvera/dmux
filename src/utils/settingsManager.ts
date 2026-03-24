@@ -1,7 +1,11 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
-import type { DmuxSettings, SettingsScope, SettingDefinition } from '../types.js';
+import type {
+  DmuxSettings,
+  SettingsScope,
+  SettingDefinition,
+} from '../types.js';
 import {
   DEFAULT_MIN_PANE_WIDTH,
   DEFAULT_MAX_PANE_WIDTH,
@@ -24,6 +28,7 @@ import {
   isNotificationSoundId,
   type NotificationSoundId,
 } from './notificationSounds.js';
+import { isPresentationMode } from './presentationMode.js';
 
 const GLOBAL_SETTINGS_PATH = join(homedir(), '.dmux.global.json');
 const PERMISSION_MODES = ['', 'plan', 'acceptEdits', 'bypassPermissions'] as const;
@@ -72,6 +77,7 @@ const DEFAULT_SETTINGS: DmuxSettings = {
   enabledAgents: getDefaultEnabledAgents(),
   enabledNotificationSounds: getDefaultNotificationSoundSelection(),
   showFooterTips: true,
+  presentationMode: 'grid',
 };
 
 const AGENT_OPTIONS = getAgentDefinitions().map((agent) => ({
@@ -125,6 +131,17 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
     label: 'Show Footer Tips',
     description: 'Rotate short dmux tips in the footer. Disable this if you prefer a quieter sidebar.',
     type: 'boolean',
+  },
+  {
+    key: 'presentationMode',
+    label: 'Presentation Mode',
+    description: 'Choose between the default grid, a sidebar-visible single-pane view, or fullscreen focus mode.',
+    type: 'select',
+    options: [
+      { value: 'grid', label: 'Grid' },
+      { value: 'single-pane', label: 'Single Pane' },
+      { value: 'focus', label: 'Focus' },
+    ],
   },
   {
     key: 'useTmuxHooks',
@@ -305,6 +322,9 @@ export class SettingsManager {
     if (key === 'permissionMode' && typeof value === 'string' && !isPermissionMode(value)) {
       throw new Error(`Invalid permissionMode: "${value}"`);
     }
+    if (key === 'presentationMode' && !isPresentationMode(value)) {
+      throw new Error(`Invalid presentationMode: "${String(value)}"`);
+    }
     if (key === 'enabledAgents') {
       if (!Array.isArray(value)) {
         throw new Error('Invalid enabledAgents: expected an array of agent IDs');
@@ -377,6 +397,9 @@ export class SettingsManager {
   updateSettings(settings: Partial<DmuxSettings>, scope: SettingsScope): void {
     if (typeof settings.permissionMode === 'string' && !isPermissionMode(settings.permissionMode)) {
       throw new Error(`Invalid permissionMode: "${settings.permissionMode}"`);
+    }
+    if (settings.presentationMode !== undefined && !isPresentationMode(settings.presentationMode)) {
+      throw new Error(`Invalid presentationMode: "${String(settings.presentationMode)}"`);
     }
     if (settings.enabledAgents !== undefined) {
       if (!Array.isArray(settings.enabledAgents)) {

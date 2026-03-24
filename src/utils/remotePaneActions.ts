@@ -7,6 +7,7 @@ import { buildRemotePaneActionCommand } from './dmuxCommand.js';
 export const DMUX_CONTROLLER_PID_OPTION = '@dmux_controller_pid';
 export const DMUX_CONTROL_PANE_OPTION = '@dmux_control_pane';
 export const DMUX_REMOTE_PANE_ACTION_TABLE = 'dmux-pane-action';
+export const DMUX_DETACH_CONFIRM_TABLE = 'dmux-detach-confirm';
 export const DMUX_REMOTE_PANE_MODE_OPTION = '@dmux_remote_pane_mode';
 
 export const REMOTE_PANE_ACTION_SHORTCUTS = [
@@ -41,8 +42,43 @@ const LEGACY_REMOTE_TRIGGER_BINDINGS = [
   { key: 'M-D', noPrefix: true },
 ] as const;
 
+const DETACH_CONFIRM_PASSTHROUGH_KEYS = [
+  '?',
+  'j',
+  'm',
+  'x',
+  'a',
+  'b',
+  'f',
+  'A',
+  'h',
+  'H',
+  'P',
+  'r',
+  'S',
+  'n',
+  't',
+  'p',
+  'R',
+  'l',
+  's',
+  'e',
+  'L',
+  'Up',
+  'Down',
+  'Left',
+  'Right',
+  'Enter',
+  'Space',
+  'BSpace',
+] as const;
+
 function escapeForDoubleQuotes(value: string): string {
   return value.replace(/[\\$"`]/g, '\\$&');
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function sanitizeSessionName(sessionName: string): string {
@@ -130,6 +166,18 @@ export function getTmuxSessionOption(
   } catch {
     return null;
   }
+}
+
+export function getControlPaneRemoteActionGuardMessage(
+  controlPaneId: string | null,
+  targetPaneId: string,
+  shortcut: RemotePaneActionShortcut
+): string | null {
+  if (controlPaneId && controlPaneId === targetPaneId && shortcut !== 'm') {
+    return 'Focused pane is already the dmux control pane';
+  }
+
+  return null;
 }
 
 export function showTmuxMessage(message: string): void {
@@ -234,11 +282,24 @@ export async function drainRemotePaneActions(
 }
 
 export function buildRemotePaneActionBindingCommands(): string[] {
-  return REMOTE_MENU_TRIGGER_BINDINGS.map(({ key, noPrefix }) =>
+  const commands = REMOTE_MENU_TRIGGER_BINDINGS.map(({ key, noPrefix }) =>
     noPrefix
       ? `bind-key -n ${key} ${buildRunRemotePaneActionCommand('m')}`
-      : `bind-key ${key} ${buildRunRemotePaneActionCommand('m')}`
+  : `bind-key ${key} ${buildRunRemotePaneActionCommand('m')}`
   );
+
+  commands.push(
+    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} q detach-client -t "#{client_tty}"`,
+    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} C-c detach-client -t "#{client_tty}"`,
+    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} Escape switch-client -T root`,
+    ...DETACH_CONFIRM_PASSTHROUGH_KEYS.map(
+      (key) =>
+        `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} ${shellQuote(key)} switch-client -T root \\; send-keys -K ${shellQuote(key)}`
+    ),
+    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} Any switch-client -T root \\; send-keys -K`
+  );
+
+  return commands;
 }
 
 export function buildRemotePaneActionCleanupCommands(): string[] {
@@ -260,6 +321,23 @@ export function buildRemotePaneActionCleanupCommands(): string[] {
     ),
     buildSafeTmuxCommand(
       `unbind-key -T ${DMUX_REMOTE_PANE_ACTION_TABLE} Any`
+    ),
+    buildSafeTmuxCommand(
+      `unbind-key -T ${DMUX_DETACH_CONFIRM_TABLE} q`
+    ),
+    buildSafeTmuxCommand(
+      `unbind-key -T ${DMUX_DETACH_CONFIRM_TABLE} C-c`
+    ),
+    buildSafeTmuxCommand(
+      `unbind-key -T ${DMUX_DETACH_CONFIRM_TABLE} Escape`
+    ),
+    ...DETACH_CONFIRM_PASSTHROUGH_KEYS.map((key) =>
+      buildSafeTmuxCommand(
+        `unbind-key -T ${DMUX_DETACH_CONFIRM_TABLE} ${shellQuote(key)}`
+      )
+    ),
+    buildSafeTmuxCommand(
+      `unbind-key -T ${DMUX_DETACH_CONFIRM_TABLE} Any`
     )
   );
 

@@ -39,7 +39,7 @@ export const ShortcutsPopupApp: React.FC<ShortcutsPopupAppProps> = ({
   });
 
   const shortcuts = [
-    { key: 'Alt+Shift+M', description: 'Open the pane menu for the focused tmux pane' },
+    { key: 'Alt+Shift+M', description: 'Open the focused-pane menu or focus navigator' },
     { key: 'j', description: 'Jump to selected pane' },
     { key: 'm', description: 'Open pane menu' },
     { key: 'x', description: 'Close selected pane' },
@@ -62,7 +62,7 @@ export const ShortcutsPopupApp: React.FC<ShortcutsPopupAppProps> = ({
     { key: 's', description: 'Open settings' },
     { key: 'e', description: 'Manage hooks with AI (from this popup)' },
     ...(hasSidebarLayout ? [{ key: 'L', description: 'Reset sidebar layout' }] : []),
-    { key: 'q', description: 'Quit dmux' },
+    { key: 'q', description: 'Detach from dmux session' },
     { key: '↑↓←→', description: 'Navigate panes' },
     { key: 'Enter', description: 'Select / open menu' },
     { key: 'Esc', description: 'Cancel / close' },
@@ -86,7 +86,7 @@ export const ShortcutsPopupApp: React.FC<ShortcutsPopupAppProps> = ({
         ))}
 
         <Box marginTop={1}>
-          <Text dimColor>Press Alt+Shift+M in any focused pane to open that pane&apos;s menu without returning to the sidebar. Press e for hooks, or Esc/? to close</Text>
+          <Text dimColor>Press Alt+Shift+M in any focused pane to open pane actions without returning to the sidebar. In focus mode, it opens the fullscreen navigator. Press e for hooks, or Esc/? to close</Text>
         </Box>
       </Box>
     </PopupWrapper>
