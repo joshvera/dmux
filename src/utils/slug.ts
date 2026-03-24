@@ -3,7 +3,7 @@ import { execSync } from 'child_process';
 export const callClaudeCode = async (prompt: string): Promise<string | null> => {
   try {
     const result = execSync(
-      `echo "${prompt.replace(/"/g, '\\"')}" | claude --no-interactive --max-turns 1 2>/dev/null | head -n 5`,
+      `echo "${prompt.replace(/"/g, '\\"')}" | claude -p --max-turns 1 2>/dev/null | head -n 5`,
       {
         encoding: 'utf-8',
         stdio: 'pipe',
