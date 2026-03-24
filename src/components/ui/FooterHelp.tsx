@@ -32,7 +32,7 @@ const FooterHelp: React.FC<FooterHelpProps> = memo(({
     return (
       <Box marginTop={1}>
         <Text color="yellow" bold>
-          Press Ctrl+C again to exit
+          Press q or Ctrl+C again to detach
         </Text>
       </Box>
     );

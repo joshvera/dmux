@@ -18,6 +18,7 @@ describe('ShortcutsPopupApp', () => {
 
     expect(output).toContain('[Alt+Shift+M]');
     expect(output).toContain('Open the focused-pane menu or focus navigator');
+    expect(output).toContain('Detach from dmux session');
     expect(output).toContain('Press Alt+Shift+M in any focused pane');
     expect(output).not.toContain('[M-D]');
   });

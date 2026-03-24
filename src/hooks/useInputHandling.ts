@@ -222,6 +222,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
   } = params
 
   const layoutRefreshDebounceRef = useRef<NodeJS.Timeout | null>(null)
+  const quitConfirmResetRef = useRef<NodeJS.Timeout | null>(null)
   const effectivePresentationMode = resolvePresentationMode(
     !popupsSupported && presentationMode === "focus"
       ? "grid"
@@ -249,6 +250,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
         clearTimeout(layoutRefreshDebounceRef.current)
         layoutRefreshDebounceRef.current = null
       }
+      if (quitConfirmResetRef.current) {
+        clearTimeout(quitConfirmResetRef.current)
+        quitConfirmResetRef.current = null
+      }
     }
   }, [])
 
@@ -270,6 +275,43 @@ export function useInputHandling(params: UseInputHandlingParams) {
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
       }
     }, 250)
+  }
+
+  const clearQuitConfirmMode = () => {
+    if (quitConfirmResetRef.current) {
+      clearTimeout(quitConfirmResetRef.current)
+      quitConfirmResetRef.current = null
+    }
+    setQuitConfirmMode(false)
+  }
+
+  const armQuitConfirmMode = () => {
+    if (quitConfirmResetRef.current) {
+      clearTimeout(quitConfirmResetRef.current)
+    }
+    setQuitConfirmMode(true)
+    quitConfirmResetRef.current = setTimeout(() => {
+      quitConfirmResetRef.current = null
+      setQuitConfirmMode(false)
+    }, 3000)
+  }
+
+  const detachOrExit = async () => {
+    clearQuitConfirmMode()
+
+    if (!process.env.TMUX) {
+      cleanExit()
+      return
+    }
+
+    try {
+      await TmuxService.getInstance().detachCurrentClient()
+    } catch (error: any) {
+      setStatusMessage(
+        `Failed to detach from dmux session: ${error?.message || String(error)}`
+      )
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    }
   }
 
   useEffect(() => {
@@ -1728,15 +1770,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
     // Handle Ctrl+C for quit confirmation (must be first, before any other checks)
     if (key.ctrl && input === "c") {
       if (quitConfirmMode) {
-        // Second Ctrl+C - actually quit
-        cleanExit()
+        await detachOrExit()
       } else {
-        // First Ctrl+C - show confirmation
-        setQuitConfirmMode(true)
-        // Reset after 3 seconds if user doesn't press Ctrl+C again
-        setTimeout(() => {
-          setQuitConfirmMode(false)
-        }, 3000)
+        armQuitConfirmMode()
       }
       return
     }
@@ -1749,7 +1785,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     // Handle quit confirm mode - ESC cancels it
     if (quitConfirmMode) {
       if (key.escape) {
-        setQuitConfirmMode(false)
+        clearQuitConfirmMode()
         return
       }
       // Allow other inputs to continue (don't return early)
@@ -1991,7 +2027,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
       // Queue all demo toasts
       demos.forEach(demo => stateManager.showToast(demo.msg, demo.severity))
     } else if (input === "q") {
-      cleanExit()
+      if (quitConfirmMode) {
+        await detachOrExit()
+      } else {
+        armQuitConfirmMode()
+      }
+      return
     } else if (isDevMode && input === "S" && selectedIndex < panes.length) {
       await executePaneShortcut("S", panes[selectedIndex])
       return

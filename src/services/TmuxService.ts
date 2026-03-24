@@ -622,6 +622,19 @@ export class TmuxService {
     );
   }
 
+  /**
+   * Detach the current tmux client from the session.
+   */
+  async detachCurrentClient(): Promise<void> {
+    await this.executeWithRetry(
+      () => {
+        this.execute('tmux detach-client');
+      },
+      RetryStrategy.FAST,
+      'detachCurrentClient'
+    );
+  }
+
   async togglePaneZoom(targetPaneId?: string): Promise<void> {
     await this.executeWithRetry(
       () => {
