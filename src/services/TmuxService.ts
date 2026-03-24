@@ -318,6 +318,42 @@ export class TmuxService {
   }
 
   /**
+   * Get the tty for the tmux client currently associated with this process context.
+   */
+  async getCurrentClientTty(): Promise<string | null> {
+    return this.executeWithRetry(
+      () => {
+        const clientsOutput = this.execute(
+          'tmux list-clients -F "#{client_activity}\t#{client_tty}"'
+        ).trim();
+
+        const mostRecentClientTty = clientsOutput
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const [activity = '', clientTty = ''] = line.split('\t');
+            return {
+              activity: Number.parseInt(activity, 10) || 0,
+              clientTty: clientTty.trim(),
+            };
+          })
+          .filter((entry) => entry.clientTty.length > 0)
+          .sort((left, right) => right.activity - left.activity)[0]?.clientTty;
+
+        if (mostRecentClientTty) {
+          return mostRecentClientTty;
+        }
+
+        const value = this.execute('tmux display-message -p "#{client_tty}"').trim();
+        return value || null;
+      },
+      RetryStrategy.IDEMPOTENT,
+      'getCurrentClientTty'
+    );
+  }
+
+  /**
    * Get current window ID
    */
   async getCurrentWindowId(): Promise<string> {
@@ -626,12 +662,24 @@ export class TmuxService {
    * Detach the current tmux client from the session.
    */
   async detachCurrentClient(): Promise<void> {
+    const targetClientTty = await this.getCurrentClientTty();
+    if (!targetClientTty) {
+      throw new Error('No active tmux client could be resolved for detach');
+    }
+
+    await this.detachClient(targetClientTty);
+  }
+
+  /**
+   * Detach a specific tmux client from the session.
+   */
+  async detachClient(targetClientTty: string): Promise<void> {
     await this.executeWithRetry(
       () => {
-        this.execute('tmux detach-client');
+        this.execute(`tmux detach-client -t '${targetClientTty}'`);
       },
       RetryStrategy.FAST,
-      'detachCurrentClient'
+      `detachClient(${targetClientTty})`
     );
   }
 

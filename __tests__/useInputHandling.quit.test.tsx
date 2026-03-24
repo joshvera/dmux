@@ -239,4 +239,32 @@ describe('useInputHandling quit shortcuts', () => {
 
     unmount();
   });
+
+  it('shows a status error and clears confirmation when detaching fails', async () => {
+    const cleanExit = vi.fn();
+    const setStatusMessage = vi.fn();
+    tmuxServiceMock.detachCurrentClient.mockRejectedValueOnce(
+      new Error('No active tmux client could be resolved for detach')
+    );
+
+    const { stdin, lastFrame, unmount } = render(
+      <Harness cleanExit={cleanExit} setStatusMessage={setStatusMessage} />
+    );
+
+    await sleep(20);
+    stdin.write('q');
+    await sleep(20);
+    expect(lastFrame()).toContain('armed');
+
+    stdin.write('q');
+    await sleep(20);
+
+    expect(lastFrame()).toContain('idle');
+    expect(setStatusMessage).toHaveBeenCalledWith(
+      'Failed to detach from dmux session: No active tmux client could be resolved for detach'
+    );
+    expect(cleanExit).not.toHaveBeenCalled();
+
+    unmount();
+  });
 });

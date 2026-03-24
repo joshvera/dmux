@@ -54,6 +54,17 @@ export interface AttachedTmuxClientContext {
   sendClientInput: (input: string) => Promise<void>
 }
 
+export interface RuntimeAttachedClient {
+  tmpDir: string
+  artifactDir: string
+  logPath: string
+  targetClient: string
+  readLog: () => Promise<string>
+  markLog: () => Promise<number>
+  waitForLog: (pattern: string, timeoutMs?: number, afterOffset?: number) => Promise<void>
+  sendInput: (input: string) => Promise<void>
+}
+
 const DEFAULT_CLIENT_WIDTH = 80
 const DEFAULT_CLIENT_HEIGHT = 24
 const CONTROL_PANE_OPTION = "@dmux_control_pane"
@@ -177,7 +188,7 @@ async function poll<T>(
 }
 
 class AttachedTmuxClientHarness {
-  readonly server = `dmux-e2e-${Date.now()}-${Math.floor(Math.random() * 10000)}`
+  readonly server: string
   readonly session: string
   readonly width: number
   readonly height: number
@@ -198,8 +209,12 @@ class AttachedTmuxClientHarness {
     width: number,
     height: number,
     rootDir: string,
-    baseEnv: NodeJS.ProcessEnv
+    baseEnv: NodeJS.ProcessEnv,
+    options: {
+      server?: string
+    } = {}
   ) {
+    this.server = options.server ?? `dmux-e2e-${Date.now()}-${Math.floor(Math.random() * 10000)}`
     this.session = sessionName
     this.width = width
     this.height = height
@@ -216,36 +231,44 @@ class AttachedTmuxClientHarness {
     this.env = baseEnv
   }
 
-  async setup(command: string = "sleep 100000"): Promise<void> {
+  async setup(
+    command: string = "sleep 100000",
+    options: {
+      createSession?: boolean
+      knownClients?: string[]
+    } = {}
+  ): Promise<void> {
     await fsp.mkdir(this.artifactDir, { recursive: true })
     await fsp.mkdir(this.wrapperDir, { recursive: true })
     await this.writeWrapper()
     await this.writeBridge()
 
-    this.execTmux([
-      "-f",
-      "/dev/null",
-      "new-session",
-      "-d",
-      "-x",
-      String(this.width),
-      "-y",
-      String(this.height),
-      "-s",
-      this.session,
-      "-n",
-      "main",
-      command,
-    ])
-    this.execTmux([
-      "resize-window",
-      "-t",
-      `${this.session}:0`,
-      "-x",
-      String(this.width),
-      "-y",
-      String(this.height),
-    ])
+    if (options.createSession !== false) {
+      this.execTmux([
+        "-f",
+        "/dev/null",
+        "new-session",
+        "-d",
+        "-x",
+        String(this.width),
+        "-y",
+        String(this.height),
+        "-s",
+        this.session,
+        "-n",
+        "main",
+        command,
+      ])
+      this.execTmux([
+        "resize-window",
+        "-t",
+        `${this.session}:0`,
+        "-x",
+        String(this.width),
+        "-y",
+        String(this.height),
+      ])
+    }
 
     this.clientProcess = spawn(
       "python3",
@@ -256,12 +279,24 @@ class AttachedTmuxClientHarness {
       }
     )
 
-    this.targetClient = await poll(
-      () => this.execTmux(["list-clients", "-F", "#{client_tty}"]).trim(),
-      (value) => value.length > 0,
+    const knownClients = new Set(options.knownClients ?? [])
+    const clientTargets = await poll(
+      () =>
+        this.execTmux(["list-clients", "-F", "#{client_tty}"])
+          .split("\n")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      (value) => value.some((clientTty) => !knownClients.has(clientTty)),
       5000,
       "an attached tmux client"
     )
+    const targetClient = clientTargets.find(
+      (clientTty) => !knownClients.has(clientTty)
+    )
+    if (!targetClient) {
+      throw new Error("Failed to resolve the newly attached tmux client")
+    }
+    this.targetClient = targetClient
 
     await this.writeWrapper(this.targetClient)
   }
@@ -497,6 +532,7 @@ export class DmuxRuntimeHarness {
   readonly sessionName: string
 
   private readonly clientHarness: AttachedTmuxClientHarness
+  private readonly additionalClientHarnesses: AttachedTmuxClientHarness[] = []
   private readonly projects = new Map<string, RuntimeProject>()
   private readonly env: NodeJS.ProcessEnv
   private readonly realTmuxPath: string
@@ -552,6 +588,9 @@ export class DmuxRuntimeHarness {
   }
 
   async cleanup(): Promise<void> {
+    for (const harness of this.additionalClientHarnesses.splice(0)) {
+      await harness.cleanup()
+    }
     await this.clientHarness.cleanup()
   }
 
@@ -700,6 +739,13 @@ export class DmuxRuntimeHarness {
     ]).trim()
   }
 
+  async listClientTargets(): Promise<string[]> {
+    return this.execTmux(["list-clients", "-F", "#{client_tty}"])
+      .split("\n")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  }
+
   async getPaneSnapshots(): Promise<TmuxPaneSnapshot[]> {
     const output = this.execTmux([
       "list-panes",
@@ -844,6 +890,46 @@ export class DmuxRuntimeHarness {
 
   async sendClientInput(input: string): Promise<void> {
     await this.clientHarness.sendClientInput(input)
+  }
+
+  async attachAdditionalClient(options: {
+    width?: number
+    height?: number
+    id?: string
+  } = {}): Promise<RuntimeAttachedClient> {
+    const width = options.width ?? this.width
+    const height = options.height ?? this.height
+    const clientId = options.id ?? `client-${this.additionalClientHarnesses.length + 2}`
+    const clientRootDir = path.join(this.tmpDir, clientId)
+    const knownClients = await this.listClientTargets()
+
+    const harness = new AttachedTmuxClientHarness(
+      this.sessionName,
+      width,
+      height,
+      clientRootDir,
+      this.env,
+      { server: this.clientHarness.server }
+    )
+
+    await harness.setup("sleep 100000", {
+      createSession: false,
+      knownClients,
+    })
+
+    this.additionalClientHarnesses.push(harness)
+
+    return {
+      tmpDir: clientRootDir,
+      artifactDir: harness.artifactDir,
+      logPath: harness.logPath,
+      targetClient: harness.getClientTarget(),
+      readLog: () => harness.readLog(),
+      markLog: () => harness.markLog(),
+      waitForLog: (pattern, timeoutMs, afterOffset) =>
+        harness.waitForLog(pattern, timeoutMs, afterOffset),
+      sendInput: (input) => harness.sendClientInput(input),
+    }
   }
 
   async openFocusNavigatorFromActivePane(): Promise<void> {
