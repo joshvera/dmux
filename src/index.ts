@@ -42,6 +42,7 @@ import {
   DMUX_CONTROL_PANE_OPTION,
   DMUX_REMOTE_PANE_MODE_OPTION,
   enqueueRemotePaneAction,
+  getControlPaneRemoteActionGuardMessage,
   getCurrentTmuxPaneId as getFocusedTmuxPaneId,
   getCurrentTmuxSessionName as getFocusedTmuxSessionName,
   getTmuxSessionOption,
@@ -105,8 +106,13 @@ async function handleRemotePaneActionCli(shortcutArg: string): Promise<number> {
   }
 
   const controlPaneId = getTmuxSessionOption(sessionName, DMUX_CONTROL_PANE_OPTION);
-  if (controlPaneId && controlPaneId === targetPaneId) {
-    showTmuxMessage('Focused pane is already the dmux control pane');
+  const controlPaneGuardMessage = getControlPaneRemoteActionGuardMessage(
+    controlPaneId,
+    targetPaneId,
+    shortcutArg
+  );
+  if (controlPaneGuardMessage) {
+    showTmuxMessage(controlPaneGuardMessage);
     return 1;
   }
 

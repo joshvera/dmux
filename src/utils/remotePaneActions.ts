@@ -132,6 +132,18 @@ export function getTmuxSessionOption(
   }
 }
 
+export function getControlPaneRemoteActionGuardMessage(
+  controlPaneId: string | null,
+  targetPaneId: string,
+  shortcut: RemotePaneActionShortcut
+): string | null {
+  if (controlPaneId && controlPaneId === targetPaneId && shortcut !== 'm') {
+    return 'Focused pane is already the dmux control pane';
+  }
+
+  return null;
+}
+
 export function showTmuxMessage(message: string): void {
   try {
     spawnSync('tmux', ['display-message', '-d', '2500', message], {

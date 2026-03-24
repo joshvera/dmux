@@ -55,6 +55,8 @@ export interface PopupManagerConfig {
   trackProjectActivity: TrackProjectActivity
 }
 
+export type BlankProjectActionId = "new-agent" | "terminal" | "reopen"
+
 interface PopupOptions {
   width?: number
   height?: number
@@ -118,7 +120,7 @@ export class PopupManager {
     this.trackProjectActivity = config.trackProjectActivity
   }
 
-  private clampFocusPopupSize(
+  private clampPopupSizeToClient(
     availableWidth: number,
     availableHeight: number,
     preferredWidth: number,
@@ -129,20 +131,20 @@ export class PopupManager {
     return { width, height }
   }
 
-  private async getFocusPopupSize(
+  private async getClientFitPopupSize(
     preferredWidth: number,
     preferredHeight: number
   ): Promise<{ width: number; height: number }> {
     try {
       const dims = await TmuxService.getInstance().getAllDimensions()
-      return this.clampFocusPopupSize(
+      return this.clampPopupSizeToClient(
         dims.clientWidth,
         dims.clientHeight,
         preferredWidth,
         preferredHeight
       )
     } catch {
-      return this.clampFocusPopupSize(
+      return this.clampPopupSizeToClient(
         this.config.terminalWidth,
         this.config.terminalHeight,
         preferredWidth,
@@ -411,7 +413,7 @@ export class PopupManager {
     if (!this.checkPopupSupport()) return null
 
     try {
-      const popupSize = await this.getFocusPopupSize(
+      const popupSize = await this.getClientFitPopupSize(
         110,
         Math.floor(this.config.terminalHeight * 0.92)
       )
@@ -458,7 +460,7 @@ export class PopupManager {
         this.config.projectRoot
       ).filter((action) => !excludedActions.has(action.id))
       const baseHeight = Math.min(28, Math.max(16, actions.length + 8))
-      const popupSize = await this.getFocusPopupSize(96, baseHeight)
+      const popupSize = await this.getClientFitPopupSize(96, baseHeight)
 
       const result = await this.launchPopup<string>(
         "focusActionSheetPopup.js",
@@ -486,6 +488,65 @@ export class PopupManager {
         }
       )
       return actionId as PaneMenuActionId | null
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchBlankProjectActionsPopup(
+    projectName: string,
+    projectRoot?: string
+  ): Promise<BlankProjectActionId | null> {
+    if (!this.checkPopupSupport()) return null
+
+    try {
+      const title = "Project Actions"
+      const message = `No dmux panes yet in ${projectName}. Choose an action.`
+      const options: Array<{
+        id: BlankProjectActionId
+        label: string
+        description: string
+        default?: boolean
+      }> = [
+        {
+          id: "new-agent",
+          label: "New agent",
+          description: "Create a new worktree pane",
+          default: true,
+        },
+        {
+          id: "terminal",
+          label: "New terminal",
+          description: "Open a shell pane in this project",
+        },
+        {
+          id: "reopen",
+          label: "Reopen worktree",
+          description: "Resume a closed branch in this project",
+        },
+      ]
+      const popupSize = await this.getClientFitPopupSize(70, 13)
+
+      const result = await this.launchPopup<BlankProjectActionId>(
+        "choicePopup.js",
+        [],
+        {
+          width: popupSize.width,
+          height: popupSize.height,
+          title,
+          positioning: "centered",
+        },
+        {
+          title,
+          message,
+          options,
+        },
+        projectRoot
+      )
+
+      this.ignoreInputBriefly()
+      return this.handleResult(result) as BlankProjectActionId | null
     } catch (error: any) {
       this.showTempMessage(`Failed to launch popup: ${error.message}`)
       return null

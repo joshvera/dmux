@@ -8,6 +8,7 @@ import {
   clearRemotePaneActions,
   drainRemotePaneActions,
   enqueueRemotePaneAction,
+  getControlPaneRemoteActionGuardMessage,
   getRemotePaneActionQueuePath,
 } from '../src/utils/remotePaneActions.js';
 
@@ -92,5 +93,14 @@ describe('remotePaneActions', () => {
     expect(cleanupCommands.some((command) => command.includes('unbind-key -n M-M'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -n M-D'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-pane-action x'))).toBe(true);
+  });
+
+  it('allows the remote menu shortcut from the control pane while keeping other shortcuts blocked', () => {
+    expect(
+      getControlPaneRemoteActionGuardMessage('%0', '%0', 'm')
+    ).toBeNull();
+    expect(
+      getControlPaneRemoteActionGuardMessage('%0', '%0', 'x')
+    ).toBe('Focused pane is already the dmux control pane');
   });
 });

@@ -329,6 +329,34 @@ export function useInputHandling(params: UseInputHandlingParams) {
     return await handlePaneCreationWithAgent(promptValue, targetProjectRoot)
   }
 
+  const openBlankProjectActions = async (targetProjectRoot: string) => {
+    const action = await popupManager.launchBlankProjectActionsPopup(
+      path.basename(targetProjectRoot),
+      targetProjectRoot
+    )
+    if (!action) {
+      return
+    }
+
+    if (action === "new-agent") {
+      queueCreatedPaneActivation(
+        await handleCreateAgentPane(targetProjectRoot)
+      )
+      return
+    }
+
+    if (action === "terminal") {
+      queueCreatedPaneActivation(
+        await handleCreateTerminalPane(targetProjectRoot)
+      )
+      return
+    }
+
+    queueCreatedPaneActivation(
+      await reopenClosedWorktreesInProject(targetProjectRoot)
+    )
+  }
+
   const handleCreateTerminalPane = async (targetProjectRoot: string): Promise<DmuxPane | null> => {
     try {
       setIsCreatingPane(true)
@@ -1628,6 +1656,16 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
         const paneIndex = panes.findIndex((pane) => pane.paneId === action.targetPaneId)
         if (paneIndex === -1) {
+          if (action.shortcut === "m") {
+            if (panes.length === 0) {
+              await openBlankProjectActions(projectRoot)
+            } else {
+              setStatusMessage("Focus a dmux pane to open pane actions")
+              setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+            }
+            continue
+          }
+
           setStatusMessage(`Focused pane is not managed by dmux: ${action.targetPaneId}`)
           setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
           continue

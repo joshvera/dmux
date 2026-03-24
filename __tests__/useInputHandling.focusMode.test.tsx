@@ -897,6 +897,190 @@ describe('useInputHandling focus mode', () => {
     unmount();
   });
 
+  it('opens blank-session project actions from the control pane and dispatches new-agent creation', async () => {
+    const handlePaneCreationWithAgent = vi.fn(async () => []);
+    const popupManager = {
+      launchBlankProjectActionsPopup: vi.fn(async () => 'new-agent'),
+      launchNewPanePopup: vi.fn(async () => 'Build the feature'),
+    };
+
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([{
+        type: 'pane-shortcut',
+        targetPaneId: '%0',
+        shortcut: 'm',
+        createdAt: '2026-03-23T03:00:00.000Z',
+      }])
+      .mockResolvedValue([]);
+
+    const { unmount } = render(
+      <Harness
+        panes={[]}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+      />
+    );
+
+    await vi.waitFor(() => {
+      expect(popupManager.launchBlankProjectActionsPopup).toHaveBeenCalledWith('repo', '/repo');
+      expect(popupManager.launchNewPanePopup).toHaveBeenCalledWith('/repo');
+      expect(handlePaneCreationWithAgent).toHaveBeenCalledWith('Build the feature', '/repo');
+    });
+
+    unmount();
+  });
+
+  it('opens blank-session project actions from the welcome pane and dispatches terminal creation', async () => {
+    const savePanes = vi.fn(async () => {});
+    const loadPanes = vi.fn(async () => {});
+    const popupManager = {
+      launchBlankProjectActionsPopup: vi.fn(async () => 'terminal'),
+    };
+
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([{
+        type: 'pane-shortcut',
+        targetPaneId: '%welcome',
+        shortcut: 'm',
+        createdAt: '2026-03-23T03:00:00.000Z',
+      }])
+      .mockResolvedValue([]);
+
+    const { unmount } = render(
+      <Harness
+        panes={[]}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+      />
+    );
+
+    await vi.waitFor(() => {
+      expect(popupManager.launchBlankProjectActionsPopup).toHaveBeenCalledWith('repo', '/repo');
+      expect(createShellPane).toHaveBeenCalled();
+      expect(savePanes).toHaveBeenCalled();
+      expect(loadPanes).toHaveBeenCalled();
+    });
+
+    unmount();
+  });
+
+  it('dispatches reopen from blank-session project actions', async () => {
+    const handleReopenWorktree = vi.fn(async () => pane('2'));
+    const popupManager = {
+      launchBlankProjectActionsPopup: vi.fn(async () => 'reopen'),
+      launchReopenWorktreePopup: vi.fn(async () => ({
+        action: 'select',
+        candidate: {
+          branchName: 'feature-a',
+          slug: 'feature-a',
+          path: '/repo/.dmux/worktrees/feature-a',
+          lastModified: '2026-03-12T12:00:00.000Z',
+          hasUncommittedChanges: false,
+          hasWorktree: true,
+          hasLocalBranch: true,
+          hasRemoteBranch: false,
+          isRemote: false,
+        },
+      })),
+    };
+
+    vi.mocked(getResumableBranches).mockReturnValue([{
+      branchName: 'feature-a',
+      slug: 'feature-a',
+      path: '/repo/.dmux/worktrees/feature-a',
+      lastModified: new Date('2026-03-12T12:00:00.000Z'),
+      hasUncommittedChanges: false,
+      hasWorktree: true,
+      hasLocalBranch: true,
+      hasRemoteBranch: false,
+      isRemote: false,
+    }]);
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([{
+        type: 'pane-shortcut',
+        targetPaneId: '%welcome',
+        shortcut: 'm',
+        createdAt: '2026-03-23T03:00:00.000Z',
+      }])
+      .mockResolvedValue([]);
+
+    const { unmount } = render(
+      <Harness
+        panes={[]}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        handleReopenWorktree={handleReopenWorktree}
+      />
+    );
+
+    await vi.waitFor(() => {
+      expect(popupManager.launchBlankProjectActionsPopup).toHaveBeenCalledWith('repo', '/repo');
+      expect(popupManager.launchReopenWorktreePopup).toHaveBeenCalled();
+      expect(handleReopenWorktree).toHaveBeenCalled();
+    });
+
+    unmount();
+  });
+
+  it('shows a friendly status when the remote menu is triggered from an unmanaged pane after panes exist', async () => {
+    const setStatusMessage = vi.fn();
+    const popupManager = {
+      launchBlankProjectActionsPopup: vi.fn(),
+      launchKebabMenuPopup: vi.fn(),
+      launchFocusNavigatorPopup: vi.fn(),
+    };
+
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([{
+        type: 'pane-shortcut',
+        targetPaneId: '%0',
+        shortcut: 'm',
+        createdAt: '2026-03-23T03:00:00.000Z',
+      }])
+      .mockResolvedValue([]);
+
+    const { unmount } = render(
+      <Harness
+        panes={[pane('1')]}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => 'global'),
+        }}
+        setStatusMessage={setStatusMessage}
+      />
+    );
+
+    await vi.waitFor(() => {
+      expect(setStatusMessage).toHaveBeenCalledWith('Focus a dmux pane to open pane actions');
+    });
+    expect(popupManager.launchBlankProjectActionsPopup).not.toHaveBeenCalled();
+    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled();
+    expect(popupManager.launchFocusNavigatorPopup).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
   it('isolates and activates a newly created pane in single-pane mode', async () => {
     const setSelectedIndex = vi.fn();
     const savePanes = vi.fn(async () => {});
