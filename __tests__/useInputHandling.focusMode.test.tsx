@@ -118,6 +118,19 @@ function Harness({
     setShowFileCopyPrompt: vi.fn(),
     currentCommandType: null,
     setCurrentCommandType: vi.fn(),
+    showInlineSettings: false,
+    setShowInlineSettings: vi.fn(),
+    inlineSettingsIndex: 0,
+    setInlineSettingsIndex: vi.fn(),
+    inlineSettingsMode: 'list' as const,
+    setInlineSettingsMode: vi.fn(),
+    inlineSettingsEditingKey: undefined,
+    setInlineSettingsEditingKey: vi.fn(),
+    inlineSettingsEditingValueIndex: 0,
+    setInlineSettingsEditingValueIndex: vi.fn(),
+    inlineSettingsScopeIndex: 0,
+    setInlineSettingsScopeIndex: vi.fn(),
+    resetInlineSettings: vi.fn(),
     projectSettings: {},
     saveSettings: vi.fn(),
     settingsManager,
@@ -1040,12 +1053,14 @@ describe('useInputHandling focus mode', () => {
     unmount();
   });
 
-  it('shows a friendly status when the remote menu is triggered from an unmanaged pane after panes exist', async () => {
+  it('opens settings when the remote menu is triggered from an unmanaged pane after panes exist', async () => {
     const setStatusMessage = vi.fn();
     const popupManager = {
       launchBlankProjectActionsPopup: vi.fn(),
       launchKebabMenuPopup: vi.fn(),
       launchFocusNavigatorPopup: vi.fn(),
+      launchSettingsPopup: vi.fn(async () => null),
+      launchHooksPopup: vi.fn(async () => null),
     };
 
     vi.mocked(getCurrentTmuxSessionName).mockReturnValue('dmux-test');
@@ -1072,7 +1087,7 @@ describe('useInputHandling focus mode', () => {
     );
 
     await vi.waitFor(() => {
-      expect(setStatusMessage).toHaveBeenCalledWith('Focus a dmux pane to open pane actions');
+      expect(popupManager.launchSettingsPopup).toHaveBeenCalled();
     });
     expect(popupManager.launchBlankProjectActionsPopup).not.toHaveBeenCalled();
     expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled();

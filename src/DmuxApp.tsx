@@ -33,7 +33,7 @@ import {
 import {
   type ActionResult,
 } from "./actions/index.js"
-import { SettingsManager } from "./utils/settingsManager.js"
+import { SettingsManager, SETTING_DEFINITIONS } from "./utils/settingsManager.js"
 import { useServices } from "./hooks/useServices.js"
 import { PaneLifecycleManager } from "./services/PaneLifecycleManager.js"
 import { DmuxFocusService } from "./services/DmuxFocusService.js"
@@ -78,6 +78,7 @@ import CommandPromptDialog from "./components/dialogs/CommandPromptDialog.js"
 import FileCopyPrompt from "./components/ui/FileCopyPrompt.js"
 import FooterHelp from "./components/ui/FooterHelp.js"
 import TmuxHooksPromptDialog from "./components/dialogs/TmuxHooksPromptDialog.js"
+import SettingsDialog from "./components/dialogs/SettingsDialog.js"
 import { PaneEventService } from "./services/PaneEventService.js"
 import {
   buildProjectActionLayout,
@@ -135,6 +136,19 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     setRunningCommand,
     quitConfirmMode,
     setQuitConfirmMode,
+    showInlineSettings,
+    setShowInlineSettings,
+    inlineSettingsIndex,
+    setInlineSettingsIndex,
+    inlineSettingsMode,
+    setInlineSettingsMode,
+    inlineSettingsEditingKey,
+    setInlineSettingsEditingKey,
+    inlineSettingsEditingValueIndex,
+    setInlineSettingsEditingValueIndex,
+    inlineSettingsScopeIndex,
+    setInlineSettingsScopeIndex,
+    resetInlineSettings,
   } = dialogState
 
   // Debug/development info
@@ -1229,6 +1243,19 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     setShowFileCopyPrompt,
     currentCommandType,
     setCurrentCommandType,
+    showInlineSettings,
+    setShowInlineSettings,
+    inlineSettingsIndex,
+    setInlineSettingsIndex,
+    inlineSettingsMode,
+    setInlineSettingsMode,
+    inlineSettingsEditingKey,
+    setInlineSettingsEditingKey,
+    inlineSettingsEditingValueIndex,
+    setInlineSettingsEditingValueIndex,
+    inlineSettingsScopeIndex,
+    setInlineSettingsScopeIndex,
+    resetInlineSettings,
     projectSettings,
     saveSettings,
     settingsManager,
@@ -1343,6 +1370,21 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         {/* Tmux hooks prompt - shown on first startup */}
         {showHooksPrompt && (
           <TmuxHooksPromptDialog selectedIndex={hooksPromptIndex} />
+        )}
+
+        {/* Inline settings dialog - fallback when tmux popups unavailable */}
+        {showInlineSettings && (
+          <SettingsDialog
+            settings={settingsManager.getSettings()}
+            globalSettings={settingsManager.getGlobalSettings()}
+            projectSettings={settingsManager.getProjectSettings()}
+            settingDefinitions={SETTING_DEFINITIONS}
+            selectedIndex={inlineSettingsIndex}
+            mode={inlineSettingsMode}
+            editingKey={inlineSettingsEditingKey}
+            editingValueIndex={inlineSettingsEditingValueIndex}
+            scopeIndex={inlineSettingsScopeIndex}
+          />
         )}
       </Box>
 

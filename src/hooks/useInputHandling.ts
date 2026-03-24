@@ -64,6 +64,8 @@ import {
   getPresentationTargetPane,
   resolvePresentationMode,
 } from "../utils/presentationMode.js"
+import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
+import type { DmuxSettings } from "../types.js"
 
 // Type for the action system returned by useActionSystem hook
 interface ActionSystem {
@@ -124,6 +126,21 @@ interface UseInputHandlingParams {
   setShowFileCopyPrompt: (value: boolean) => void
   currentCommandType: "test" | "dev" | null
   setCurrentCommandType: (value: "test" | "dev" | null) => void
+
+  // Inline settings dialog state
+  showInlineSettings: boolean
+  setShowInlineSettings: (value: boolean) => void
+  inlineSettingsIndex: number
+  setInlineSettingsIndex: (value: number) => void
+  inlineSettingsMode: 'list' | 'edit' | 'scope'
+  setInlineSettingsMode: (value: 'list' | 'edit' | 'scope') => void
+  inlineSettingsEditingKey: keyof import("../types.js").DmuxSettings | undefined
+  setInlineSettingsEditingKey: (value: keyof import("../types.js").DmuxSettings | undefined) => void
+  inlineSettingsEditingValueIndex: number
+  setInlineSettingsEditingValueIndex: (value: number) => void
+  inlineSettingsScopeIndex: number
+  setInlineSettingsScopeIndex: (value: number) => void
+  resetInlineSettings: () => void
 
   // Settings
   projectSettings: any
@@ -193,6 +210,19 @@ export function useInputHandling(params: UseInputHandlingParams) {
     setShowFileCopyPrompt,
     currentCommandType,
     setCurrentCommandType,
+    showInlineSettings,
+    setShowInlineSettings,
+    inlineSettingsIndex,
+    setInlineSettingsIndex,
+    inlineSettingsMode,
+    setInlineSettingsMode,
+    inlineSettingsEditingKey,
+    setInlineSettingsEditingKey,
+    inlineSettingsEditingValueIndex,
+    setInlineSettingsEditingValueIndex,
+    inlineSettingsScopeIndex,
+    setInlineSettingsScopeIndex,
+    resetInlineSettings,
     projectSettings,
     saveSettings,
     settingsManager,
@@ -1715,8 +1745,34 @@ export function useInputHandling(params: UseInputHandlingParams) {
             if (panes.length === 0) {
               await openBlankProjectActions(projectRoot)
             } else {
-              setStatusMessage("Focus a dmux pane to open pane actions")
-              setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+              // Open settings from the sidebar via Alt+Shift+M
+              const result = await popupManager.launchSettingsPopup(async () => {
+                await popupManager.launchHooksPopup(async () => {
+                  await launchHooksAuthoringSession()
+                }, getActiveProjectRoot())
+              }, getActiveProjectRoot())
+              if (!result && !popupsSupported) {
+                setShowInlineSettings(true)
+              } else if (result) {
+                try {
+                  const updates = Array.isArray((result as any).updates)
+                    ? (result as any).updates
+                    : [result]
+                  for (const update of updates) {
+                    if (!update || typeof update.key !== "string" || (update.scope !== "global" && update.scope !== "project")) continue
+                    if (update.key === "presentationMode") {
+                      await applyPresentationModeChange(resolvePresentationMode(update.value), { persist: true, scope: update.scope, activateTargetPane: false })
+                    } else {
+                      settingsManager.updateSetting(update.key as keyof DmuxSettings, update.value, update.scope)
+                    }
+                  }
+                  setStatusMessage("Settings updated")
+                  setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+                } catch (error: any) {
+                  setStatusMessage(`Failed to save setting: ${error?.message || String(error)}`)
+                  setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+                }
+              }
             }
             continue
           }
@@ -1892,6 +1948,118 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
+    // Handle inline settings dialog input
+    if (showInlineSettings) {
+      if (key.escape) {
+        if (inlineSettingsMode === 'list') {
+          resetInlineSettings()
+        } else {
+          // Go back to list mode
+          setInlineSettingsMode('list')
+          setInlineSettingsEditingKey(undefined)
+          setInlineSettingsEditingValueIndex(0)
+          setInlineSettingsScopeIndex(0)
+        }
+      } else if (key.upArrow) {
+        if (inlineSettingsMode === 'list') {
+          setInlineSettingsIndex(Math.max(0, inlineSettingsIndex - 1))
+        } else if (inlineSettingsMode === 'edit') {
+          const currentDef = inlineSettingsEditingKey
+            ? SETTING_DEFINITIONS.find(d => d.key === inlineSettingsEditingKey)
+            : null
+          if (currentDef?.type === 'boolean' || currentDef?.type === 'select') {
+            setInlineSettingsEditingValueIndex(Math.max(0, inlineSettingsEditingValueIndex - 1))
+          }
+        } else if (inlineSettingsMode === 'scope') {
+          setInlineSettingsScopeIndex(Math.max(0, inlineSettingsScopeIndex - 1))
+        }
+      } else if (key.downArrow) {
+        if (inlineSettingsMode === 'list') {
+          setInlineSettingsIndex(Math.min(SETTING_DEFINITIONS.length - 1, inlineSettingsIndex + 1))
+        } else if (inlineSettingsMode === 'edit') {
+          const currentDef = inlineSettingsEditingKey
+            ? SETTING_DEFINITIONS.find(d => d.key === inlineSettingsEditingKey)
+            : null
+          if (currentDef && (currentDef.type === 'boolean' || currentDef.type === 'select')) {
+            const maxIndex = currentDef.type === 'boolean' ? 1 : (currentDef.options?.length || 1) - 1
+            setInlineSettingsEditingValueIndex(Math.min(maxIndex, inlineSettingsEditingValueIndex + 1))
+          }
+        } else if (inlineSettingsMode === 'scope') {
+          setInlineSettingsScopeIndex(Math.min(1, inlineSettingsScopeIndex + 1))
+        }
+      } else if (key.return) {
+        if (inlineSettingsMode === 'list') {
+          const currentDef = SETTING_DEFINITIONS[inlineSettingsIndex]
+          if (currentDef.type === 'action') {
+            // Action settings (enabledAgents, etc.) not supported inline
+            setStatusMessage(`${currentDef.label} requires popup support`)
+            setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+            return
+          }
+          // Enter edit mode
+          setInlineSettingsEditingKey(currentDef.key as keyof DmuxSettings)
+          setInlineSettingsMode('edit')
+          const currentValue = settingsManager.getSettings()[currentDef.key as keyof DmuxSettings]
+          if (currentDef.type === 'boolean') {
+            setInlineSettingsEditingValueIndex(currentValue ? 0 : 1)
+          } else if (currentDef.type === 'select' && currentDef.options) {
+            const optIndex = currentDef.options.findIndex(o => o.value === currentValue)
+            setInlineSettingsEditingValueIndex(Math.max(0, optIndex))
+          } else if (currentDef.type === 'text' || currentDef.type === 'number') {
+            // Text/number not fully supported inline
+            setStatusMessage(`${currentDef.label} requires popup support`)
+            setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+            setInlineSettingsMode('list')
+            setInlineSettingsEditingKey(undefined)
+            return
+          }
+        } else if (inlineSettingsMode === 'edit') {
+          // Go to scope selection
+          setInlineSettingsMode('scope')
+          setInlineSettingsScopeIndex(0)
+        } else if (inlineSettingsMode === 'scope') {
+          // Save the setting
+          const currentDef = SETTING_DEFINITIONS.find(d => d.key === inlineSettingsEditingKey)
+          if (currentDef && currentDef.type !== 'action') {
+            const scope = inlineSettingsScopeIndex === 0 ? 'global' : 'project'
+            let newValue: any
+            if (currentDef.type === 'boolean') {
+              newValue = inlineSettingsEditingValueIndex === 0
+            } else if (currentDef.type === 'select' && currentDef.options) {
+              newValue = currentDef.options[inlineSettingsEditingValueIndex]?.value || ''
+            }
+
+            try {
+              if (currentDef.key === 'presentationMode') {
+                await applyPresentationModeChange(
+                  resolvePresentationMode(newValue),
+                  { persist: true, scope, activateTargetPane: false }
+                )
+              } else {
+                settingsManager.updateSetting(
+                  currentDef.key as keyof DmuxSettings,
+                  newValue,
+                  scope as "global" | "project"
+                )
+              }
+              setStatusMessage(`Setting saved (${scope})`)
+              setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+            } catch (error: any) {
+              setStatusMessage(`Failed to save setting: ${error?.message || String(error)}`)
+              setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+            }
+
+            // Return to list mode
+            setInlineSettingsMode('list')
+            setInlineSettingsEditingKey(undefined)
+            setInlineSettingsEditingValueIndex(0)
+            setInlineSettingsScopeIndex(0)
+          }
+        }
+      }
+      return
+    }
+
     // Handle directional navigation with spatial awareness based on card grid layout
     if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
       let targetIndex: number | null = null
@@ -1919,13 +2087,17 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await executePaneShortcut(input as RemotePaneActionShortcut, panes[selectedIndex])
       return
     } else if (input === "s") {
-      // Open settings popup
+      // Open settings popup, fall back to inline dialog if popups unavailable
       const result = await popupManager.launchSettingsPopup(async () => {
         // Launch hooks popup
         await popupManager.launchHooksPopup(async () => {
           await launchHooksAuthoringSession()
         }, getActiveProjectRoot())
       }, getActiveProjectRoot())
+      if (!result && !popupsSupported) {
+        setShowInlineSettings(true)
+        return
+      }
       if (result) {
         try {
           const updates = Array.isArray((result as any).updates)
