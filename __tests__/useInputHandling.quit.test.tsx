@@ -91,6 +91,7 @@ describe('useInputHandling quit shortcuts', () => {
   const originalTmuxEnv = process.env.TMUX;
   const tmuxServiceMock = {
     detachCurrentClient: vi.fn(async () => {}),
+    enterDetachConfirmMode: vi.fn(async () => {}),
   };
 
   beforeEach(() => {
@@ -110,7 +111,7 @@ describe('useInputHandling quit shortcuts', () => {
     vi.restoreAllMocks();
   });
 
-  it('arms quit confirmation on the first q press without detaching', async () => {
+  it('enters tmux detach confirm mode on the first q press without arming shared confirmation', async () => {
     const cleanExit = vi.fn();
     const { stdin, lastFrame, unmount } = render(
       <Harness cleanExit={cleanExit} />
@@ -120,34 +121,81 @@ describe('useInputHandling quit shortcuts', () => {
     stdin.write('q');
     await sleep(20);
 
-    expect(lastFrame()).toContain('armed');
+    expect(lastFrame()).toContain('idle');
+    expect(tmuxServiceMock.enterDetachConfirmMode).toHaveBeenCalledTimes(1);
     expect(tmuxServiceMock.detachCurrentClient).not.toHaveBeenCalled();
     expect(cleanExit).not.toHaveBeenCalled();
 
     unmount();
   });
 
-  it('detaches on the second q press', async () => {
+  it('enters tmux detach confirm mode on the first Ctrl+C press without arming shared confirmation', async () => {
     const cleanExit = vi.fn();
-    const { stdin, unmount } = render(<Harness cleanExit={cleanExit} />);
+    const { stdin, lastFrame, unmount } = render(
+      <Harness cleanExit={cleanExit} />
+    );
 
     await sleep(20);
-    stdin.write('q');
-    await sleep(20);
-    stdin.write('q');
+    stdin.write(CTRL_C);
     await sleep(20);
 
-    expect(tmuxServiceMock.detachCurrentClient).toHaveBeenCalledTimes(1);
+    expect(lastFrame()).toContain('idle');
+    expect(tmuxServiceMock.enterDetachConfirmMode).toHaveBeenCalledTimes(1);
+    expect(tmuxServiceMock.detachCurrentClient).not.toHaveBeenCalled();
     expect(cleanExit).not.toHaveBeenCalled();
 
     unmount();
   });
 
-  it('arms quit confirmation on the first Ctrl+C press and detaches on the second', async () => {
+  it('shows a status error and keeps confirmation idle when entering tmux detach confirm mode fails', async () => {
     const cleanExit = vi.fn();
-    const { stdin, lastFrame, unmount } = render(
-      <Harness cleanExit={cleanExit} />
+    const setStatusMessage = vi.fn();
+    tmuxServiceMock.enterDetachConfirmMode.mockRejectedValueOnce(
+      new Error('switch-client failed')
     );
+
+    const { stdin, lastFrame, unmount } = render(
+      <Harness cleanExit={cleanExit} setStatusMessage={setStatusMessage} />
+    );
+
+    await sleep(20);
+    stdin.write('q');
+    await sleep(20);
+
+    expect(lastFrame()).toContain('idle');
+    expect(setStatusMessage).toHaveBeenCalledWith(
+      'Failed to arm detach confirmation: switch-client failed'
+    );
+    expect(cleanExit).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('arms quit confirmation on the first q press and exits on the second outside tmux', async () => {
+    const cleanExit = vi.fn();
+    delete process.env.TMUX;
+
+    const { stdin, lastFrame, unmount } = render(<Harness cleanExit={cleanExit} />);
+
+    await sleep(20);
+    stdin.write('q');
+    await sleep(20);
+    expect(lastFrame()).toContain('armed');
+
+    stdin.write('q');
+    await sleep(20);
+
+    expect(cleanExit).toHaveBeenCalledTimes(1);
+    expect(tmuxServiceMock.enterDetachConfirmMode).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('arms quit confirmation on the first Ctrl+C press and exits on the second outside tmux', async () => {
+    const cleanExit = vi.fn();
+    delete process.env.TMUX;
+
+    const { stdin, lastFrame, unmount } = render(<Harness cleanExit={cleanExit} />);
 
     await sleep(20);
     stdin.write(CTRL_C);
@@ -157,8 +205,8 @@ describe('useInputHandling quit shortcuts', () => {
     stdin.write(CTRL_C);
     await sleep(20);
 
-    expect(tmuxServiceMock.detachCurrentClient).toHaveBeenCalledTimes(1);
-    expect(cleanExit).not.toHaveBeenCalled();
+    expect(cleanExit).toHaveBeenCalledTimes(1);
+    expect(tmuxServiceMock.enterDetachConfirmMode).not.toHaveBeenCalled();
 
     unmount();
   });
@@ -166,8 +214,10 @@ describe('useInputHandling quit shortcuts', () => {
   it.each([
     ['q then Ctrl+C', 'q', CTRL_C],
     ['Ctrl+C then q', CTRL_C, 'q'],
-  ])('supports mixed confirmation with %s', async (_label, first, second) => {
+  ])('supports mixed confirmation outside tmux with %s', async (_label, first, second) => {
     const cleanExit = vi.fn();
+    delete process.env.TMUX;
+
     const { stdin, unmount } = render(<Harness cleanExit={cleanExit} />);
 
     await sleep(20);
@@ -176,14 +226,16 @@ describe('useInputHandling quit shortcuts', () => {
     stdin.write(second);
     await sleep(20);
 
-    expect(tmuxServiceMock.detachCurrentClient).toHaveBeenCalledTimes(1);
-    expect(cleanExit).not.toHaveBeenCalled();
+    expect(cleanExit).toHaveBeenCalledTimes(1);
+    expect(tmuxServiceMock.enterDetachConfirmMode).not.toHaveBeenCalled();
 
     unmount();
   });
 
-  it('cancels quit confirmation on Escape', async () => {
+  it('cancels shared quit confirmation on Escape outside tmux', async () => {
     const cleanExit = vi.fn();
+    delete process.env.TMUX;
+
     const { stdin, lastFrame, unmount } = render(
       <Harness cleanExit={cleanExit} />
     );
@@ -197,14 +249,15 @@ describe('useInputHandling quit shortcuts', () => {
     await sleep(20);
 
     expect(lastFrame()).toContain('idle');
-    expect(tmuxServiceMock.detachCurrentClient).not.toHaveBeenCalled();
     expect(cleanExit).not.toHaveBeenCalled();
 
     unmount();
   });
 
-  it('does not detach on ordinary input while confirmation is armed', async () => {
+  it('does not exit on ordinary input while shared confirmation is armed outside tmux', async () => {
     const cleanExit = vi.fn();
+    delete process.env.TMUX;
+
     const { stdin, lastFrame, unmount } = render(
       <Harness cleanExit={cleanExit} />
     );
@@ -216,53 +269,6 @@ describe('useInputHandling quit shortcuts', () => {
     await sleep(20);
 
     expect(lastFrame()).toContain('armed');
-    expect(tmuxServiceMock.detachCurrentClient).not.toHaveBeenCalled();
-    expect(cleanExit).not.toHaveBeenCalled();
-
-    unmount();
-  });
-
-  it('falls back to cleanExit when not running inside tmux', async () => {
-    const cleanExit = vi.fn();
-    delete process.env.TMUX;
-
-    const { stdin, unmount } = render(<Harness cleanExit={cleanExit} />);
-
-    await sleep(20);
-    stdin.write('q');
-    await sleep(20);
-    stdin.write('q');
-    await sleep(20);
-
-    expect(cleanExit).toHaveBeenCalledTimes(1);
-    expect(tmuxServiceMock.detachCurrentClient).not.toHaveBeenCalled();
-
-    unmount();
-  });
-
-  it('shows a status error and clears confirmation when detaching fails', async () => {
-    const cleanExit = vi.fn();
-    const setStatusMessage = vi.fn();
-    tmuxServiceMock.detachCurrentClient.mockRejectedValueOnce(
-      new Error('No active tmux client could be resolved for detach')
-    );
-
-    const { stdin, lastFrame, unmount } = render(
-      <Harness cleanExit={cleanExit} setStatusMessage={setStatusMessage} />
-    );
-
-    await sleep(20);
-    stdin.write('q');
-    await sleep(20);
-    expect(lastFrame()).toContain('armed');
-
-    stdin.write('q');
-    await sleep(20);
-
-    expect(lastFrame()).toContain('idle');
-    expect(setStatusMessage).toHaveBeenCalledWith(
-      'Failed to detach from dmux session: No active tmux client could be resolved for detach'
-    );
     expect(cleanExit).not.toHaveBeenCalled();
 
     unmount();

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
+  canRunDmuxRuntimeE2E,
+  type RuntimeTmuxClient,
   withDmuxRuntimeHarness,
 } from "./helpers/dmuxRuntimeHarness.js"
 
@@ -24,9 +26,13 @@ async function waitForCondition(
   throw new Error(`Timed out waiting for ${description}`)
 }
 
+function getClientKeyTable(clients: RuntimeTmuxClient[], tty: string): string | undefined {
+  return clients.find((client) => client.tty === tty)?.keyTable
+}
+
 describe.sequential("dmux quit runtime e2e", () => {
-  it.skip(
-    "detaches only the tmux client that confirms quit",
+  it.runIf(canRunDmuxRuntimeE2E)(
+    "arms and confirms detach per tmux client without affecting other attached clients",
     async () => {
       await withDmuxRuntimeHarness(async (harness) => {
         const repoA = await harness.createProject("repo-a")
@@ -38,33 +44,111 @@ describe.sequential("dmux quit runtime e2e", () => {
         const secondaryClient = await harness.attachAdditionalClient({
           id: "client-b",
         })
-        await sleep(500)
 
-        expect(await harness.listClientTargets()).toEqual(
-          expect.arrayContaining([primaryClientTty, secondaryClient.targetClient])
-        )
+        const initialClients = await harness.listClients()
+        if (getClientKeyTable(initialClients, primaryClientTty) !== "root") {
+          await harness.sendClientInput("Escape")
+        }
 
-        await secondaryClient.sendInput("q")
-        expect(await harness.listClientTargets()).toEqual(
-          expect.arrayContaining([primaryClientTty, secondaryClient.targetClient])
+        await waitForCondition(
+          async () => {
+            const clients = await harness.listClients()
+            return (
+              getClientKeyTable(clients, primaryClientTty) === "root"
+              && getClientKeyTable(clients, secondaryClient.targetClient) === "root"
+            )
+          },
+          10000,
+          "both tmux clients to start in the root key table"
         )
 
         await secondaryClient.sendInput("q")
 
         await waitForCondition(
-          async () =>
-            !(await harness.listClientTargets()).includes(secondaryClient.targetClient),
+          async () => {
+            const clients = await harness.listClients()
+            return (
+              getClientKeyTable(clients, primaryClientTty) === "root"
+              && getClientKeyTable(clients, secondaryClient.targetClient) === "dmux-detach-confirm"
+            )
+          },
           10000,
-          "the secondary client to detach"
+          "the secondary client to enter detach confirmation mode"
         )
 
-        const remainingClients = await harness.listClientTargets()
-        expect(remainingClients).toContain(primaryClientTty)
+        await secondaryClient.sendInput("Escape")
+
+        await waitForCondition(
+          async () => {
+            const clients = await harness.listClients()
+            return (
+              getClientKeyTable(clients, primaryClientTty) === "root"
+              && getClientKeyTable(clients, secondaryClient.targetClient) === "root"
+            )
+          },
+          10000,
+          "the secondary client to cancel detach confirmation"
+        )
+
+        await secondaryClient.sendInput("q")
+
+        await waitForCondition(
+          async () => {
+            const clients = await harness.listClients()
+            return getClientKeyTable(clients, secondaryClient.targetClient) === "dmux-detach-confirm"
+          },
+          10000,
+          "the secondary client to re-enter detach confirmation mode"
+        )
+
+        await secondaryClient.sendInput("?")
+
+        await waitForCondition(
+          async () => {
+            const clients = await harness.listClients()
+            return (
+              getClientKeyTable(clients, primaryClientTty) === "root"
+              && getClientKeyTable(clients, secondaryClient.targetClient) === "root"
+            )
+          },
+          10000,
+          "the secondary client to return to the root key table after passthrough"
+        )
+
+        await secondaryClient.sendInput("q")
+
+        await waitForCondition(
+          async () => {
+            const clients = await harness.listClients()
+            return getClientKeyTable(clients, secondaryClient.targetClient) === "dmux-detach-confirm"
+          },
+          10000,
+          "the secondary client to arm detach confirmation again"
+        )
+
+        await secondaryClient.sendInput("q")
+
+        await waitForCondition(
+          async () => {
+            const clients = await harness.listClients()
+            return (
+              !clients.some((client) => client.tty === secondaryClient.targetClient)
+              && getClientKeyTable(clients, primaryClientTty) === "root"
+            )
+          },
+          10000,
+          "the secondary client to detach while leaving the primary client attached"
+        )
 
         await harness.sendClientInput("?")
         await harness.waitForClientLog("Keyboard Shortcuts", 10000, primaryAfterOffset)
       })
     },
     120000
+  )
+
+  it.runIf(!canRunDmuxRuntimeE2E)(
+    "skipped: tmux/script/runner not available or DMUX_E2E is not enabled",
+    () => {}
   )
 })

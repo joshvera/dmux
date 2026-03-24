@@ -40,6 +40,11 @@ export interface TmuxPaneSnapshot {
   title: string
 }
 
+export interface RuntimeTmuxClient {
+  tty: string
+  keyTable: string
+}
+
 export interface AttachedTmuxClientContext {
   tmpDir: string
   artifactDir: string
@@ -740,10 +745,25 @@ export class DmuxRuntimeHarness {
   }
 
   async listClientTargets(): Promise<string[]> {
-    return this.execTmux(["list-clients", "-F", "#{client_tty}"])
+    return (await this.listClients()).map((client) => client.tty)
+  }
+
+  async listClients(): Promise<RuntimeTmuxClient[]> {
+    return this.execTmux([
+      "list-clients",
+      "-F",
+      "#{client_tty}\t#{client_key_table}",
+    ])
       .split("\n")
       .map((value) => value.trim())
       .filter(Boolean)
+      .map((line) => {
+        const [tty = "", keyTable = ""] = line.split("\t")
+        return {
+          tty,
+          keyTable: keyTable || "root",
+        }
+      })
   }
 
   async getPaneSnapshots(): Promise<TmuxPaneSnapshot[]> {
@@ -774,18 +794,25 @@ export class DmuxRuntimeHarness {
 
   async waitForControlPaneReady(): Promise<void> {
     await poll(
-      async () => await this.readControlPaneCapture(),
-      (capture) => {
-        if (!capture) {
-          return false
-        }
-
-        const [header = ""] = capture.split("\n")
-        return capture.includes("[t]erminal") && !/[◷◶]/.test(header)
+      async () => {
+        const [capture, clientLog] = await Promise.all([
+          this.readControlPaneCapture(),
+          this.readClientLog(),
+        ])
+        return { capture, clientLog }
+      },
+      ({ capture, clientLog }) => {
+        const text = `${capture}\n${clientLog}`
+        return (
+          text.includes("[t]erminal")
+          || text.includes("[n]ew agent")
+          || text.includes("[Setup] Setting initial control pane ID")
+        )
       },
       20000,
       "dmux control pane to become interactive"
     )
+    await sleep(500)
   }
 
   async readControlPaneCapture(): Promise<string> {

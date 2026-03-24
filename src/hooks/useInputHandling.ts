@@ -314,6 +314,19 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
+  const enterDetachConfirmMode = async () => {
+    clearQuitConfirmMode()
+
+    try {
+      await TmuxService.getInstance().enterDetachConfirmMode()
+    } catch (error: any) {
+      setStatusMessage(
+        `Failed to arm detach confirmation: ${error?.message || String(error)}`
+      )
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    }
+  }
+
   useEffect(() => {
     if (effectivePresentationMode !== "focus") {
       lastPersistentModeRef.current = effectivePresentationMode
@@ -1769,10 +1782,14 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     // Handle Ctrl+C for quit confirmation (must be first, before any other checks)
     if (key.ctrl && input === "c") {
-      if (quitConfirmMode) {
-        await detachOrExit()
+      if (process.env.TMUX) {
+        await enterDetachConfirmMode()
       } else {
-        armQuitConfirmMode()
+        if (quitConfirmMode) {
+          await detachOrExit()
+        } else {
+          armQuitConfirmMode()
+        }
       }
       return
     }
@@ -2027,10 +2044,14 @@ export function useInputHandling(params: UseInputHandlingParams) {
       // Queue all demo toasts
       demos.forEach(demo => stateManager.showToast(demo.msg, demo.severity))
     } else if (input === "q") {
-      if (quitConfirmMode) {
-        await detachOrExit()
+      if (process.env.TMUX) {
+        await enterDetachConfirmMode()
       } else {
-        armQuitConfirmMode()
+        if (quitConfirmMode) {
+          await detachOrExit()
+        } else {
+          armQuitConfirmMode()
+        }
       }
       return
     } else if (isDevMode && input === "S" && selectedIndex < panes.length) {

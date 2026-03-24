@@ -87,12 +87,42 @@ describe('remotePaneActions', () => {
     const setupCommands = buildRemotePaneActionBindingCommands();
     const cleanupCommands = buildRemotePaneActionCleanupCommands();
 
-    expect(setupCommands).toHaveLength(1);
+    expect(setupCommands.length).toBeGreaterThan(5);
     expect(setupCommands[0]).toContain('bind-key -n M-M');
     expect(setupCommands[0]).toContain('--remote-pane-action m');
+    expect(
+      setupCommands.some((command) =>
+        command.includes('bind-key -T dmux-detach-confirm q detach-client -t "#{client_tty}"')
+      )
+    ).toBe(true);
+    expect(
+      setupCommands.some((command) =>
+        command.includes('bind-key -T dmux-detach-confirm C-c detach-client -t "#{client_tty}"')
+      )
+    ).toBe(true);
+    expect(
+      setupCommands.some((command) =>
+        command.includes('bind-key -T dmux-detach-confirm Escape switch-client -T root')
+      )
+    ).toBe(true);
+    expect(
+      setupCommands.some((command) =>
+        command.includes(`bind-key -T dmux-detach-confirm '?' switch-client -T root \\; send-keys -K '?'`)
+      )
+    ).toBe(true);
+    expect(
+      setupCommands.some((command) =>
+        command.includes('bind-key -T dmux-detach-confirm Any switch-client -T root \\; send-keys -K')
+      )
+    ).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -n M-M'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -n M-D'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-pane-action x'))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm q'))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm C-c'))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm Escape'))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes(`unbind-key -T dmux-detach-confirm '?'`))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm Any'))).toBe(true);
   });
 
   it('allows the remote menu shortcut from the control pane while keeping other shortcuts blocked', () => {

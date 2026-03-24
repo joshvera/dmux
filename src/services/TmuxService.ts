@@ -1,6 +1,9 @@
 import { execSync } from 'child_process';
 import { LogService } from './LogService.js';
 import { execAsync } from '../utils/execAsync.js';
+import {
+  DMUX_DETACH_CONFIRM_TABLE,
+} from '../utils/remotePaneActions.js';
 import type { PanePosition, WindowDimensions } from '../types.js';
 
 export type PaneListScope = 'window' | 'session';
@@ -680,6 +683,24 @@ export class TmuxService {
       },
       RetryStrategy.FAST,
       `detachClient(${targetClientTty})`
+    );
+  }
+
+  /**
+   * Enter the client-local detach confirmation key table and show guidance.
+   */
+  async enterDetachConfirmMode(): Promise<void> {
+    await this.executeWithRetry(
+      () => {
+        this.execute(
+          `tmux switch-client -T '${DMUX_DETACH_CONFIRM_TABLE}'`
+        );
+        this.execute(
+          `tmux display-message -d 3000 'Press q or Ctrl+C again to detach. Esc cancels.'`
+        );
+      },
+      RetryStrategy.FAST,
+      'enterDetachConfirmMode'
     );
   }
 

@@ -98,4 +98,20 @@ describe('TmuxService detach helpers', () => {
     );
     expect(detachClientSpy).not.toHaveBeenCalled();
   });
+
+  it('enters the tmux detach confirmation key table and shows guidance', async () => {
+    const service = TmuxService.getInstance();
+    const executeSpy = vi.spyOn(service as any, 'execute').mockReturnValue('');
+
+    await service.enterDetachConfirmMode();
+
+    expect(executeSpy).toHaveBeenNthCalledWith(
+      1,
+      "tmux switch-client -T 'dmux-detach-confirm'"
+    );
+    expect(executeSpy).toHaveBeenNthCalledWith(
+      2,
+      "tmux display-message -d 3000 'Press q or Ctrl+C again to detach. Esc cancels.'"
+    );
+  });
 });
