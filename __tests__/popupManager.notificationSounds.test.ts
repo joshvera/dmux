@@ -6,6 +6,11 @@ import type { NotificationSoundId } from '../src/utils/notificationSounds.js';
 function createPopupManager(
   enabledNotificationSounds?: NotificationSoundId[]
 ): PopupManager {
+  const settingsManager = {
+    getSettings: () => ({ enabledNotificationSounds }),
+    getGlobalSettings: () => ({}),
+    getProjectSettings: () => ({}),
+  };
   const config: PopupManagerConfig = {
     sidebarWidth: 40,
     projectRoot: '/tmp/project',
@@ -14,11 +19,8 @@ function createPopupManager(
     terminalWidth: 120,
     terminalHeight: 40,
     availableAgents: ['claude'] as AgentName[],
-    settingsManager: {
-      getSettings: () => ({ enabledNotificationSounds }),
-      getGlobalSettings: () => ({}),
-      getProjectSettings: () => ({}),
-    },
+    settingsManager,
+    getSettingsManagerForProjectRoot: () => settingsManager,
     projectSettings: {},
     trackProjectActivity: async (work) => await work(),
   };

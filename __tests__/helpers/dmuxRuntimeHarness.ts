@@ -494,6 +494,11 @@ export async function withAttachedTmuxClient(
       height,
       writeScript: (name, body) => writeExecutableScript(tmpDir, name, body),
       createPopupManager: () => {
+        const settingsManager = {
+          getSettings: () => ({}),
+          getGlobalSettings: () => ({}),
+          getProjectSettings: () => ({}),
+        }
         const config: PopupManagerConfig = {
           sidebarWidth: 40,
           projectRoot: "/repo-a",
@@ -502,11 +507,8 @@ export async function withAttachedTmuxClient(
           terminalWidth: width,
           terminalHeight: height,
           availableAgents: ["claude", "codex"],
-          settingsManager: {
-            getSettings: () => ({}),
-            getGlobalSettings: () => ({}),
-            getProjectSettings: () => ({}),
-          },
+          settingsManager,
+          getSettingsManagerForProjectRoot: () => settingsManager,
           projectSettings: {},
           trackProjectActivity: async (work: () => Promise<unknown>) => await work(),
         }

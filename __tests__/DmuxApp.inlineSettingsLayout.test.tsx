@@ -7,12 +7,14 @@ const {
   dialogStateRef,
   layoutManagementMock,
   inputHandlingMock,
+  settingsManagerConstructorMock,
 } = vi.hoisted(() => ({
   dialogStateRef: {
     current: null as any,
   },
   layoutManagementMock: vi.fn(),
   inputHandlingMock: vi.fn(),
+  settingsManagerConstructorMock: vi.fn(),
 }))
 
 function createDialogState(overrides: Record<string, unknown> = {}) {
@@ -221,6 +223,9 @@ vi.mock("../src/services/StatusDetector.js", () => ({
 
 vi.mock("../src/utils/settingsManager.js", () => ({
   SettingsManager: class {
+    constructor(projectRoot?: string) {
+      settingsManagerConstructorMock(projectRoot)
+    }
     getSettings() {
       return { showFooterTips: false }
     }
@@ -294,6 +299,37 @@ describe("DmuxApp inline settings layout suspension", () => {
         hasActiveDialog: true,
       })
     )
+
+    unmount()
+  })
+
+  it("reuses the same non-session settings manager while inline settings is open", () => {
+    dialogStateRef.current = createDialogState({
+      showInlineSettings: true,
+      inlineSettingsProjectRoot: "/repo-b",
+    })
+
+    const { unmount } = render(
+      <DmuxApp
+        panesFile="/repo/.dmux/dmux.config.json"
+        projectName="repo"
+        sessionName="dmux-test"
+        settingsFile="/repo/.dmux/settings.json"
+        projectRoot="/repo"
+        controlPaneId="%0"
+      />
+    )
+
+    expect(settingsManagerConstructorMock).toHaveBeenCalledTimes(2)
+    expect(settingsManagerConstructorMock).toHaveBeenNthCalledWith(1, "/repo")
+    expect(settingsManagerConstructorMock).toHaveBeenNthCalledWith(2, "/repo-b")
+
+    const inputHandlingParams = inputHandlingMock.mock.calls.at(-1)?.[0]
+    const firstManager = inputHandlingParams?.getSettingsManagerForProjectRoot("/repo-b")
+    const secondManager = inputHandlingParams?.getSettingsManagerForProjectRoot("/repo-b")
+
+    expect(firstManager).toBe(secondManager)
+    expect(settingsManagerConstructorMock).toHaveBeenCalledTimes(2)
 
     unmount()
   })

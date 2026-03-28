@@ -9,7 +9,7 @@ import {
 import { StateManager } from "../shared/StateManager.js"
 import { LogService } from "./LogService.js"
 import { TmuxService } from "./TmuxService.js"
-import { SettingsManager, SETTING_DEFINITIONS } from "../utils/settingsManager.js"
+import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
 import type { DmuxPane, DmuxSettings, ProjectSettings } from "../types.js"
 import {
   getPaneMenuActions,
@@ -30,6 +30,7 @@ import {
 import { resolveDistPath } from "../utils/runtimePaths.js"
 import { getPaneProjectRoot } from "../utils/paneProject.js"
 import { getPaneDisplayName } from "../utils/paneTitle.js"
+import { sameSidebarProjectRoot } from "../utils/sidebarProjects.js"
 import type { TrackProjectActivity } from "../types/activity.js"
 import type {
   ReopenWorktreePopupResult,
@@ -46,7 +47,7 @@ export interface PopupManagerConfig {
   controlPaneId?: string
   availableAgents: AgentName[]
   settingsManager: any
-  getSettingsManagerForProjectRoot?: (projectRoot: string) => any
+  getSettingsManagerForProjectRoot: (projectRoot: string) => any
   projectSettings: ProjectSettings
   trackProjectActivity: TrackProjectActivity
 }
@@ -181,13 +182,10 @@ export class PopupManager {
 
   private getSettingsManagerForProjectRoot(projectRoot?: string): any {
     const resolvedProjectRoot = projectRoot || this.config.projectRoot
-    if (this.config.getSettingsManagerForProjectRoot) {
-      return this.config.getSettingsManagerForProjectRoot(resolvedProjectRoot)
-    }
-    if (resolvedProjectRoot === this.config.projectRoot) {
+    if (sameSidebarProjectRoot(resolvedProjectRoot, this.config.projectRoot)) {
       return this.config.settingsManager
     }
-    return new SettingsManager(resolvedProjectRoot)
+    return this.config.getSettingsManagerForProjectRoot(resolvedProjectRoot)
   }
 
   private clampPopupSizeToClient(

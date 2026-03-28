@@ -69,7 +69,7 @@ import {
   getPresentationTargetPane,
   resolvePresentationMode,
 } from "../utils/presentationMode.js"
-import { SettingsManager, SETTING_DEFINITIONS } from "../utils/settingsManager.js"
+import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
 import type { DmuxSettings } from "../types.js"
 
 // Type for the action system returned by useActionSystem hook
@@ -251,10 +251,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
     .map((pane) => `${pane.id}:${pane.hidden ? "1" : "0"}`)
     .join("|")
   const getResolvedSettingsManagerForProjectRoot = (targetProjectRoot: string) =>
-    getSettingsManagerForProjectRoot?.(targetProjectRoot)
-    ?? (sameSidebarProjectRoot(targetProjectRoot, projectRoot)
+    sameSidebarProjectRoot(targetProjectRoot, projectRoot)
       ? settingsManager
-      : new SettingsManager(targetProjectRoot))
+      : getSettingsManagerForProjectRoot(targetProjectRoot)
   const getSettingsUpdateManager = (
     targetProjectRoot: string,
     scope: "global" | "project",

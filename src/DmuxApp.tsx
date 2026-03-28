@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react"
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { Box, Text, useApp, useStdout, useInput } from "ink"
 import { TmuxService } from "./services/TmuxService.js"
 
@@ -202,12 +202,22 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const [attentionService] = useState(
     () => new DmuxAttentionService({ focusService })
   )
+  const settingsManagerCacheRef = useRef(new Map<string, SettingsManager>())
+  settingsManagerCacheRef.current.set(resolvePath(sessionProjectRoot), settingsManager)
   const getSettingsManagerForProjectRoot = useCallback((targetProjectRoot: string) => {
     if (sameSidebarProjectRoot(targetProjectRoot, sessionProjectRoot)) {
       return settingsManager
     }
 
-    return new SettingsManager(targetProjectRoot)
+    const cacheKey = resolvePath(targetProjectRoot)
+    const cachedManager = settingsManagerCacheRef.current.get(cacheKey)
+    if (cachedManager) {
+      return cachedManager
+    }
+
+    const targetSettingsManager = new SettingsManager(targetProjectRoot)
+    settingsManagerCacheRef.current.set(cacheKey, targetSettingsManager)
+    return targetSettingsManager
   }, [sessionProjectRoot, settingsManager])
   const inlineSettingsManager = showInlineSettings
     ? getSettingsManagerForProjectRoot(inlineSettingsProjectRoot || sessionProjectRoot)

@@ -23,6 +23,8 @@ function createPopupManager({
   }
   getSettingsManagerForProjectRoot?: (projectRoot: string) => any
 } = {}): PopupManager {
+  const resolvedGetSettingsManagerForProjectRoot =
+    getSettingsManagerForProjectRoot ?? (() => settingsManager)
   const config: PopupManagerConfig = {
     sidebarWidth: 40,
     projectRoot: "/tmp/project",
@@ -32,7 +34,7 @@ function createPopupManager({
     terminalHeight: 40,
     availableAgents: ["claude"],
     settingsManager,
-    getSettingsManagerForProjectRoot,
+    getSettingsManagerForProjectRoot: resolvedGetSettingsManagerForProjectRoot,
     projectSettings: {},
     trackProjectActivity: async (work) => await work(),
   }

@@ -3,6 +3,11 @@ import { PopupManager, type PopupManagerConfig } from '../src/services/PopupMana
 import type { AgentName } from '../src/utils/agentLaunch.js';
 
 function createPopupManager(availableAgents: AgentName[]): PopupManager {
+  const settingsManager = {
+    getSettings: () => ({}),
+    getGlobalSettings: () => ({}),
+    getProjectSettings: () => ({}),
+  };
   const config: PopupManagerConfig = {
     sidebarWidth: 40,
     projectRoot: '/tmp/project',
@@ -11,11 +16,8 @@ function createPopupManager(availableAgents: AgentName[]): PopupManager {
     terminalWidth: 120,
     terminalHeight: 40,
     availableAgents,
-    settingsManager: {
-      getSettings: () => ({}),
-      getGlobalSettings: () => ({}),
-      getProjectSettings: () => ({}),
-    },
+    settingsManager,
+    getSettingsManagerForProjectRoot: () => settingsManager,
     projectSettings: {},
     trackProjectActivity: async (work) => await work(),
   };
