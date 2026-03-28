@@ -94,6 +94,15 @@ describe('ensureOsc52CopyScript', () => {
     expect(mtimeAfter).toBe(mtimeBefore);
   });
 
+  it('throws when dmuxDir exists but is not a directory', () => {
+    const fakeDmuxDir = join(tempDir, '.dmux');
+    writeFileSync(fakeDmuxDir, 'not a directory');
+
+    expect(() => ensureOsc52CopyScript(fakeDmuxDir)).toThrow(
+      /Expected .* to be a directory but it is not/
+    );
+  });
+
   it('does not follow symlinks', () => {
     const dmuxDir = join(tempDir, '.dmux');
     mkdirSync(dmuxDir, { recursive: true });
