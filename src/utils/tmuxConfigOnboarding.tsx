@@ -5,6 +5,7 @@ import path from 'path';
 import React, { useState } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import { LogService } from '../services/LogService.js';
+import { shellQuote } from './shellQuote.js';
 
 export type TmuxPresetTheme = 'dark' | 'light';
 
@@ -114,10 +115,6 @@ export function buildRecommendedTmuxConfig(theme: TmuxPresetTheme): string {
     'set -ga update-environment "TERM_PROGRAM"',
     '',
   ].join('\n');
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 async function readOnboardingState(statePath: string): Promise<OnboardingState> {
