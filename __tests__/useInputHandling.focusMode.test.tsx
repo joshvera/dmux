@@ -466,7 +466,7 @@ describe("useInputHandling focus mode", () => {
     unmount()
   })
 
-  it("re-shows the selected hidden pane when focus mode has no visible panes", async () => {
+  it("keeps the selected hidden pane hidden when focus mode has no visible panes", async () => {
     const savePanes = vi.fn(async () => {})
     const setSelectedIndex = vi.fn()
 
@@ -487,17 +487,14 @@ describe("useInputHandling focus mode", () => {
 
     await sleep(60)
 
-    expect(tmuxServiceMock.joinPaneToTarget).toHaveBeenCalledWith("%2", "%0")
-    expect(setSelectedIndex).toHaveBeenCalledWith(1)
-    expect(savePanes).toHaveBeenCalledWith([
-      expect.objectContaining({ id: "1", hidden: true }),
-      expect.objectContaining({ id: "2", hidden: false }),
-    ])
+    expect(tmuxServiceMock.joinPaneToTarget).not.toHaveBeenCalled()
+    expect(setSelectedIndex).not.toHaveBeenCalled()
+    expect(savePanes).not.toHaveBeenCalled()
 
     unmount()
   })
 
-  it("re-shows a hidden sibling after hiding the last visible pane in focus mode", async () => {
+  it("leaves all panes hidden after hiding the last visible pane in focus mode", async () => {
     let currentPanes = [pane("1"), pane("2", { hidden: true })]
     let currentSelectedIndex = 0
 
@@ -544,12 +541,12 @@ describe("useInputHandling focus mode", () => {
 
     await sleep(80)
 
-    expect(setSelectedIndex).toHaveBeenCalledWith(1)
+    expect(setSelectedIndex).not.toHaveBeenCalled()
     expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%0")
-    expect(tmuxServiceMock.joinPaneToTarget).toHaveBeenCalledWith("%2", "%0")
+    expect(tmuxServiceMock.joinPaneToTarget).not.toHaveBeenCalled()
     expect(currentPanes).toEqual([
       expect.objectContaining({ id: "1", hidden: true }),
-      expect.objectContaining({ id: "2", hidden: false }),
+      expect.objectContaining({ id: "2", hidden: true }),
     ])
 
     renderResult.unmount()

@@ -1045,6 +1045,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     if (effectivePresentationMode === "focus") {
       const visiblePaneCount = panes.filter((pane) => !pane.hidden).length
+      if (visiblePaneCount === 0) {
+        return
+      }
+
       const selectedPane = panes[selectedIndex]
       if (visiblePaneCount > 1 || targetPane.hidden || selectedPane?.hidden) {
         void isolatePane(targetPane, { suppressStatus: true })
@@ -1081,25 +1085,28 @@ export function useInputHandling(params: UseInputHandlingParams) {
       )
 
       if (result.hidden) {
-        const fallbackPane = getFallbackPaneAfterHide(
-          result.updatedPanes,
-          selectedPane.id,
-          selectedIndex
-        )
+        presentationSyncKeyRef.current = ""
 
-        if (fallbackPane) {
-          const fallbackIndex = result.updatedPanes.findIndex(
-            (pane) => pane.id === fallbackPane.id
+        if (effectivePresentationMode === "focus") {
+          if (controlPaneId) {
+            await TmuxService.getInstance().selectPane(controlPaneId)
+          }
+        } else {
+          const fallbackPane = getFallbackPaneAfterHide(
+            result.updatedPanes,
+            selectedPane.id,
+            selectedIndex
           )
 
-          if (fallbackIndex >= 0) {
-            setSelectedIndex(fallbackIndex)
-          }
+          if (fallbackPane) {
+            const fallbackIndex = result.updatedPanes.findIndex(
+              (pane) => pane.id === fallbackPane.id
+            )
 
-          presentationSyncKeyRef.current = ""
+            if (fallbackIndex >= 0) {
+              setSelectedIndex(fallbackIndex)
+            }
 
-          if (effectivePresentationMode === "focus" && controlPaneId) {
-            await TmuxService.getInstance().selectPane(controlPaneId)
           }
         }
       }
