@@ -105,12 +105,16 @@ export function ensureTmuxRuntimeCompatibility(sessionName: string): void {
 
   // Ensure the OSC 52 copy helper exists and bind copy-mode mouse selection to it.
   // This works reliably over SSH where tmux's built-in set-clipboard OSC 52 emission
-  // and pbcopy both fail.
-  const scriptPath = ensureOsc52CopyScript();
-  commands.push(
-    ['bind-key', '-T', 'copy-mode', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-pipe-and-cancel', scriptPath],
-    ['bind-key', '-T', 'copy-mode-vi', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-pipe-and-cancel', scriptPath],
-  );
+  // and pbcopy both fail. Best effort — skip bindings if script creation fails.
+  try {
+    const scriptPath = ensureOsc52CopyScript();
+    commands.push(
+      ['bind-key', '-T', 'copy-mode', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-pipe-and-cancel', scriptPath],
+      ['bind-key', '-T', 'copy-mode-vi', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-pipe-and-cancel', scriptPath],
+    );
+  } catch {
+    // Non-fatal: clipboard copy-mode bindings will use default tmux behavior.
+  }
 
   for (const args of commands) {
     try {
