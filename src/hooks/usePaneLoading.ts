@@ -8,9 +8,9 @@ import { TmuxService } from '../services/TmuxService.js';
 import { PaneLifecycleManager } from '../services/PaneLifecycleManager.js';
 import { TMUX_COMMAND_TIMEOUT, TMUX_RETRY_DELAY } from '../constants/timing.js';
 import { atomicWriteJson } from '../utils/atomicWrite.js';
-import { buildAgentResumeOrLaunchCommand } from '../utils/agentLaunch.js';
 import { ensureGeminiFolderTrusted } from '../utils/geminiTrust.js';
 import { getPaneTmuxTitle } from '../utils/paneTitle.js';
+import { buildPaneRestoreCommands } from '../utils/paneRestore.js';
 import {
   getVisiblePanes,
   syncHiddenStateFromCurrentWindow,
@@ -35,74 +35,24 @@ interface PaneLoadResult {
   titleToId: Map<string, string>;
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function getPromptPreview(prompt?: string): string {
-  const normalizedPrompt = (prompt || '').replace(/\s+/g, ' ').trim();
-  return normalizedPrompt ? normalizedPrompt.substring(0, 50) : '';
-}
-
-async function sendShellCommandAndEnter(
-  tmuxService: TmuxService,
-  paneId: string,
-  command: string
-): Promise<void> {
-  await tmuxService.sendShellCommand(paneId, command);
-  await tmuxService.sendTmuxKeys(paneId, 'Enter');
-}
-
-async function restoreAgentSessionForPane(
-  tmuxService: TmuxService,
-  pane: DmuxPane,
-  paneId: string
-): Promise<void> {
-  if (!pane.agent) {
-    return;
-  }
-
-  if (pane.agent === 'gemini' && pane.worktreePath) {
-    ensureGeminiFolderTrusted(pane.worktreePath);
-  }
-
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  await tmuxService.sendShellCommand(
-    paneId,
-    buildAgentResumeOrLaunchCommand(pane.agent, pane.permissionMode)
-  );
-  await tmuxService.sendTmuxKeys(paneId, 'Enter');
-}
-
 async function restoreRecreatedPane(
   tmuxService: TmuxService,
   pane: DmuxPane,
   paneId: string
 ): Promise<void> {
-  const worktreePath = pane.worktreePath || process.cwd();
-  const promptPreview = getPromptPreview(pane.prompt);
-
-  await sendShellCommandAndEnter(
-    tmuxService,
-    paneId,
-    `printf '%s\\n' ${shellQuote(`# Pane restored: ${pane.slug}`)}`
-  );
-
-  if (promptPreview) {
-    await sendShellCommandAndEnter(
-      tmuxService,
-      paneId,
-      `printf '%s\\n' ${shellQuote(`# Original prompt: ${promptPreview}...`)}`
-    );
+  if (pane.agent === 'gemini' && pane.worktreePath) {
+    ensureGeminiFolderTrusted(pane.worktreePath);
   }
 
-  await sendShellCommandAndEnter(
-    tmuxService,
-    paneId,
-    `cd ${shellQuote(worktreePath)}`
-  );
+  const commands = buildPaneRestoreCommands(pane, process.cwd());
+  const resumeCommandIndex = pane.agent ? commands.length - 1 : -1;
 
-  await restoreAgentSessionForPane(tmuxService, pane, paneId);
+  for (const [index, command] of commands.entries()) {
+    if (index === resumeCommandIndex) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    await tmuxService.sendShellCommandAndEnter(paneId, command);
+  }
 }
 
 /**

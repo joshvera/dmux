@@ -1,10 +1,13 @@
 import * as fs from 'fs/promises';
 import type { Dirent } from 'fs';
 import path from 'path';
+import { shellQuote } from './shellQuote.js';
 
 const PROMPTS_SUBDIR = 'prompts';
 const PROMPT_FILE_EXTENSION = '.txt';
 const MAX_SLUG_PREFIX_LENGTH = 64;
+
+export { shellQuote } from './shellQuote.js';
 
 function sanitizeSlugForFilename(slug: string): string {
   const normalized = slug
@@ -22,10 +25,6 @@ function sanitizeSlugForFilename(slug: string): string {
 
 function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 8);
-}
-
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export function getPromptsDir(projectRoot: string): string {

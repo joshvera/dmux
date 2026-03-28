@@ -2,10 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { RemotePaneActionShortcut } from './remotePaneActions.js';
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
+import { shellQuote } from './shellQuote.js';
 
 export function resolveDmuxExecutable(): string {
   const currentDir = path.dirname(fileURLToPath(import.meta.url));

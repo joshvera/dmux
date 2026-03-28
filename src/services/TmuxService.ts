@@ -5,6 +5,7 @@ import {
   DMUX_DETACH_CONFIRM_TABLE,
 } from '../utils/remotePaneActions.js';
 import type { PanePosition, WindowDimensions } from '../types.js';
+import { shellQuote } from '../utils/shellQuote.js';
 
 export type PaneListScope = 'window' | 'session';
 
@@ -792,14 +793,30 @@ export class TmuxService {
    * @see sendTmuxKeys For sending tmux key sequences (Enter, C-l, etc.)
    */
   async sendShellCommand(paneId: string, command: string): Promise<void> {
-    // Quote the command to preserve spaces, escaping any single quotes
-    const quotedCommand = `'${command.replace(/'/g, "'\\''")}'`;
+    const quotedCommand = shellQuote(command);
     await this.executeWithRetry(
       () => {
         this.execute(`tmux send-keys -t '${paneId}' ${quotedCommand}`);
       },
       RetryStrategy.FAST,
       `sendShellCommand(${paneId})`
+    );
+  }
+
+  /**
+   * Send a shell command to a pane and execute it atomically.
+   *
+   * This uses a single `tmux send-keys` invocation so the command is not left
+   * partially typed if a follow-up Enter send fails.
+   */
+  async sendShellCommandAndEnter(paneId: string, command: string): Promise<void> {
+    const quotedCommand = shellQuote(command);
+    await this.executeWithRetry(
+      () => {
+        this.execute(`tmux send-keys -t '${paneId}' ${quotedCommand} Enter`);
+      },
+      RetryStrategy.FAST,
+      `sendShellCommandAndEnter(${paneId})`
     );
   }
 
