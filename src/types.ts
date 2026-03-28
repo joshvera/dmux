@@ -88,7 +88,7 @@ export interface ProjectSettings {
   firstDevRun?: boolean;   // Track if dev has been run before
 }
 
-export type PresentationMode = 'grid' | 'single-pane' | 'focus';
+export type PresentationMode = 'grid' | 'focus';
 
 export interface DmuxSettings {
   // Agent permission mode

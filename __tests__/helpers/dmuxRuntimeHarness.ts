@@ -494,6 +494,11 @@ export async function withAttachedTmuxClient(
       height,
       writeScript: (name, body) => writeExecutableScript(tmpDir, name, body),
       createPopupManager: () => {
+        const settingsManager = {
+          getSettings: () => ({}),
+          getGlobalSettings: () => ({}),
+          getProjectSettings: () => ({}),
+        }
         const config: PopupManagerConfig = {
           sidebarWidth: 40,
           projectRoot: "/repo-a",
@@ -502,11 +507,8 @@ export async function withAttachedTmuxClient(
           terminalWidth: width,
           terminalHeight: height,
           availableAgents: ["claude", "codex"],
-          settingsManager: {
-            getSettings: () => ({}),
-            getGlobalSettings: () => ({}),
-            getProjectSettings: () => ({}),
-          },
+          settingsManager,
+          getSettingsManagerForProjectRoot: () => settingsManager,
           projectSettings: {},
           trackProjectActivity: async (work: () => Promise<unknown>) => await work(),
         }
@@ -959,20 +961,12 @@ export class DmuxRuntimeHarness {
     }
   }
 
-  async openFocusNavigatorFromActivePane(): Promise<void> {
+  async openPaneMenuFromActivePane(): Promise<void> {
     const afterOffset = await this.markClientLog()
     await this.sendActiveWorkPaneCommand(
       `${shellQuote(this.dmuxExecutablePath)} --remote-pane-action m >/dev/null 2>&1`
     )
-    await this.waitForClientLog("Focus Navigator", 10000, afterOffset)
-    await this.waitForClientLog("Esc cancel", 10000, afterOffset)
-    await sleep(200)
-  }
-
-  async openActionSheetFromFocusNavigator(): Promise<void> {
-    const afterOffset = await this.markClientLog()
-    await this.sendClientInput("m")
-    await this.waitForClientLog("Actions:", 10000, afterOffset)
+    await this.waitForClientLog("Menu:", 10000, afterOffset)
     await this.waitForClientLog("Enter or hotkey select", 10000, afterOffset)
     await sleep(200)
   }

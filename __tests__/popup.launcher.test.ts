@@ -81,7 +81,7 @@ describe("launchNodePopupNonBlocking", () => {
   })
 
   it("returns an error when the popup exits before ready without a result file", async () => {
-    const handle = launchNodePopupNonBlocking("/tmp/focusActionSheetPopup.js")
+    const handle = launchNodePopupNonBlocking("/tmp/test-popup.js")
 
     popupState.child?.emit("close", 1, null)
     await vi.advanceTimersByTimeAsync(125)
@@ -95,7 +95,7 @@ describe("launchNodePopupNonBlocking", () => {
   })
 
   it("returns a normal cancellation when the popup had already become ready", async () => {
-    const handle = launchNodePopupNonBlocking("/tmp/focusActionSheetPopup.js")
+    const handle = launchNodePopupNonBlocking("/tmp/test-popup.js")
 
     popupState.readyExists = true
     await vi.advanceTimersByTimeAsync(25)

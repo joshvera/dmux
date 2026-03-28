@@ -21,7 +21,7 @@ import { SettingsManager } from './settingsManager.js';
 import { filterEnabledAgents, getInstalledAgents } from './agentDetection.js';
 import { getCurrentBranch } from './git.js';
 import { readWorktreeMetadata } from './worktreeMetadata.js';
-import { resolvePresentationMode } from './presentationMode.js';
+import { getPreferredSplitTargetPaneId } from './panePlacement.js';
 
 export interface ReopenWorktreeOptions {
   agent?: AgentName;
@@ -55,8 +55,6 @@ export async function reopenWorktree(
   } = options;
   const paneProjectName = path.basename(projectRoot);
   const settings = new SettingsManager(projectRoot).getSettings();
-  const presentationMode = resolvePresentationMode(settings.presentationMode);
-  const preserveZoom = presentationMode === 'focus';
   const metadata = readWorktreeMetadata(worktreePath);
   const sessionProjectRoot = optionsSessionProjectRoot
     || (optionsSessionConfigPath ? path.dirname(path.dirname(optionsSessionConfigPath)) : projectRoot);
@@ -110,13 +108,12 @@ export async function reopenWorktree(
   let paneInfo: string;
 
   if (isFirstContentPane) {
-    paneInfo = setupSidebarLayout(controlPaneId, projectRoot, { preserveZoom });
+    paneInfo = setupSidebarLayout(controlPaneId, projectRoot);
     await new Promise((resolve) => setTimeout(resolve, 300));
   } else {
-    // Subsequent panes - always split horizontally
-    const dmuxPaneIds = existingPanes.map(p => p.paneId);
-    const targetPane = dmuxPaneIds[dmuxPaneIds.length - 1];
-    paneInfo = splitPane({ targetPane, preserveZoom });
+    // Subsequent panes always split from the visible dmux window.
+    const targetPane = getPreferredSplitTargetPaneId(existingPanes, controlPaneId);
+    paneInfo = splitPane({ targetPane });
   }
 
   await new Promise((resolve) => setTimeout(resolve, 500));
@@ -184,10 +181,7 @@ export async function reopenWorktree(
   }
 
   // Keep focus on the new pane
-  await tmuxService.selectPane(paneInfo, { preserveZoom });
-  if (preserveZoom) {
-    await tmuxService.setPaneZoom(paneInfo, true);
-  }
+  await tmuxService.selectPane(paneInfo);
 
   // Create the pane object
   const currentBranch = getCurrentBranch(worktreePath);
@@ -228,9 +222,7 @@ export async function reopenWorktree(
   }
 
   // Switch back to the original pane
-  if (!preserveZoom) {
-    await tmuxService.selectPane(originalPaneId);
-  }
+  await tmuxService.selectPane(originalPaneId);
 
   return {
     pane: newPane,

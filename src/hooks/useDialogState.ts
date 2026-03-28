@@ -1,8 +1,9 @@
 import { useState } from "react"
+import type { DmuxSettings } from "../types.js"
 
 /**
  * Hook to manage all dialog-related state in DmuxApp
- * Centralizes: command prompts, file copy dialog, running status, quit confirmation
+ * Centralizes: command prompts, file copy dialog, running status, quit confirmation, inline settings
  */
 export function useDialogState() {
   const [showCommandPrompt, setShowCommandPrompt] = useState<"test" | "dev" | null>(null)
@@ -11,6 +12,15 @@ export function useDialogState() {
   const [currentCommandType, setCurrentCommandType] = useState<"test" | "dev" | null>(null)
   const [runningCommand, setRunningCommand] = useState(false)
   const [quitConfirmMode, setQuitConfirmMode] = useState(false)
+
+  // Inline settings dialog state (fallback when tmux popups unavailable)
+  const [showInlineSettings, setShowInlineSettings] = useState(false)
+  const [inlineSettingsIndex, setInlineSettingsIndex] = useState(0)
+  const [inlineSettingsMode, setInlineSettingsMode] = useState<'list' | 'edit' | 'scope'>('list')
+  const [inlineSettingsEditingKey, setInlineSettingsEditingKey] = useState<keyof DmuxSettings | undefined>(undefined)
+  const [inlineSettingsEditingValueIndex, setInlineSettingsEditingValueIndex] = useState(0)
+  const [inlineSettingsScopeIndex, setInlineSettingsScopeIndex] = useState(0)
+  const [inlineSettingsProjectRoot, setInlineSettingsProjectRoot] = useState<string | undefined>(undefined)
 
   /**
    * Check if any dialog is currently open
@@ -21,7 +31,8 @@ export function useDialogState() {
       showCommandPrompt ||
       showFileCopyPrompt ||
       runningCommand ||
-      quitConfirmMode
+      quitConfirmMode ||
+      showInlineSettings
     )
   }
 
@@ -30,7 +41,7 @@ export function useDialogState() {
    * Used for input routing decisions
    */
   const isModalDialogOpen = () => {
-    return !!(showCommandPrompt || showFileCopyPrompt)
+    return !!(showCommandPrompt || showFileCopyPrompt || showInlineSettings)
   }
 
   /**
@@ -44,6 +55,23 @@ export function useDialogState() {
     setCurrentCommandType(null)
     setRunningCommand(false)
     setQuitConfirmMode(false)
+    setShowInlineSettings(false)
+    setInlineSettingsMode('list')
+    setInlineSettingsIndex(0)
+    setInlineSettingsEditingKey(undefined)
+    setInlineSettingsEditingValueIndex(0)
+    setInlineSettingsScopeIndex(0)
+    setInlineSettingsProjectRoot(undefined)
+  }
+
+  const resetInlineSettings = () => {
+    setShowInlineSettings(false)
+    setInlineSettingsMode('list')
+    setInlineSettingsIndex(0)
+    setInlineSettingsEditingKey(undefined)
+    setInlineSettingsEditingValueIndex(0)
+    setInlineSettingsScopeIndex(0)
+    setInlineSettingsProjectRoot(undefined)
   }
 
   return {
@@ -60,6 +88,23 @@ export function useDialogState() {
     setRunningCommand,
     quitConfirmMode,
     setQuitConfirmMode,
+
+    // Inline settings state
+    showInlineSettings,
+    setShowInlineSettings,
+    inlineSettingsIndex,
+    setInlineSettingsIndex,
+    inlineSettingsMode,
+    setInlineSettingsMode,
+    inlineSettingsEditingKey,
+    setInlineSettingsEditingKey,
+    inlineSettingsEditingValueIndex,
+    setInlineSettingsEditingValueIndex,
+    inlineSettingsScopeIndex,
+    setInlineSettingsScopeIndex,
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
+    resetInlineSettings,
 
     // Helper functions
     isAnyDialogOpen,

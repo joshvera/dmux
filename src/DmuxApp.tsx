@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react"
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { Box, Text, useApp, useStdout, useInput } from "ink"
 import { TmuxService } from "./services/TmuxService.js"
 
@@ -33,7 +33,7 @@ import {
 import {
   type ActionResult,
 } from "./actions/index.js"
-import { SettingsManager } from "./utils/settingsManager.js"
+import { SettingsManager, SETTING_DEFINITIONS } from "./utils/settingsManager.js"
 import { useServices } from "./hooks/useServices.js"
 import { PaneLifecycleManager } from "./services/PaneLifecycleManager.js"
 import { DmuxFocusService } from "./services/DmuxFocusService.js"
@@ -78,6 +78,7 @@ import CommandPromptDialog from "./components/dialogs/CommandPromptDialog.js"
 import FileCopyPrompt from "./components/ui/FileCopyPrompt.js"
 import FooterHelp from "./components/ui/FooterHelp.js"
 import TmuxHooksPromptDialog from "./components/dialogs/TmuxHooksPromptDialog.js"
+import SettingsDialog from "./components/dialogs/SettingsDialog.js"
 import { PaneEventService } from "./services/PaneEventService.js"
 import {
   buildProjectActionLayout,
@@ -86,8 +87,8 @@ import {
   getProjectActionByIndex,
 } from "./utils/projectActions.js"
 import { getPaneProjectRoot } from "./utils/paneProject.js"
+import { sameSidebarProjectRoot } from "./utils/sidebarProjects.js"
 import {
-  getFallbackPaneAfterRemoval,
   resolvePresentationMode,
 } from "./utils/presentationMode.js"
 
@@ -118,7 +119,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const [settingsManager] = useState(() => new SettingsManager(projectRoot))
   const { projectSettings, saveSettings } = useProjectSettings(settingsFile)
   const settings = settingsManager.getSettings()
-  const configuredPresentationMode = resolvePresentationMode(settings.presentationMode)
+  const presentationMode = resolvePresentationMode(settings.presentationMode)
 
   // Dialog state management
   const dialogState = useDialogState()
@@ -135,6 +136,21 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     setRunningCommand,
     quitConfirmMode,
     setQuitConfirmMode,
+    showInlineSettings,
+    setShowInlineSettings,
+    inlineSettingsIndex,
+    setInlineSettingsIndex,
+    inlineSettingsMode,
+    setInlineSettingsMode,
+    inlineSettingsEditingKey,
+    setInlineSettingsEditingKey,
+    inlineSettingsEditingValueIndex,
+    setInlineSettingsEditingValueIndex,
+    inlineSettingsScopeIndex,
+    setInlineSettingsScopeIndex,
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
+    resetInlineSettings,
   } = dialogState
 
   // Debug/development info
@@ -164,10 +180,6 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // Popup support detection
   const [popupsSupported, setPopupsSupported] = useState(false)
-  const presentationMode =
-    !popupsSupported && configuredPresentationMode === "focus"
-      ? "grid"
-      : configuredPresentationMode
 
   // Track terminal dimensions for responsive layout
   const terminalWidth = useTerminalWidth()
@@ -190,6 +202,26 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const [attentionService] = useState(
     () => new DmuxAttentionService({ focusService })
   )
+  const settingsManagerCacheRef = useRef(new Map<string, SettingsManager>())
+  settingsManagerCacheRef.current.set(resolvePath(sessionProjectRoot), settingsManager)
+  const getSettingsManagerForProjectRoot = useCallback((targetProjectRoot: string) => {
+    if (sameSidebarProjectRoot(targetProjectRoot, sessionProjectRoot)) {
+      return settingsManager
+    }
+
+    const cacheKey = resolvePath(targetProjectRoot)
+    const cachedManager = settingsManagerCacheRef.current.get(cacheKey)
+    if (cachedManager) {
+      return cachedManager
+    }
+
+    const targetSettingsManager = new SettingsManager(targetProjectRoot)
+    settingsManagerCacheRef.current.set(cacheKey, targetSettingsManager)
+    return targetSettingsManager
+  }, [sessionProjectRoot, settingsManager])
+  const inlineSettingsManager = showInlineSettings
+    ? getSettingsManagerForProjectRoot(inlineSettingsProjectRoot || sessionProjectRoot)
+    : settingsManager
 
   useEffect(() => {
     if (!showFooterTips || footerTips.length <= 1) {
@@ -371,6 +403,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     controlPaneId,
     availableAgents,
     settingsManager,
+    getSettingsManagerForProjectRoot,
     projectSettings,
 
     // Callbacks
@@ -950,13 +983,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         if (targetPane) {
           try {
             const tmuxService = TmuxService.getInstance()
-            await tmuxService.selectPane(
-              targetPane.paneId,
-              presentationMode === "focus" ? { preserveZoom: true } : undefined
-            )
-            if (presentationMode === "focus") {
-              await tmuxService.setPaneZoom(targetPane.paneId, true)
-            }
+            await tmuxService.selectPane(targetPane.paneId)
           } catch {}
         }
       }
@@ -1000,37 +1027,6 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
       // Mark close as completed (no more lock needed)
       await lifecycleManager.completeClose(paneId)
-
-      if (presentationMode === "focus") {
-        try {
-          const tmuxService = TmuxService.getInstance()
-          const fallbackPane = getFallbackPaneAfterRemoval(
-            updatedPanes,
-            paneId,
-            selectedIndex
-          )
-
-          if (fallbackPane) {
-            const fallbackIndex = updatedPanes.findIndex(
-              (pane) => pane.id === fallbackPane.id
-            )
-            if (fallbackIndex >= 0) {
-              setSelectedIndex(fallbackIndex)
-            }
-            await tmuxService.selectPane(fallbackPane.paneId, {
-              preserveZoom: true,
-            })
-            await tmuxService.setPaneZoom(fallbackPane.paneId, true)
-          } else if (
-            controlPaneId
-          ) {
-            await tmuxService.setPaneZoom(controlPaneId, false)
-          }
-        } catch {
-          // Ignore - pane/window may already be gone
-        }
-        return
-      }
 
       // Adjust selectedIndex before returning to the control pane
       const removedIndex = panes.findIndex((p) => p.paneId === paneId)
@@ -1086,7 +1082,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // Periodic enforcement of control pane size and content pane rebalancing (left sidebar at 40 chars)
   useLayoutManagement({
-    controlPaneId: presentationMode === "focus" ? undefined : controlPaneId,
+    controlPaneId,
     hasActiveDialog:
       actionSystem.actionState.showConfirmDialog ||
       actionSystem.actionState.showChoiceDialog ||
@@ -1094,6 +1090,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       actionSystem.actionState.showProgressDialog ||
       !!showCommandPrompt ||
       showFileCopyPrompt ||
+      showInlineSettings ||
       isCreatingPane ||
       runningCommand ||
       isUpdating,
@@ -1229,9 +1226,25 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     setShowFileCopyPrompt,
     currentCommandType,
     setCurrentCommandType,
+    showInlineSettings,
+    setShowInlineSettings,
+    inlineSettingsIndex,
+    setInlineSettingsIndex,
+    inlineSettingsMode,
+    setInlineSettingsMode,
+    inlineSettingsEditingKey,
+    setInlineSettingsEditingKey,
+    inlineSettingsEditingValueIndex,
+    setInlineSettingsEditingValueIndex,
+    inlineSettingsScopeIndex,
+    setInlineSettingsScopeIndex,
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
+    resetInlineSettings,
     projectSettings,
     saveSettings,
     settingsManager,
+    getSettingsManagerForProjectRoot,
     popupManager,
     actionSystem,
     controlPaneId,
@@ -1343,6 +1356,21 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         {/* Tmux hooks prompt - shown on first startup */}
         {showHooksPrompt && (
           <TmuxHooksPromptDialog selectedIndex={hooksPromptIndex} />
+        )}
+
+        {/* Inline settings dialog - fallback when tmux popups unavailable */}
+        {showInlineSettings && (
+          <SettingsDialog
+            settings={inlineSettingsManager.getSettings()}
+            globalSettings={inlineSettingsManager.getGlobalSettings()}
+            projectSettings={inlineSettingsManager.getProjectSettings()}
+            settingDefinitions={SETTING_DEFINITIONS}
+            selectedIndex={inlineSettingsIndex}
+            mode={inlineSettingsMode}
+            editingKey={inlineSettingsEditingKey}
+            editingValueIndex={inlineSettingsEditingValueIndex}
+            scopeIndex={inlineSettingsScopeIndex}
+          />
         )}
       </Box>
 

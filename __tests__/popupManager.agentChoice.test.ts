@@ -6,6 +6,11 @@ function createPopupManager(
   availableAgents: AgentName[],
   defaultAgent?: AgentName | ''
 ): PopupManager {
+  const settingsManager = {
+    getSettings: () => ({ defaultAgent }),
+    getGlobalSettings: () => ({}),
+    getProjectSettings: () => ({}),
+  };
   const config: PopupManagerConfig = {
     sidebarWidth: 40,
     projectRoot: '/tmp/project',
@@ -14,11 +19,8 @@ function createPopupManager(
     terminalWidth: 120,
     terminalHeight: 40,
     availableAgents,
-    settingsManager: {
-      getSettings: () => ({ defaultAgent }),
-      getGlobalSettings: () => ({}),
-      getProjectSettings: () => ({}),
-    },
+    settingsManager,
+    getSettingsManagerForProjectRoot: () => settingsManager,
     projectSettings: {},
     trackProjectActivity: async (work) => await work(),
   };

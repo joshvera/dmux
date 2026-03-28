@@ -10,10 +10,9 @@ import { StateManager } from "../shared/StateManager.js"
 import { LogService } from "./LogService.js"
 import { TmuxService } from "./TmuxService.js"
 import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
-import type { DmuxPane, ProjectSettings } from "../types.js"
+import type { DmuxPane, DmuxSettings, ProjectSettings } from "../types.js"
 import {
   getPaneMenuActions,
-  PaneAction,
   type PaneMenuActionId,
 } from "../actions/index.js"
 import { INPUT_IGNORE_DELAY } from "../constants/timing.js"
@@ -31,11 +30,8 @@ import {
 import { resolveDistPath } from "../utils/runtimePaths.js"
 import { getPaneProjectRoot } from "../utils/paneProject.js"
 import { getPaneDisplayName } from "../utils/paneTitle.js"
+import { sameSidebarProjectRoot } from "../utils/sidebarProjects.js"
 import type { TrackProjectActivity } from "../types/activity.js"
-import type {
-  FocusNavigatorPopupData,
-  FocusNavigatorPopupResult,
-} from "../components/popups/focusNavigatorPopup.js"
 import type {
   ReopenWorktreePopupResult,
   ReopenWorktreePopupState,
@@ -51,17 +47,37 @@ export interface PopupManagerConfig {
   controlPaneId?: string
   availableAgents: AgentName[]
   settingsManager: any
+  getSettingsManagerForProjectRoot: (projectRoot: string) => any
   projectSettings: ProjectSettings
   trackProjectActivity: TrackProjectActivity
 }
 
 export type BlankProjectActionId = "new-agent" | "terminal" | "reopen"
 
+export interface SettingsPopupUpdate {
+  key: keyof DmuxSettings
+  value: any
+  scope: "global" | "project"
+}
+
+export type SettingsPopupResult =
+  | {
+      kind: "completed"
+      updates: SettingsPopupUpdate[]
+    }
+  | {
+      kind: "cancelled"
+    }
+  | {
+      kind: "unavailable"
+      reason: "unsupported" | "error"
+    }
+
 interface PopupOptions {
   width?: number
   height?: number
   title: string
-  positioning?: "standard" | "centered" | "large" | "pane" | "focus"
+  positioning?: "standard" | "centered" | "large" | "pane"
   targetPaneId?: string
 }
 
@@ -103,6 +119,50 @@ function isMergeUncommittedChoiceData(
   return true
 }
 
+const DISALLOWED_SETTINGS_POPUP_KEYS = new Set([
+  "hooks",
+  "__proto__",
+  "constructor",
+  "prototype",
+])
+
+const SETTINGS_POPUP_UPDATE_KEYS = new Set<keyof DmuxSettings>(
+  SETTING_DEFINITIONS.flatMap(({ key }) =>
+    typeof key === "string" && !DISALLOWED_SETTINGS_POPUP_KEYS.has(key)
+      ? [key as keyof DmuxSettings]
+      : []
+  )
+)
+
+function isSettingsPopupKey(key: unknown): key is keyof DmuxSettings {
+  return typeof key === "string" && SETTINGS_POPUP_UPDATE_KEYS.has(key as keyof DmuxSettings)
+}
+
+function isSettingsPopupUpdate(update: unknown): update is SettingsPopupUpdate {
+  if (!update || typeof update !== "object") {
+    return false
+  }
+
+  const candidate = update as Record<string, unknown>
+  return (
+    isSettingsPopupKey(candidate.key)
+    && (candidate.scope === "global" || candidate.scope === "project")
+  )
+}
+
+function getSettingsPopupUpdates(data: unknown): SettingsPopupUpdate[] {
+  if (!data || typeof data !== "object") {
+    return []
+  }
+
+  const candidate = data as Record<string, unknown>
+  if (!Array.isArray(candidate.updates)) {
+    return []
+  }
+
+  return candidate.updates.filter(isSettingsPopupUpdate)
+}
+
 export class PopupManager {
   private config: PopupManagerConfig
   private setStatusMessage: (msg: string) => void
@@ -118,6 +178,14 @@ export class PopupManager {
     this.setStatusMessage = setStatusMessage
     this.setIgnoreInput = setIgnoreInput
     this.trackProjectActivity = config.trackProjectActivity
+  }
+
+  private getSettingsManagerForProjectRoot(projectRoot?: string): any {
+    const resolvedProjectRoot = projectRoot || this.config.projectRoot
+    if (sameSidebarProjectRoot(resolvedProjectRoot, this.config.projectRoot)) {
+      return this.config.settingsManager
+    }
+    return this.config.getSettingsManagerForProjectRoot(resolvedProjectRoot)
   }
 
   private clampPopupSizeToClient(
@@ -222,8 +290,6 @@ export class PopupManager {
             dims.clientWidth,
             dims.clientHeight
           )
-        } else if (options.positioning === "focus") {
-          positioning = POPUP_POSITIONING.fullyCentered()
         } else if (options.positioning === "centered") {
           positioning = POPUP_POSITIONING.centeredWithSidebar(
             this.config.sidebarWidth
@@ -406,94 +472,6 @@ export class PopupManager {
     }
   }
 
-  async launchFocusNavigatorPopup(
-    data: FocusNavigatorPopupData,
-    projectRoot?: string
-  ): Promise<FocusNavigatorPopupResult | null> {
-    if (!this.checkPopupSupport()) return null
-
-    try {
-      const popupSize = await this.getClientFitPopupSize(
-        110,
-        Math.floor(this.config.terminalHeight * 0.92)
-      )
-
-      const result = await this.launchPopup<FocusNavigatorPopupResult>(
-        "focusNavigatorPopup.js",
-        [],
-        {
-          width: popupSize.width,
-          height: popupSize.height,
-          title: "Focus Navigator",
-          positioning: "focus",
-        },
-        data,
-        projectRoot
-      )
-
-      this.ignoreInputBriefly()
-      return this.handleResult(result)
-    } catch (error: any) {
-      this.showTempMessage(`Failed to launch popup: ${error.message}`)
-      return null
-    }
-  }
-
-  async launchFocusActionSheetPopup(
-    pane: DmuxPane,
-    panes: DmuxPane[]
-  ): Promise<PaneMenuActionId | null> {
-    if (!this.checkPopupSupport()) return null
-
-    try {
-      const excludedActions = new Set<PaneMenuActionId>([
-        PaneAction.VIEW,
-        PaneAction.CLOSE,
-        PaneAction.MERGE,
-        PaneAction.OPEN_OUTPUT,
-      ])
-      const actions = getPaneMenuActions(
-        pane,
-        panes,
-        this.config.projectSettings,
-        this.config.isDevMode,
-        this.config.projectRoot
-      ).filter((action) => !excludedActions.has(action.id))
-      const baseHeight = Math.min(28, Math.max(16, actions.length + 8))
-      const popupSize = await this.getClientFitPopupSize(96, baseHeight)
-
-      const result = await this.launchPopup<string>(
-        "focusActionSheetPopup.js",
-        [getPaneDisplayName(pane), JSON.stringify(actions)],
-        {
-          width: popupSize.width,
-          height: popupSize.height,
-          title: `Actions: ${getPaneDisplayName(pane)}`,
-          positioning: "focus",
-        },
-        undefined,
-        getPaneProjectRoot(pane, this.config.projectRoot)
-      )
-
-      this.ignoreInputBriefly()
-      const actionId = this.handleResult(
-        result,
-        (data) => {
-          LogService.getInstance().debug(`Focus action selected: ${data}`, "FocusActionSheet")
-          return data
-        },
-        (error) => {
-          LogService.getInstance().error(error, "FocusActionSheet")
-          this.showTempMessage(error)
-        }
-      )
-      return actionId as PaneMenuActionId | null
-    } catch (error: any) {
-      this.showTempMessage(`Failed to launch popup: ${error.message}`)
-      return null
-    }
-  }
-
   async launchBlankProjectActionsPopup(
     projectName: string,
     projectRoot?: string
@@ -595,7 +573,7 @@ export class PopupManager {
 
     try {
       const agentsJson = JSON.stringify(this.config.availableAgents)
-      const settings = this.config.settingsManager.getSettings()
+      const settings = this.getSettingsManagerForProjectRoot(projectRoot).getSettings()
       const defaultAgent = settings.defaultAgent
       const initialSelectedAgents =
         defaultAgent &&
@@ -633,7 +611,7 @@ export class PopupManager {
     if (this.config.availableAgents.length === 0) return null
 
     try {
-      const settings = this.config.settingsManager.getSettings()
+      const settings = this.getSettingsManagerForProjectRoot(projectRoot).getSettings()
       const defaultAgent = settings.defaultAgent
       const popupHeight = Math.max(12, Math.min(20, this.config.availableAgents.length + 8))
 
@@ -788,14 +766,14 @@ export class PopupManager {
   async launchSettingsPopup(
     onLaunchHooks: () => Promise<void>,
     projectRoot?: string
-  ): Promise<
-    | { key: string; value: any; scope: "global" | "project" }
-    | { updates: Array<{ key: string; value: any; scope: "global" | "project" }> }
-    | null
-  > {
-    if (!this.checkPopupSupport()) return null
+  ): Promise<SettingsPopupResult> {
+    if (!this.config.popupsSupported) {
+      return { kind: "unavailable", reason: "unsupported" }
+    }
 
     try {
+      const payloadProjectRoot = projectRoot ?? this.config.projectRoot
+      const popupSettingsManager = this.getSettingsManagerForProjectRoot(payloadProjectRoot)
       let settingsPopupWidth = 84
       try {
         // Use tmux client dimensions, not the dmux pane's stdout width.
@@ -816,67 +794,61 @@ export class PopupManager {
         },
         {
           settingDefinitions: SETTING_DEFINITIONS,
-          settings: this.config.settingsManager.getSettings(),
-          globalSettings: this.config.settingsManager.getGlobalSettings(),
-          projectSettings: this.config.settingsManager.getProjectSettings(),
-          projectRoot: this.config.projectRoot,
+          settings: popupSettingsManager.getSettings(),
+          globalSettings: popupSettingsManager.getGlobalSettings(),
+          projectSettings: popupSettingsManager.getProjectSettings(),
+          projectRoot: payloadProjectRoot,
           controlPaneId: this.config.controlPaneId,
         },
         projectRoot
       )
+      this.ignoreInputBriefly()
 
-      if (result.success) {
-        const data = result.data ?? {}
-        const pendingUpdates = Array.isArray(data.updates)
-          ? data.updates.filter(
-              (update: any) =>
-                typeof update?.key === "string"
-                && (update?.scope === "global" || update?.scope === "project")
-            )
-          : []
-
-        // Check if this is an action result
-        if (data.action === "hooks") {
-          await onLaunchHooks()
-          return pendingUpdates.length > 0 ? { updates: pendingUpdates } : null
+      if (!result.success) {
+        if (result.cancelled) {
+          return { kind: "cancelled" }
         }
-
-        if (data.action === "enabledAgents") {
-          const enabledAgentsUpdate = await this.launchEnabledAgentsPopup(projectRoot)
-          if (enabledAgentsUpdate) {
-            pendingUpdates.push(enabledAgentsUpdate)
-          }
-          return pendingUpdates.length > 0 ? { updates: pendingUpdates } : null
+        if (result.error) {
+          this.showTempMessage(`Popup error: ${result.error}`)
         }
-
-        if (data.action === "enabledNotificationSounds") {
-          const notificationSoundsUpdate = await this.launchNotificationSoundsPopup(projectRoot)
-          if (notificationSoundsUpdate) {
-            pendingUpdates.push(notificationSoundsUpdate)
-          }
-          return pendingUpdates.length > 0 ? { updates: pendingUpdates } : null
-        }
-
-        if (typeof data.key === "string" && (data.scope === "global" || data.scope === "project")) {
-          if (pendingUpdates.length > 0) {
-            return {
-              updates: [
-                ...pendingUpdates,
-                { key: data.key, value: data.value, scope: data.scope },
-              ],
-            }
-          }
-          return { key: data.key, value: data.value, scope: data.scope }
-        }
-
-        if (pendingUpdates.length > 0) {
-          return { updates: pendingUpdates }
-        }
+        return { kind: "unavailable", reason: "error" }
       }
-      return null
+
+      const data = result.data ?? {}
+      const pendingUpdates = getSettingsPopupUpdates(data)
+
+      if ((data as any).action === "hooks") {
+        await onLaunchHooks()
+        return { kind: "completed", updates: pendingUpdates }
+      }
+
+      if ((data as any).action === "enabledAgents") {
+        const enabledAgentsUpdate = await this.launchEnabledAgentsPopup(projectRoot)
+        if (enabledAgentsUpdate) {
+          pendingUpdates.push(enabledAgentsUpdate)
+        }
+        return { kind: "completed", updates: pendingUpdates }
+      }
+
+      if ((data as any).action === "enabledNotificationSounds") {
+        const notificationSoundsUpdate = await this.launchNotificationSoundsPopup(projectRoot)
+        if (notificationSoundsUpdate) {
+          pendingUpdates.push(notificationSoundsUpdate)
+        }
+        return { kind: "completed", updates: pendingUpdates }
+      }
+
+      if (isSettingsPopupUpdate(data)) {
+        pendingUpdates.push(data)
+      }
+
+      return {
+        kind: "completed",
+        updates: pendingUpdates,
+      }
     } catch (error: any) {
       this.showTempMessage(`Failed to launch popup: ${error.message}`)
-      return null
+      return { kind: "unavailable", reason: "error" }
     }
   }
 
@@ -890,7 +862,7 @@ export class PopupManager {
     if (!this.checkPopupSupport()) return null
 
     try {
-      const settings = this.config.settingsManager.getSettings()
+      const settings = this.getSettingsManagerForProjectRoot(projectRoot).getSettings()
       const configuredEnabled = resolveEnabledAgentsSelection(settings.enabledAgents)
       const definitions = getAgentDefinitions().map((definition) => ({
         id: definition.id,
@@ -940,7 +912,7 @@ export class PopupManager {
     if (!this.checkPopupSupport()) return null
 
     try {
-      const settings = this.config.settingsManager.getSettings()
+      const settings = this.getSettingsManagerForProjectRoot(projectRoot).getSettings()
       const configuredEnabled = resolveNotificationSoundsSelection(settings.enabledNotificationSounds)
       const definitions = getNotificationSoundDefinitions().map((definition) => ({
         id: definition.id,
