@@ -9,14 +9,14 @@ describe('tmuxRuntimeCompatibility', () => {
     const parsed = parseTmuxArrayOptionValues(
       [
         'terminal-overrides[0] linux*:AX@',
-        'terminal-overrides[1] "xterm-256color:Ms=\\\\E]52;c;%p2%s\\\\007"',
+        'terminal-overrides[1] "*:Ms=\\\\E]52;c;%p2%s\\\\007"',
         'update-environment[8]* TERM_PROGRAM',
       ].join('\n')
     );
 
     expect(parsed).toEqual([
       'linux*:AX@',
-      'xterm-256color:Ms=\\\\E]52;c;%p2%s\\\\007',
+      '*:Ms=\\\\E]52;c;%p2%s\\\\007',
       'TERM_PROGRAM',
     ]);
   });
@@ -31,13 +31,13 @@ describe('tmuxRuntimeCompatibility', () => {
       ['set-option', '-q', '-t', 'dmux-test', 'set-clipboard', 'on'],
       ['set-option', '-q', '-t', 'dmux-test', 'allow-passthrough', 'all'],
       ['set-option', '-q', '-ag', '-t', 'dmux-test', 'update-environment', 'TERM_PROGRAM'],
-      ['set-option', '-q', '-ag', '-t', 'dmux-test', 'terminal-overrides', 'xterm-256color:Ms=\\E]52;c;%p2%s\\007'],
+      ['set-option', '-q', '-ag', '-t', 'dmux-test', 'terminal-overrides', '*:Ms=\\E]52;c;%p2%s\\007'],
     ]);
   });
 
   it('does not duplicate array entries already present', () => {
     const commands = buildTmuxRuntimeCompatibilityCommands('dmux-test', {
-      terminalOverrides: ['linux*:AX@', 'xterm-256color:Ms=\\E]52;c;%p2%s\\007'],
+      terminalOverrides: ['linux*:AX@', '*:Ms=\\E]52;c;%p2%s\\007'],
       updateEnvironment: ['DISPLAY', 'TERM_PROGRAM'],
     });
 

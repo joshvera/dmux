@@ -105,21 +105,16 @@ set -g mouse on
 set -g set-clipboard on
 set -g allow-passthrough all
 
-# Copy mouse selection to system clipboard (macOS)
-bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
-bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "pbcopy"
+# Copy mouse selection to system clipboard via OSC 52 (works over SSH)
+bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '~/.dmux/osc52-copy.sh'
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '~/.dmux/osc52-copy.sh'
 
 # Terminal overrides for clipboard/cursor compatibility
-set -ga terminal-overrides ',xterm-256color:Ms=\\E]52;c;%p2%s\\007'
+set -ga terminal-overrides ',*:Ms=\\E]52;c;%p2%s\\007'
 set -ga terminal-overrides ',*:Ss=\\E[%p1%d q:Se=\\E[2 q'
 set -ga update-environment "TERM_PROGRAM"</code></pre>
     <p>After editing, reload with <code>tmux source-file ~/.tmux.conf</code> or restart tmux.</p>
-    <p>dmux also applies its clipboard and passthrough compatibility settings to dmux-managed sessions at runtime. These settings improve terminal clipboard behavior, but tmux may still block rich image-paste flows that rely on terminal-specific clipboard protocols.</p>
-
-    <div class="callout callout-info">
-      <div class="callout-title">Note</div>
-      On Linux, swap <code>pbcopy</code> for <code>wl-copy</code> (Wayland) or <code>xclip -selection clipboard -in</code> (X11) in the clipboard bindings.
-    </div>
+    <p>dmux writes a small OSC 52 clipboard helper to <code>~/.dmux/osc52-copy.sh</code> and binds tmux copy-mode to use it at runtime. This uses terminal escape sequences to set the clipboard, which works reliably over SSH where platform-specific tools like <code>pbcopy</code> cannot reach the local pasteboard.</p>
 
     <h2>Next Steps</h2>
     <ul>
