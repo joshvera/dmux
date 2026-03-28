@@ -76,30 +76,10 @@ interface ActionSystem {
   clearStatus: () => void
   setActionState: (state: any) => void
 }
-
-type PersistentPresentationMode = Exclude<PresentationMode, "focus">
-
-type FocusNavigatorResult =
-  | {
-      kind: "pane"
-      action: "view" | "close" | "merge" | "more"
-      paneId: string
-    }
-  | {
-      kind: "project"
-      action: "new-agent" | "terminal" | "reopen"
-      projectRoot: string
-    }
-  | {
-      kind: "focus"
-      action: "exit"
-    }
-
 type PendingPaneActivation = {
   paneId: string
   dmuxPaneId: string
   expectedIndex: number
-  mode: "focus" | "single-pane"
 }
 
 interface UseInputHandlingParams {
@@ -253,20 +233,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
   const layoutRefreshDebounceRef = useRef<NodeJS.Timeout | null>(null)
   const quitConfirmResetRef = useRef<NodeJS.Timeout | null>(null)
-  const effectivePresentationMode = resolvePresentationMode(
-    !popupsSupported && presentationMode === "focus"
-      ? "grid"
-      : presentationMode
-  )
-  const lastPersistentModeRef = useRef<PersistentPresentationMode>(
-    effectivePresentationMode === "focus" ? "grid" : effectivePresentationMode
-  )
-  const focusScopeRef = useRef<"global" | "project">(
-    typeof settingsManager?.getEffectiveScope === "function"
-      && settingsManager.getEffectiveScope("presentationMode") === "project"
-      ? "project"
-      : "global"
-  )
+  const effectivePresentationMode = resolvePresentationMode(presentationMode)
   const presentationSyncKeyRef = useRef("")
   const pendingPaneActivationRef = useRef<PendingPaneActivation | null>(null)
   const [pendingPaneActivationVersion, setPendingPaneActivationVersion] = useState(0)
@@ -288,7 +255,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }, [])
 
   const queueLayoutRefresh = () => {
-    if (!controlPaneId || effectivePresentationMode === "focus") {
+    if (!controlPaneId) {
       return
     }
 
@@ -357,12 +324,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
-  useEffect(() => {
-    if (effectivePresentationMode !== "focus") {
-      lastPersistentModeRef.current = effectivePresentationMode
-    }
-  }, [effectivePresentationMode])
-
   const getPresentationScope = (): "global" | "project" => {
     if (
       typeof settingsManager?.getEffectiveScope === "function"
@@ -379,10 +340,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
   const queueCreatedPaneActivation = (
     created: DmuxPane | DmuxPane[] | null
   ) => {
-    if (
-      effectivePresentationMode !== "focus"
-      && effectivePresentationMode !== "single-pane"
-    ) {
+    if (effectivePresentationMode !== "focus") {
       return
     }
 
@@ -400,7 +358,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       paneId: targetPane.paneId,
       dmuxPaneId: targetPane.id,
       expectedIndex: panes.length,
-      mode: effectivePresentationMode,
     }
     setPendingPaneActivationVersion((version) => version + 1)
   }
@@ -450,7 +407,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       const tmuxService = TmuxService.getInstance()
       const newPaneId = await tmuxService.splitPane({
         cwd: targetProjectRoot,
-        preserveZoom: effectivePresentationMode === "focus",
       })
 
       // Wait for pane creation to settle
@@ -516,7 +472,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       const tmuxService = TmuxService.getInstance()
       const newPaneId = await tmuxService.splitPane({
         cwd: selectedPane.worktreePath,
-        preserveZoom: effectivePresentationMode === "focus",
       })
 
       // Wait for pane creation to settle
@@ -557,12 +512,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     if (existingBrowserPane) {
       try {
-        await TmuxService.getInstance().selectPane(
-          existingBrowserPane.paneId,
-          effectivePresentationMode === "focus"
-            ? { preserveZoom: true }
-            : undefined
-        )
+        await TmuxService.getInstance().selectPane(existingBrowserPane.paneId)
         setStatusMessage(`File browser already open for ${getPaneDisplayName(selectedPane)}`)
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       } catch (error: any) {
@@ -583,7 +533,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       const newPaneId = await tmuxService.splitPane({
         cwd: selectedPane.worktreePath,
         command: buildFilesOnlyCommand(),
-        preserveZoom: effectivePresentationMode === "focus",
       })
 
       await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAY))
@@ -762,7 +711,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }
 
   const refreshPaneLayout = async () => {
-    if (!controlPaneId || effectivePresentationMode === "focus") {
+    if (!controlPaneId) {
       return
     }
 
@@ -903,39 +852,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
-  const focusPane = async (
-    targetPane: DmuxPane,
-    options: { suppressStatus?: boolean } = {}
-  ) => {
-    if (!popupsSupported) {
-      throw new Error("Focus mode requires tmux popup support")
-    }
-
-    const resolvedTargetPane = panes.find((pane) => pane.id === targetPane.id) || targetPane
-    if (resolvedTargetPane.hidden) {
-      await ensurePaneVisible(resolvedTargetPane, { preserveZoom: true })
-    }
-
-    const targetIndex = panes.findIndex((pane) => pane.id === resolvedTargetPane.id)
-    if (targetIndex >= 0) {
-      setSelectedIndex(targetIndex)
-    }
-
-    const tmuxService = TmuxService.getInstance()
-    const alreadyZoomed = await tmuxService.isWindowZoomed(resolvedTargetPane.paneId)
-
-    await tmuxService.selectPane(
-      resolvedTargetPane.paneId,
-      alreadyZoomed ? { preserveZoom: true } : undefined
-    )
-    await tmuxService.setPaneZoom(resolvedTargetPane.paneId, true)
-
-    if (!options.suppressStatus) {
-      setStatusMessage(`Focused ${getPaneDisplayName(resolvedTargetPane)}`)
-      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-    }
-  }
-
   useEffect(() => {
     const pendingActivation = pendingPaneActivationRef.current
     if (!pendingActivation) {
@@ -946,7 +862,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    if (effectivePresentationMode !== pendingActivation.mode) {
+    if (effectivePresentationMode !== "focus") {
       pendingPaneActivationRef.current = null
       return
     }
@@ -964,11 +880,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     presentationSyncKeyRef.current = ""
 
     const activatePendingPane = async () => {
-      if (pendingActivation.mode === "focus") {
-        await focusPane(targetPane, { suppressStatus: true })
-        return
-      }
-
       await isolatePane(targetPane, {
         activatePane: true,
         suppressStatus: true,
@@ -981,7 +892,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     })
   }, [
     effectivePresentationMode,
-    focusPane,
     isolatePane,
     isCreatingPane,
     panes,
@@ -1003,48 +913,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const targetPane = getPresentationPane(options.preferredPane)
     const scope = options.scope || getPresentationScope()
 
-    if (resolvedNextMode === "focus") {
-      if (!popupsSupported) {
-        setStatusMessage("Focus mode requires tmux 3.2+ popups")
-        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
-        return false
-      }
-
-      if (effectivePresentationMode !== "focus") {
-        lastPersistentModeRef.current = effectivePresentationMode
-      }
-      focusScopeRef.current = scope
-
-      if (options.persist) {
-        settingsManager.updateSetting("presentationMode", resolvedNextMode, scope)
-      }
-
-      if (!targetPane) {
-        setStatusMessage("Focus mode needs at least one pane")
-        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-        return false
-      }
-
-      await focusPane(targetPane)
-      presentationSyncKeyRef.current = ""
-      return true
-    }
-
-    lastPersistentModeRef.current = resolvedNextMode
-
     if (options.persist) {
       settingsManager.updateSetting("presentationMode", resolvedNextMode, scope)
-    }
-
-    if (effectivePresentationMode === "focus") {
-      try {
-        const zoomTargetPaneId = targetPane?.paneId || controlPaneId
-        if (zoomTargetPaneId) {
-          await tmuxService.setPaneZoom(zoomTargetPaneId, false)
-        }
-      } catch {
-        // Ignore - tmux may already have unzoomed the window
-      }
     }
 
     if (resolvedNextMode === "grid") {
@@ -1093,19 +963,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    if (effectivePresentationMode === "single-pane") {
+    if (effectivePresentationMode === "focus") {
       const visiblePaneCount = panes.filter((pane) => !pane.hidden).length
       const selectedPane = panes[selectedIndex]
       if (visiblePaneCount > 1 || targetPane.hidden || selectedPane?.hidden) {
         void isolatePane(targetPane, { suppressStatus: true })
       }
       return
-    }
-
-    if (effectivePresentationMode === "focus") {
-      void focusPane(targetPane, { suppressStatus: true }).catch(() => {
-        // Best effort only.
-      })
     }
   }, [
     effectivePresentationMode,
@@ -1140,7 +1004,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         const fallbackPane = getPresentationTargetPane(
           result.updatedPanes,
           selectedIndex
-        )
+        ) || result.updatedPanes.find((pane) => pane.id !== selectedPane.id)
 
         if (fallbackPane && fallbackPane.id !== selectedPane.id) {
           const fallbackIndex = result.updatedPanes.findIndex(
@@ -1154,15 +1018,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
           presentationSyncKeyRef.current = ""
 
           if (effectivePresentationMode === "focus") {
-            const tmuxService = TmuxService.getInstance()
-            const alreadyZoomed = await tmuxService.isWindowZoomed(
-              fallbackPane.paneId
-            )
-            await tmuxService.selectPane(
-              fallbackPane.paneId,
-              alreadyZoomed ? { preserveZoom: true } : undefined
-            )
-            await tmuxService.setPaneZoom(fallbackPane.paneId, true)
+            await isolatePane(fallbackPane, {
+              activatePane: true,
+              suppressStatus: true,
+            })
           }
         }
       }
@@ -1313,13 +1172,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
   const executeViewAction = async (selectedPane: DmuxPane) => {
     try {
-      if (effectivePresentationMode === "single-pane") {
-        await isolatePane(selectedPane, { activatePane: true })
-        return
-      }
-
       if (effectivePresentationMode === "focus") {
-        await focusPane(selectedPane)
+        await isolatePane(selectedPane, { activatePane: true })
         return
       }
 
@@ -1327,88 +1181,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } catch (error: any) {
       setStatusMessage(`Failed to view pane: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
-    }
-  }
-
-  const openFocusNavigator = async (selectedPane: DmuxPane) => {
-    const result = await popupManager.launchFocusNavigatorPopup(
-      {
-        panes,
-        sidebarProjects,
-        projectRoot,
-        projectName: path.basename(projectRoot),
-        selectedPaneId: selectedPane.id,
-        selectedProjectRoot: getPaneProjectRoot(selectedPane, projectRoot),
-      },
-      getPaneProjectRoot(selectedPane, projectRoot)
-    ) as FocusNavigatorResult | null
-
-    if (!result) {
-      return
-    }
-
-    if (result.kind === "focus" && result.action === "exit") {
-      await applyPresentationModeChange(lastPersistentModeRef.current, {
-        persist: true,
-        scope: focusScopeRef.current,
-        preferredPane: selectedPane,
-      })
-      return
-    }
-
-    if (result.kind === "project") {
-      if (result.action === "new-agent") {
-        queueCreatedPaneActivation(
-          await handleCreateAgentPane(result.projectRoot)
-        )
-      } else if (result.action === "terminal") {
-        queueCreatedPaneActivation(
-          await handleCreateTerminalPane(result.projectRoot)
-        )
-      } else if (result.action === "reopen") {
-        queueCreatedPaneActivation(
-          await reopenClosedWorktreesInProject(result.projectRoot)
-        )
-      }
-      return
-    }
-
-    const targetPane = panes.find((pane) => pane.id === result.paneId)
-    if (!targetPane) {
-      setStatusMessage("That pane is no longer available")
-      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-      return
-    }
-
-    if (result.action === "view") {
-      await executeViewAction(targetPane)
-      return
-    }
-
-    if (result.action === "more") {
-      const actionId = await popupManager.launchFocusActionSheetPopup(
-        targetPane,
-        panes
-      )
-      if (!actionId) {
-        return
-      }
-
-      await executePaneMenuAction(targetPane, actionId)
-      return
-    }
-
-    if (result.action === "close") {
-      await actionSystem.executeAction(PaneAction.CLOSE, targetPane, {
-        mainBranch: getMainBranch(),
-      })
-      return
-    }
-
-    if (result.action === "merge") {
-      await actionSystem.executeAction(PaneAction.MERGE, targetPane, {
-        mainBranch: getMainBranch(),
-      })
     }
   }
 
@@ -1476,15 +1248,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     pane: DmuxPane,
     options: { anchorToPane?: boolean; forceStandardMenu?: boolean } = {}
   ) => {
-    if (
-      effectivePresentationMode === "focus"
-      && options.anchorToPane
-      && !options.forceStandardMenu
-    ) {
-      await openFocusNavigator(pane)
-      return
-    }
-
     const actionId = await popupManager.launchKebabMenuPopup(
       pane,
       panes,

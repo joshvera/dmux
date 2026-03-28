@@ -2,7 +2,6 @@ import type { DmuxPane, PresentationMode } from '../types.js';
 
 export const PRESENTATION_MODES = [
   'grid',
-  'single-pane',
   'focus',
 ] as const satisfies readonly PresentationMode[];
 

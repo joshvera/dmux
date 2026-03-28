@@ -19,7 +19,7 @@ function pane(id: string, hidden = false): DmuxPane {
 describe('presentationMode helpers', () => {
   it('falls back to grid for unknown presentation modes', () => {
     expect(resolvePresentationMode('grid')).toBe('grid');
-    expect(resolvePresentationMode('single-pane')).toBe('single-pane');
+    expect(resolvePresentationMode('single-pane')).toBe('grid');
     expect(resolvePresentationMode('focus')).toBe('focus');
     expect(resolvePresentationMode('unknown')).toBe('grid');
   });

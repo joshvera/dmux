@@ -73,7 +73,7 @@ describe('attachAgentToWorktree focus mode', () => {
     });
   });
 
-  it('keeps the attached agent pane zoomed in focus mode', async () => {
+  it('does not preserve zoom semantics when attaching an agent in focus mode', async () => {
     const { attachAgentToWorktree } = await import('../src/utils/attachAgent.js');
 
     await attachAgentToWorktree({
@@ -105,10 +105,8 @@ describe('attachAgentToWorktree focus mode', () => {
       sessionConfigPath: '/repo/.dmux/dmux.config.json',
     });
 
-    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1', {
-      preserveZoom: true,
-    });
-    expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%1', true);
-    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith('%0');
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1');
+    expect(tmuxServiceMock.setPaneZoom).not.toHaveBeenCalled();
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%0');
   });
 });

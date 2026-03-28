@@ -135,11 +135,10 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
   {
     key: 'presentationMode',
     label: 'Presentation Mode',
-    description: 'Choose between the default grid, a sidebar-visible single-pane view, or fullscreen focus mode.',
+    description: 'Choose between the default grid and the sidebar-visible focus view.',
     type: 'select',
     options: [
       { value: 'grid', label: 'Grid' },
-      { value: 'single-pane', label: 'Single Pane' },
       { value: 'focus', label: 'Focus' },
     ],
   },
@@ -274,6 +273,10 @@ export class SettingsManager {
       ...this.globalSettings,
       ...this.projectSettings,
     });
+
+    merged.presentationMode = isPresentationMode(merged.presentationMode)
+      ? merged.presentationMode
+      : DEFAULT_SETTINGS.presentationMode;
 
     // Pane width bounds are global-only; ignore any project override values.
     const paneWidths = this.resolveGlobalPaneWidths();

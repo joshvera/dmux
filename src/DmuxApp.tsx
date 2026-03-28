@@ -88,7 +88,6 @@ import {
 } from "./utils/projectActions.js"
 import { getPaneProjectRoot } from "./utils/paneProject.js"
 import {
-  getFallbackPaneAfterRemoval,
   resolvePresentationMode,
 } from "./utils/presentationMode.js"
 
@@ -119,7 +118,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const [settingsManager] = useState(() => new SettingsManager(projectRoot))
   const { projectSettings, saveSettings } = useProjectSettings(settingsFile)
   const settings = settingsManager.getSettings()
-  const configuredPresentationMode = resolvePresentationMode(settings.presentationMode)
+  const presentationMode = resolvePresentationMode(settings.presentationMode)
 
   // Dialog state management
   const dialogState = useDialogState()
@@ -178,10 +177,6 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // Popup support detection
   const [popupsSupported, setPopupsSupported] = useState(false)
-  const presentationMode =
-    !popupsSupported && configuredPresentationMode === "focus"
-      ? "grid"
-      : configuredPresentationMode
 
   // Track terminal dimensions for responsive layout
   const terminalWidth = useTerminalWidth()
@@ -964,13 +959,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         if (targetPane) {
           try {
             const tmuxService = TmuxService.getInstance()
-            await tmuxService.selectPane(
-              targetPane.paneId,
-              presentationMode === "focus" ? { preserveZoom: true } : undefined
-            )
-            if (presentationMode === "focus") {
-              await tmuxService.setPaneZoom(targetPane.paneId, true)
-            }
+            await tmuxService.selectPane(targetPane.paneId)
           } catch {}
         }
       }
@@ -1014,37 +1003,6 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
       // Mark close as completed (no more lock needed)
       await lifecycleManager.completeClose(paneId)
-
-      if (presentationMode === "focus") {
-        try {
-          const tmuxService = TmuxService.getInstance()
-          const fallbackPane = getFallbackPaneAfterRemoval(
-            updatedPanes,
-            paneId,
-            selectedIndex
-          )
-
-          if (fallbackPane) {
-            const fallbackIndex = updatedPanes.findIndex(
-              (pane) => pane.id === fallbackPane.id
-            )
-            if (fallbackIndex >= 0) {
-              setSelectedIndex(fallbackIndex)
-            }
-            await tmuxService.selectPane(fallbackPane.paneId, {
-              preserveZoom: true,
-            })
-            await tmuxService.setPaneZoom(fallbackPane.paneId, true)
-          } else if (
-            controlPaneId
-          ) {
-            await tmuxService.setPaneZoom(controlPaneId, false)
-          }
-        } catch {
-          // Ignore - pane/window may already be gone
-        }
-        return
-      }
 
       // Adjust selectedIndex before returning to the control pane
       const removedIndex = panes.findIndex((p) => p.paneId === paneId)
@@ -1100,7 +1058,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // Periodic enforcement of control pane size and content pane rebalancing (left sidebar at 40 chars)
   useLayoutManagement({
-    controlPaneId: presentationMode === "focus" ? undefined : controlPaneId,
+    controlPaneId,
     hasActiveDialog:
       actionSystem.actionState.showConfirmDialog ||
       actionSystem.actionState.showChoiceDialog ||

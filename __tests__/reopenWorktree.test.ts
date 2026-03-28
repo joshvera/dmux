@@ -139,7 +139,7 @@ describe('reopenWorktree', () => {
     expect(result.pane.permissionMode).toBe('bypassPermissions');
   });
 
-  it('keeps the reopened pane zoomed in focus mode', async () => {
+  it('does not preserve zoom semantics when reopening in focus mode', async () => {
     getSettingsMock.mockReturnValue({
       permissionMode: 'plan',
       enabledAgents: ['claude', 'codex'],
@@ -158,10 +158,8 @@ describe('reopenWorktree', () => {
       sessionConfigPath: '/repo/.dmux/dmux.config.json',
     });
 
-    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1', {
-      preserveZoom: true,
-    });
-    expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%1', true);
-    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith('%0');
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1');
+    expect(tmuxServiceMock.setPaneZoom).not.toHaveBeenCalled();
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%0');
   });
 });

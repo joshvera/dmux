@@ -959,20 +959,12 @@ export class DmuxRuntimeHarness {
     }
   }
 
-  async openFocusNavigatorFromActivePane(): Promise<void> {
+  async openPaneMenuFromActivePane(): Promise<void> {
     const afterOffset = await this.markClientLog()
     await this.sendActiveWorkPaneCommand(
       `${shellQuote(this.dmuxExecutablePath)} --remote-pane-action m >/dev/null 2>&1`
     )
-    await this.waitForClientLog("Focus Navigator", 10000, afterOffset)
-    await this.waitForClientLog("Esc cancel", 10000, afterOffset)
-    await sleep(200)
-  }
-
-  async openActionSheetFromFocusNavigator(): Promise<void> {
-    const afterOffset = await this.markClientLog()
-    await this.sendClientInput("m")
-    await this.waitForClientLog("Actions:", 10000, afterOffset)
+    await this.waitForClientLog("Menu:", 10000, afterOffset)
     await this.waitForClientLog("Enter or hotkey select", 10000, afterOffset)
     await sleep(200)
   }

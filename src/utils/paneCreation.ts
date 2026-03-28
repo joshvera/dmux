@@ -37,7 +37,6 @@ import { ensureGeminiFolderTrusted } from './geminiTrust.js';
 import { isValidBranchName } from './git.js';
 import { sendPromptViaTmux } from './agentPromptDispatch.js';
 import { readWorktreeMetadata, writeWorktreeMetadata } from './worktreeMetadata.js';
-import { resolvePresentationMode } from './presentationMode.js';
 
 export interface CreatePaneOptions {
   prompt: string;
@@ -136,8 +135,6 @@ export async function createPane(
 
   const settingsManager = new SettingsManager(projectRoot);
   const settings = settingsManager.getSettings();
-  const presentationMode = resolvePresentationMode(settings.presentationMode);
-  const preserveZoom = presentationMode === 'focus';
   const existingWorktreeMetadata = existingWorktree
     ? readWorktreeMetadata(existingWorktree.worktreePath)
     : null;
@@ -256,7 +253,7 @@ export async function createPane(
     if (isFirstContentPane) {
       // First, create the tmux pane but DON'T destroy welcome pane yet
       // This way we can save the pane to config first, THEN destroy welcome pane
-      paneInfo = setupSidebarLayout(controlPaneId, projectRoot, { preserveZoom });
+      paneInfo = setupSidebarLayout(controlPaneId, projectRoot);
     } else {
       // Subsequent panes - always split horizontally, let layout manager organize
       // Get actual dmux pane IDs (not welcome pane) from existingPanes
@@ -264,7 +261,7 @@ export async function createPane(
       const targetPane = dmuxPaneIds[dmuxPaneIds.length - 1]; // Split from the most recent dmux pane
 
       // Always split horizontally - the layout manager will organize panes optimally
-      paneInfo = splitPane({ targetPane, cwd: projectRoot, preserveZoom });
+      paneInfo = splitPane({ targetPane, cwd: projectRoot });
     }
   } catch (error) {
     // Check if error is due to stale pane ID (can't find pane)
@@ -296,11 +293,11 @@ export async function createPane(
 
       // Retry pane creation with corrected controlPaneId
       if (isFirstContentPane) {
-        paneInfo = setupSidebarLayout(controlPaneId, projectRoot, { preserveZoom });
+        paneInfo = setupSidebarLayout(controlPaneId, projectRoot);
       } else {
         const dmuxPaneIds = existingPanes.map(p => p.paneId);
         const targetPane = dmuxPaneIds[dmuxPaneIds.length - 1];
-        paneInfo = splitPane({ targetPane, cwd: projectRoot, preserveZoom });
+        paneInfo = splitPane({ targetPane, cwd: projectRoot });
       }
     } else {
       // Different error, re-throw
@@ -570,10 +567,7 @@ export async function createPane(
   }
 
   // Keep focus on the new pane
-  await tmuxService.selectPane(paneInfo, { preserveZoom });
-  if (preserveZoom) {
-    await tmuxService.setPaneZoom(paneInfo, true);
-  }
+  await tmuxService.selectPane(paneInfo);
 
   // Create the pane object
   const newPane: DmuxPane = {
@@ -617,9 +611,7 @@ export async function createPane(
   await triggerHook('worktree_created', projectRoot, newPane);
 
   // Switch back to the original pane
-  if (!preserveZoom) {
-    await tmuxService.selectPane(originalPaneId);
-  }
+  await tmuxService.selectPane(originalPaneId);
 
   // Re-set the title for the dmux pane
   try {
