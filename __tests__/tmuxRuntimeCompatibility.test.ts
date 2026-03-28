@@ -1,15 +1,8 @@
-import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
+import { describe, expect, it, afterEach, beforeEach } from 'vitest';
 import { existsSync, readFileSync, statSync, writeFileSync, symlinkSync } from 'fs';
 import { mkdtempSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-
-const mockHomedir = vi.hoisted(() => vi.fn<() => string>());
-vi.mock('os', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('os')>();
-  return { ...actual, homedir: mockHomedir };
-});
-
 import {
   buildTmuxRuntimeCompatibilityCommands,
   ensureOsc52CopyScript,
@@ -66,7 +59,6 @@ describe('ensureOsc52CopyScript', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'dmux-test-'));
-    mockHomedir.mockReturnValue(tempDir);
   });
 
   afterEach(() => {
@@ -74,9 +66,10 @@ describe('ensureOsc52CopyScript', () => {
   });
 
   it('writes an executable script with OSC 52 content', () => {
-    const scriptPath = ensureOsc52CopyScript();
+    const dmuxDir = join(tempDir, '.dmux');
+    const scriptPath = ensureOsc52CopyScript(dmuxDir);
 
-    expect(scriptPath).toBe(join(tempDir, '.dmux', 'osc52-copy.sh'));
+    expect(scriptPath).toBe(join(dmuxDir, 'osc52-copy.sh'));
     expect(existsSync(scriptPath)).toBe(true);
 
     const content = readFileSync(scriptPath, 'utf-8');
@@ -90,12 +83,12 @@ describe('ensureOsc52CopyScript', () => {
   });
 
   it('skips write when content already matches', () => {
-    // First write creates the file.
-    const scriptPath = ensureOsc52CopyScript();
+    const dmuxDir = join(tempDir, '.dmux');
+    const scriptPath = ensureOsc52CopyScript(dmuxDir);
     const mtimeBefore = statSync(scriptPath).mtimeMs;
 
     // Second call should not rewrite.
-    ensureOsc52CopyScript();
+    ensureOsc52CopyScript(dmuxDir);
     const mtimeAfter = statSync(scriptPath).mtimeMs;
 
     expect(mtimeAfter).toBe(mtimeBefore);
@@ -108,7 +101,7 @@ describe('ensureOsc52CopyScript', () => {
     writeFileSync(targetPath, 'original content');
     symlinkSync(targetPath, join(dmuxDir, 'osc52-copy.sh'));
 
-    ensureOsc52CopyScript();
+    ensureOsc52CopyScript(dmuxDir);
 
     // The symlink target should not be overwritten.
     expect(readFileSync(targetPath, 'utf-8')).toBe('original content');

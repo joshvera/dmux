@@ -106,8 +106,8 @@ set -g set-clipboard on
 set -g allow-passthrough all
 
 # Copy mouse selection to system clipboard via OSC 52 (works over SSH)
-bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '~/.dmux/osc52-copy.sh'
-bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel '~/.dmux/osc52-copy.sh'
+bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.dmux/osc52-copy.sh"
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.dmux/osc52-copy.sh"
 
 # Terminal overrides for clipboard/cursor compatibility
 set -ga terminal-overrides ',*:Ms=\\E]52;c;%p2%s\\007'

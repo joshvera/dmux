@@ -86,8 +86,7 @@ tty=\$(tmux display-message -p '#{client_tty}')
 printf '\\033]52;c;%s\\007' "\$buf" > "\$tty"
 `;
 
-export function ensureOsc52CopyScript(): string {
-  const dmuxDir = join(homedir(), '.dmux');
+export function ensureOsc52CopyScript(dmuxDir = join(homedir(), '.dmux')): string {
   const scriptPath = join(dmuxDir, 'osc52-copy.sh');
   if (!existsSync(dmuxDir)) {
     mkdirSync(dmuxDir, { recursive: true });
