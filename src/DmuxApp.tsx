@@ -1066,6 +1066,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       actionSystem.actionState.showProgressDialog ||
       !!showCommandPrompt ||
       showFileCopyPrompt ||
+      showInlineSettings ||
       isCreatingPane ||
       runningCommand ||
       isUpdating,

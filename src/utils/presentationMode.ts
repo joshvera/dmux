@@ -25,7 +25,58 @@ export function getPresentationTargetPane(
     return selectedPane;
   }
 
-  return panes.find((pane) => !pane.hidden);
+  const visiblePane = panes.find((pane) => !pane.hidden);
+  if (visiblePane) {
+    return visiblePane;
+  }
+
+  if (selectedPane) {
+    return selectedPane;
+  }
+
+  return panes[0];
+}
+
+export function getFallbackPaneAfterHide(
+  panes: DmuxPane[],
+  hiddenPaneId: string,
+  selectedIndex: number
+): DmuxPane | undefined {
+  if (panes.length === 0) {
+    return undefined;
+  }
+
+  const hiddenIndex = panes.findIndex((pane) => pane.id === hiddenPaneId);
+  const startIndex = Math.min(
+    hiddenIndex >= 0 ? hiddenIndex : selectedIndex,
+    panes.length - 1
+  );
+
+  for (let index = startIndex; index < panes.length; index += 1) {
+    if (panes[index]?.id !== hiddenPaneId && !panes[index]?.hidden) {
+      return panes[index];
+    }
+  }
+
+  for (let index = startIndex - 1; index >= 0; index -= 1) {
+    if (panes[index]?.id !== hiddenPaneId && !panes[index]?.hidden) {
+      return panes[index];
+    }
+  }
+
+  for (let index = startIndex; index < panes.length; index += 1) {
+    if (panes[index]?.id !== hiddenPaneId) {
+      return panes[index];
+    }
+  }
+
+  for (let index = startIndex - 1; index >= 0; index -= 1) {
+    if (panes[index]?.id !== hiddenPaneId) {
+      return panes[index];
+    }
+  }
+
+  return panes[hiddenIndex >= 0 ? hiddenIndex : startIndex];
 }
 
 export function getFallbackPaneAfterRemoval(

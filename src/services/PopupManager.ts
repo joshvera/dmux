@@ -10,7 +10,7 @@ import { StateManager } from "../shared/StateManager.js"
 import { LogService } from "./LogService.js"
 import { TmuxService } from "./TmuxService.js"
 import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
-import type { DmuxPane, ProjectSettings } from "../types.js"
+import type { DmuxPane, DmuxSettings, ProjectSettings } from "../types.js"
 import {
   getPaneMenuActions,
   type PaneMenuActionId,
@@ -51,6 +51,25 @@ export interface PopupManagerConfig {
 }
 
 export type BlankProjectActionId = "new-agent" | "terminal" | "reopen"
+
+export interface SettingsPopupUpdate {
+  key: keyof DmuxSettings
+  value: any
+  scope: "global" | "project"
+}
+
+export type SettingsPopupResult =
+  | {
+      kind: "completed"
+      updates: SettingsPopupUpdate[]
+    }
+  | {
+      kind: "cancelled"
+    }
+  | {
+      kind: "unavailable"
+      reason: "unsupported" | "error"
+    }
 
 interface PopupOptions {
   width?: number
@@ -96,6 +115,31 @@ function isMergeUncommittedChoiceData(
   }
 
   return true
+}
+
+function isSettingsPopupUpdate(update: unknown): update is SettingsPopupUpdate {
+  if (!update || typeof update !== "object") {
+    return false
+  }
+
+  const candidate = update as Record<string, unknown>
+  return (
+    typeof candidate.key === "string"
+    && (candidate.scope === "global" || candidate.scope === "project")
+  )
+}
+
+function getSettingsPopupUpdates(data: unknown): SettingsPopupUpdate[] {
+  if (!data || typeof data !== "object") {
+    return []
+  }
+
+  const candidate = data as Record<string, unknown>
+  if (!Array.isArray(candidate.updates)) {
+    return []
+  }
+
+  return candidate.updates.filter(isSettingsPopupUpdate)
 }
 
 export class PopupManager {
@@ -693,12 +737,10 @@ export class PopupManager {
   async launchSettingsPopup(
     onLaunchHooks: () => Promise<void>,
     projectRoot?: string
-  ): Promise<
-    | { key: string; value: any; scope: "global" | "project" }
-    | { updates: Array<{ key: string; value: any; scope: "global" | "project" }> }
-    | null
-  > {
-    if (!this.checkPopupSupport()) return null
+  ): Promise<SettingsPopupResult> {
+    if (!this.config.popupsSupported) {
+      return { kind: "unavailable", reason: "unsupported" }
+    }
 
     try {
       let settingsPopupWidth = 84
@@ -730,58 +772,51 @@ export class PopupManager {
         projectRoot
       )
 
-      if (result.success) {
-        const data = result.data ?? {}
-        const pendingUpdates = Array.isArray(data.updates)
-          ? data.updates.filter(
-              (update: any) =>
-                typeof update?.key === "string"
-                && (update?.scope === "global" || update?.scope === "project")
-            )
-          : []
-
-        // Check if this is an action result
-        if (data.action === "hooks") {
-          await onLaunchHooks()
-          return pendingUpdates.length > 0 ? { updates: pendingUpdates } : null
+      if (!result.success) {
+        if (result.cancelled) {
+          return { kind: "cancelled" }
         }
-
-        if (data.action === "enabledAgents") {
-          const enabledAgentsUpdate = await this.launchEnabledAgentsPopup(projectRoot)
-          if (enabledAgentsUpdate) {
-            pendingUpdates.push(enabledAgentsUpdate)
-          }
-          return pendingUpdates.length > 0 ? { updates: pendingUpdates } : null
+        if (result.error) {
+          this.showTempMessage(`Popup error: ${result.error}`)
         }
-
-        if (data.action === "enabledNotificationSounds") {
-          const notificationSoundsUpdate = await this.launchNotificationSoundsPopup(projectRoot)
-          if (notificationSoundsUpdate) {
-            pendingUpdates.push(notificationSoundsUpdate)
-          }
-          return pendingUpdates.length > 0 ? { updates: pendingUpdates } : null
-        }
-
-        if (typeof data.key === "string" && (data.scope === "global" || data.scope === "project")) {
-          if (pendingUpdates.length > 0) {
-            return {
-              updates: [
-                ...pendingUpdates,
-                { key: data.key, value: data.value, scope: data.scope },
-              ],
-            }
-          }
-          return { key: data.key, value: data.value, scope: data.scope }
-        }
-
-        if (pendingUpdates.length > 0) {
-          return { updates: pendingUpdates }
-        }
+        return { kind: "unavailable", reason: "error" }
       }
-      return null
+
+      const data = result.data ?? {}
+      const pendingUpdates = getSettingsPopupUpdates(data)
+
+      if ((data as any).action === "hooks") {
+        await onLaunchHooks()
+        return { kind: "completed", updates: pendingUpdates }
+      }
+
+      if ((data as any).action === "enabledAgents") {
+        const enabledAgentsUpdate = await this.launchEnabledAgentsPopup(projectRoot)
+        if (enabledAgentsUpdate) {
+          pendingUpdates.push(enabledAgentsUpdate)
+        }
+        return { kind: "completed", updates: pendingUpdates }
+      }
+
+      if ((data as any).action === "enabledNotificationSounds") {
+        const notificationSoundsUpdate = await this.launchNotificationSoundsPopup(projectRoot)
+        if (notificationSoundsUpdate) {
+          pendingUpdates.push(notificationSoundsUpdate)
+        }
+        return { kind: "completed", updates: pendingUpdates }
+      }
+
+      if (isSettingsPopupUpdate(data)) {
+        pendingUpdates.push(data)
+      }
+
+      return {
+        kind: "completed",
+        updates: pendingUpdates,
+      }
     } catch (error: any) {
       this.showTempMessage(`Failed to launch popup: ${error.message}`)
-      return null
+      return { kind: "unavailable", reason: "error" }
     }
   }
 

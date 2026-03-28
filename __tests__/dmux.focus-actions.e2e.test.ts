@@ -157,6 +157,42 @@ describe.sequential("dmux focus actions runtime e2e", () => {
     })
   }, 120000)
 
+  it.runIf(canRunDmuxRuntimeE2E)("keeps one visible work pane after hiding the last visible pane in focus mode", async () => {
+    await withDmuxRuntimeHarness(async (harness) => {
+      const { repoA, config: seededConfig } = await seedFocusFixture(harness)
+      const activePaneId = await harness.getActivePaneId()
+      const activePane = seededConfig.panes.find((pane) => pane.paneId === activePaneId)!
+
+      await openPaneMenuForActivePane(harness)
+      await harness.sendClientInput("H")
+      await harness.waitForPaneState(
+        repoA,
+        (config) =>
+          config.panes.filter((pane) => !pane.hidden).length === 1
+          && config.panes.find((pane) => pane.id === activePane.id)?.hidden !== true,
+        "all other panes to hide"
+      )
+
+      await openPaneMenuForActivePane(harness)
+      await harness.sendClientInput("h")
+
+      const updatedConfig = await harness.waitForPaneState(
+        repoA,
+        (config) =>
+          config.panes.filter((pane) => !pane.hidden).length === 1
+          && config.panes.find((pane) => pane.id === activePane.id)?.hidden === true,
+        "fallback pane to become visible after hiding the last visible pane"
+      )
+
+      const visiblePane = updatedConfig.panes.find((pane) => !pane.hidden)
+      expect(visiblePane).toBeDefined()
+      expect(visiblePane?.id).not.toBe(activePane.id)
+      expect(await getVisibleWorkPaneIdsInMainWindow(harness, updatedConfig)).toEqual([
+        visiblePane!.paneId,
+      ])
+    })
+  }, 120000)
+
   it.runIf(canRunDmuxRuntimeE2E)("shows all other panes from the pane menu after hiding them", async () => {
     await withDmuxRuntimeHarness(async (harness) => {
       const { repoA, config: seededConfig } = await seedFocusFixture(harness)
