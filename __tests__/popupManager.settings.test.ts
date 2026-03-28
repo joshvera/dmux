@@ -6,10 +6,22 @@ function createPopupManager({
   popupsSupported = true,
   setStatusMessage = () => {},
   setIgnoreInput = () => {},
+  settingsManager = {
+    getSettings: () => ({}),
+    getGlobalSettings: () => ({}),
+    getProjectSettings: () => ({}),
+  },
+  getSettingsManagerForProjectRoot,
 }: {
   popupsSupported?: boolean
   setStatusMessage?: (message: string) => void
   setIgnoreInput?: (ignore: boolean) => void
+  settingsManager?: {
+    getSettings: () => Record<string, unknown>
+    getGlobalSettings: () => Record<string, unknown>
+    getProjectSettings: () => Record<string, unknown>
+  }
+  getSettingsManagerForProjectRoot?: (projectRoot: string) => any
 } = {}): PopupManager {
   const config: PopupManagerConfig = {
     sidebarWidth: 40,
@@ -19,11 +31,8 @@ function createPopupManager({
     terminalWidth: 120,
     terminalHeight: 40,
     availableAgents: ["claude"],
-    settingsManager: {
-      getSettings: () => ({}),
-      getGlobalSettings: () => ({}),
-      getProjectSettings: () => ({}),
-    },
+    settingsManager,
+    getSettingsManagerForProjectRoot,
     projectSettings: {},
     trackProjectActivity: async (work) => await work(),
   }
@@ -177,5 +186,133 @@ describe("PopupManager launchSettingsPopup", () => {
         },
       ],
     })
+  })
+
+  it("builds the popup payload from the requested project root settings manager", async () => {
+    const sessionManager = {
+      getSettings: vi.fn(() => ({ showFooterTips: true })),
+      getGlobalSettings: vi.fn(() => ({ showFooterTips: true })),
+      getProjectSettings: vi.fn(() => ({ presentationMode: "grid" })),
+    }
+    const targetManager = {
+      getSettings: vi.fn(() => ({ showFooterTips: false })),
+      getGlobalSettings: vi.fn(() => ({ showFooterTips: true })),
+      getProjectSettings: vi.fn(() => ({ presentationMode: "focus" })),
+    }
+    const getSettingsManagerForProjectRoot = vi.fn((projectRoot: string) =>
+      projectRoot === "/repo-b" ? targetManager : sessionManager
+    )
+    const manager = createPopupManager({
+      settingsManager: sessionManager,
+      getSettingsManagerForProjectRoot,
+    }) as any
+    manager.launchPopup = vi.fn().mockResolvedValue({
+      success: false,
+      cancelled: true,
+    })
+
+    await manager.launchSettingsPopup(async () => {}, "/repo-b")
+
+    expect(getSettingsManagerForProjectRoot).toHaveBeenCalledWith("/repo-b")
+    expect(manager.launchPopup).toHaveBeenCalledWith(
+      "settingsPopup.js",
+      [],
+      expect.any(Object),
+      expect.objectContaining({
+        settings: { showFooterTips: false },
+        globalSettings: { showFooterTips: true },
+        projectSettings: { presentationMode: "focus" },
+        projectRoot: "/repo-b",
+      }),
+      "/repo-b"
+    )
+  })
+
+  it("seeds enabled agents from the requested project root settings manager", async () => {
+    const sessionManager = {
+      getSettings: vi.fn(() => ({ enabledAgents: ["codex"] })),
+      getGlobalSettings: vi.fn(() => ({})),
+      getProjectSettings: vi.fn(() => ({})),
+    }
+    const targetManager = {
+      getSettings: vi.fn(() => ({ enabledAgents: ["claude"] })),
+      getGlobalSettings: vi.fn(() => ({})),
+      getProjectSettings: vi.fn(() => ({})),
+    }
+    const manager = createPopupManager({
+      settingsManager: sessionManager,
+      getSettingsManagerForProjectRoot: vi.fn((projectRoot: string) =>
+        projectRoot === "/repo-b" ? targetManager : sessionManager
+      ),
+    }) as any
+    manager.launchPopup = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        enabledAgents: ["claude"],
+        scope: "project",
+      },
+    })
+
+    await expect(
+      manager.launchEnabledAgentsPopup("/repo-b")
+    ).resolves.toEqual({
+      key: "enabledAgents",
+      value: ["claude"],
+      scope: "project",
+    })
+
+    expect(manager.launchPopup).toHaveBeenCalledWith(
+      "enabledAgentsPopup.js",
+      [],
+      expect.any(Object),
+      expect.objectContaining({
+        enabledAgents: ["claude"],
+      }),
+      "/repo-b"
+    )
+  })
+
+  it("seeds notification sounds from the requested project root settings manager", async () => {
+    const sessionManager = {
+      getSettings: vi.fn(() => ({ enabledNotificationSounds: ["harp"] })),
+      getGlobalSettings: vi.fn(() => ({})),
+      getProjectSettings: vi.fn(() => ({})),
+    }
+    const targetManager = {
+      getSettings: vi.fn(() => ({ enabledNotificationSounds: ["default-system-sound"] })),
+      getGlobalSettings: vi.fn(() => ({})),
+      getProjectSettings: vi.fn(() => ({})),
+    }
+    const manager = createPopupManager({
+      settingsManager: sessionManager,
+      getSettingsManagerForProjectRoot: vi.fn((projectRoot: string) =>
+        projectRoot === "/repo-b" ? targetManager : sessionManager
+      ),
+    }) as any
+    manager.launchPopup = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        enabledNotificationSounds: ["default-system-sound"],
+        scope: "project",
+      },
+    })
+
+    await expect(
+      manager.launchNotificationSoundsPopup("/repo-b")
+    ).resolves.toEqual({
+      key: "enabledNotificationSounds",
+      value: ["default-system-sound"],
+      scope: "project",
+    })
+
+    expect(manager.launchPopup).toHaveBeenCalledWith(
+      "notificationSoundsPopup.js",
+      [],
+      expect.any(Object),
+      expect.objectContaining({
+        enabledNotificationSounds: ["default-system-sound"],
+      }),
+      "/repo-b"
+    )
   })
 })

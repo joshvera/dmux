@@ -55,6 +55,11 @@ function Harness({
   savePanes?: ReturnType<typeof vi.fn>
   loadPanes?: ReturnType<typeof vi.fn>
 }) {
+  const settingsManager = {
+    updateSetting: vi.fn(),
+    getEffectiveScope: vi.fn(() => "global"),
+  }
+
   useInputHandling({
     panes,
     selectedIndex: 0,
@@ -76,12 +81,25 @@ function Harness({
     setShowFileCopyPrompt: vi.fn(),
     currentCommandType: null,
     setCurrentCommandType: vi.fn(),
+    showInlineSettings: false,
+    setShowInlineSettings: vi.fn(),
+    inlineSettingsIndex: 0,
+    setInlineSettingsIndex: vi.fn(),
+    inlineSettingsMode: "list",
+    setInlineSettingsMode: vi.fn(),
+    inlineSettingsEditingKey: undefined,
+    setInlineSettingsEditingKey: vi.fn(),
+    inlineSettingsEditingValueIndex: 0,
+    setInlineSettingsEditingValueIndex: vi.fn(),
+    inlineSettingsScopeIndex: 0,
+    setInlineSettingsScopeIndex: vi.fn(),
+    inlineSettingsProjectRoot: undefined,
+    setInlineSettingsProjectRoot: vi.fn(),
+    resetInlineSettings: vi.fn(),
     projectSettings: {},
     saveSettings: vi.fn(),
-    settingsManager: {
-      updateSetting: vi.fn(),
-      getEffectiveScope: vi.fn(() => "global"),
-    },
+    settingsManager,
+    getSettingsManagerForProjectRoot: vi.fn(() => settingsManager),
     popupManager,
     actionSystem,
     controlPaneId: "%0",

@@ -69,7 +69,7 @@ import {
   getPresentationTargetPane,
   resolvePresentationMode,
 } from "../utils/presentationMode.js"
-import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
+import { SettingsManager, SETTING_DEFINITIONS } from "../utils/settingsManager.js"
 import type { DmuxSettings } from "../types.js"
 
 // Type for the action system returned by useActionSystem hook
@@ -125,12 +125,15 @@ interface UseInputHandlingParams {
   setInlineSettingsEditingValueIndex: (value: number) => void
   inlineSettingsScopeIndex: number
   setInlineSettingsScopeIndex: (value: number) => void
+  inlineSettingsProjectRoot: string | undefined
+  setInlineSettingsProjectRoot: (value: string | undefined) => void
   resetInlineSettings: () => void
 
   // Settings
   projectSettings: any
   saveSettings: (settings: any) => Promise<void>
   settingsManager: any
+  getSettingsManagerForProjectRoot: (projectRoot: string) => any
 
   // Services
   popupManager: PopupManager
@@ -207,10 +210,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
     setInlineSettingsEditingValueIndex,
     inlineSettingsScopeIndex,
     setInlineSettingsScopeIndex,
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
     resetInlineSettings,
     projectSettings,
     saveSettings,
     settingsManager,
+    getSettingsManagerForProjectRoot,
     popupManager,
     actionSystem,
     controlPaneId,
@@ -244,6 +250,29 @@ export function useInputHandling(params: UseInputHandlingParams) {
   const paneVisibilitySignature = panes
     .map((pane) => `${pane.id}:${pane.hidden ? "1" : "0"}`)
     .join("|")
+  const getResolvedSettingsManagerForProjectRoot = (targetProjectRoot: string) =>
+    getSettingsManagerForProjectRoot?.(targetProjectRoot)
+    ?? (sameSidebarProjectRoot(targetProjectRoot, projectRoot)
+      ? settingsManager
+      : new SettingsManager(targetProjectRoot))
+  const getSettingsUpdateManager = (
+    targetProjectRoot: string,
+    scope: "global" | "project",
+    key?: keyof DmuxSettings
+  ) => {
+    if (
+      scope === "global"
+      || key === "minPaneWidth"
+      || key === "maxPaneWidth"
+    ) {
+      return settingsManager
+    }
+
+    return getResolvedSettingsManagerForProjectRoot(targetProjectRoot)
+  }
+  const getInlineSettingsTargetProjectRoot = () => inlineSettingsProjectRoot || projectRoot
+  const getInlineSettingsManager = () =>
+    getResolvedSettingsManagerForProjectRoot(getInlineSettingsTargetProjectRoot())
 
   useEffect(() => {
     return () => {
@@ -702,7 +731,15 @@ export function useInputHandling(params: UseInputHandlingParams) {
     return selectedAction?.projectRoot || projectRoot
   }
 
-  const applySettingsPopupUpdates = async (updates: SettingsPopupUpdate[]) => {
+  const openInlineSettingsForProject = (targetProjectRoot: string) => {
+    setInlineSettingsProjectRoot(targetProjectRoot)
+    setShowInlineSettings(true)
+  }
+
+  const applySettingsPopupUpdates = async (
+    updates: SettingsPopupUpdate[],
+    targetProjectRoot: string
+  ) => {
     let savedCount = 0
     let layoutBoundsUpdated = false
     let lastScope: "global" | "project" | null = null
@@ -715,13 +752,19 @@ export function useInputHandling(params: UseInputHandlingParams) {
             persist: true,
             scope: update.scope,
             activateTargetPane: false,
+            targetProjectRoot,
           }
         )
         if (!saved) {
           continue
         }
       } else {
-        settingsManager.updateSetting(
+        const updateManager = getSettingsUpdateManager(
+          targetProjectRoot,
+          update.scope,
+          update.key
+        )
+        updateManager.updateSetting(
           update.key,
           update.value,
           update.scope
@@ -750,18 +793,21 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
-  const handleSettingsPopupResult = async (result: SettingsPopupResult) => {
+  const handleSettingsPopupResult = async (
+    result: SettingsPopupResult,
+    targetProjectRoot: string
+  ) => {
     if (result.kind === "cancelled") {
       return
     }
 
     if (result.kind === "unavailable") {
-      setShowInlineSettings(true)
+      openInlineSettingsForProject(targetProjectRoot)
       return
     }
 
     try {
-      await applySettingsPopupUpdates(result.updates)
+      await applySettingsPopupUpdates(result.updates, targetProjectRoot)
     } catch (error: any) {
       setStatusMessage(`Failed to save setting: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
@@ -775,7 +821,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }, targetProjectRoot)
     }, targetProjectRoot)
 
-    await handleSettingsPopupResult(result)
+    await handleSettingsPopupResult(result, targetProjectRoot)
   }
 
   const launchHooksAuthoringSession = async (targetProjectRoot?: string) => {
@@ -986,44 +1032,115 @@ export function useInputHandling(params: UseInputHandlingParams) {
       scope?: "global" | "project"
       preferredPane?: DmuxPane
       activateTargetPane?: boolean
+      targetProjectRoot?: string
     } = {}
   ): Promise<boolean> => {
     const resolvedNextMode = resolvePresentationMode(nextMode)
     const tmuxService = TmuxService.getInstance()
     const targetPane = getPresentationPane(options.preferredPane)
     const scope = options.scope || getPresentationScope()
+    const targetProjectRoot = options.targetProjectRoot || projectRoot
+    const persistenceManager = getSettingsUpdateManager(targetProjectRoot, scope)
+    const shouldApplyLiveMode =
+      scope === "global" || sameSidebarProjectRoot(targetProjectRoot, projectRoot)
+    const previousMode = effectivePresentationMode
+    const previousPaneSnapshot = panes.map((pane) => ({ ...pane }))
 
-    if (options.persist) {
-      settingsManager.updateSetting("presentationMode", resolvedNextMode, scope)
+    const applyPresentationModeLayout = async (mode: PresentationMode) => {
+      if (mode === "grid") {
+        await revealAllHiddenPanes()
+        if (controlPaneId) {
+          await tmuxService.selectPane(controlPaneId)
+        }
+        presentationSyncKeyRef.current = ""
+        return
+      }
+
+      if (!targetPane) {
+        if (controlPaneId) {
+          await tmuxService.selectPane(controlPaneId)
+        }
+        presentationSyncKeyRef.current = ""
+        return
+      }
+
+      await isolatePane(targetPane, {
+        activatePane: options.activateTargetPane === true,
+        suppressStatus: options.activateTargetPane !== true,
+      })
+
+      if (options.activateTargetPane !== true && controlPaneId) {
+        await tmuxService.selectPane(controlPaneId)
+      }
+
+      presentationSyncKeyRef.current = ""
     }
 
-    if (resolvedNextMode === "grid") {
-      await revealAllHiddenPanes()
+    const rollbackLivePresentationModeChange = async () => {
+      if (!shouldApplyLiveMode || resolvedNextMode === previousMode) {
+        return
+      }
+
+      if (resolvedNextMode === "grid") {
+        const panesToHide = previousPaneSnapshot.filter((pane) => pane.hidden)
+        for (const pane of panesToHide) {
+          await tmuxService.breakPaneToWindow(pane.paneId, `dmux-hidden-${pane.id}`)
+        }
+      } else {
+        const joinTargetPaneId =
+          targetPane?.paneId
+          || previousPaneSnapshot.find((pane) => !pane.hidden)?.paneId
+          || controlPaneId
+          || null
+        const panesToReveal = previousPaneSnapshot.filter(
+          (pane) => !pane.hidden && pane.id !== targetPane?.id
+        )
+
+        for (const pane of panesToReveal) {
+          if (!joinTargetPaneId) {
+            throw new Error("No target pane is available to restore the previous layout")
+          }
+          await tmuxService.joinPaneToTarget(pane.paneId, joinTargetPaneId)
+        }
+
+        if (targetPane) {
+          const snapshotTargetPane = previousPaneSnapshot.find((pane) => pane.id === targetPane.id)
+          if (snapshotTargetPane?.hidden) {
+            await tmuxService.breakPaneToWindow(targetPane.paneId, `dmux-hidden-${targetPane.id}`)
+          }
+        }
+      }
+
+      await savePanes(previousPaneSnapshot)
+      await refreshPaneLayout()
+      await loadPanes()
+
       if (controlPaneId) {
         await tmuxService.selectPane(controlPaneId)
       }
+
       presentationSyncKeyRef.current = ""
+    }
+
+    if (shouldApplyLiveMode) {
+      await applyPresentationModeLayout(resolvedNextMode)
+    }
+
+    if (!options.persist) {
       return true
     }
 
-    if (!targetPane) {
-      if (controlPaneId) {
-        await tmuxService.selectPane(controlPaneId)
+    try {
+      persistenceManager.updateSetting("presentationMode", resolvedNextMode, scope)
+    } catch (error) {
+      try {
+        await rollbackLivePresentationModeChange()
+      } catch {
+        // Best effort rollback only.
       }
-      presentationSyncKeyRef.current = ""
-      return true
+      throw error
     }
 
-    await isolatePane(targetPane, {
-      activatePane: options.activateTargetPane === true,
-      suppressStatus: options.activateTargetPane !== true,
-    })
-
-    if (options.activateTargetPane !== true && controlPaneId) {
-      await tmuxService.selectPane(controlPaneId)
-    }
-
-    presentationSyncKeyRef.current = ""
     return true
   }
 
@@ -1758,6 +1875,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     // Handle inline settings dialog input
     if (showInlineSettings) {
+      const inlineSettingsManager = getInlineSettingsManager()
+      const inlineSettingsTargetProjectRoot = getInlineSettingsTargetProjectRoot()
+
       if (key.escape) {
         if (inlineSettingsMode === 'list') {
           resetInlineSettings()
@@ -1807,7 +1927,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
           // Enter edit mode
           setInlineSettingsEditingKey(currentDef.key as keyof DmuxSettings)
           setInlineSettingsMode('edit')
-          const currentValue = settingsManager.getSettings()[currentDef.key as keyof DmuxSettings]
+          const currentValue = inlineSettingsManager.getSettings()[currentDef.key as keyof DmuxSettings]
           if (currentDef.type === 'boolean') {
             setInlineSettingsEditingValueIndex(currentValue ? 0 : 1)
           } else if (currentDef.type === 'select' && currentDef.options) {
@@ -1852,10 +1972,20 @@ export function useInputHandling(params: UseInputHandlingParams) {
               if (currentDef.key === 'presentationMode') {
                 await applyPresentationModeChange(
                   resolvePresentationMode(newValue),
-                  { persist: true, scope, activateTargetPane: false }
+                  {
+                    persist: true,
+                    scope,
+                    activateTargetPane: false,
+                    targetProjectRoot: inlineSettingsTargetProjectRoot,
+                  }
                 )
               } else {
-                settingsManager.updateSetting(
+                const updateManager = getSettingsUpdateManager(
+                  inlineSettingsTargetProjectRoot,
+                  scope,
+                  currentDef.key as keyof DmuxSettings
+                )
+                updateManager.updateSetting(
                   currentDef.key as keyof DmuxSettings,
                   newValue,
                   scope as "global" | "project"

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react"
+import React, { useState, useEffect, useMemo, useCallback } from "react"
 import { Box, Text, useApp, useStdout, useInput } from "ink"
 import { TmuxService } from "./services/TmuxService.js"
 
@@ -87,6 +87,7 @@ import {
   getProjectActionByIndex,
 } from "./utils/projectActions.js"
 import { getPaneProjectRoot } from "./utils/paneProject.js"
+import { sameSidebarProjectRoot } from "./utils/sidebarProjects.js"
 import {
   resolvePresentationMode,
 } from "./utils/presentationMode.js"
@@ -147,6 +148,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     setInlineSettingsEditingValueIndex,
     inlineSettingsScopeIndex,
     setInlineSettingsScopeIndex,
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
     resetInlineSettings,
   } = dialogState
 
@@ -199,6 +202,16 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const [attentionService] = useState(
     () => new DmuxAttentionService({ focusService })
   )
+  const getSettingsManagerForProjectRoot = useCallback((targetProjectRoot: string) => {
+    if (sameSidebarProjectRoot(targetProjectRoot, sessionProjectRoot)) {
+      return settingsManager
+    }
+
+    return new SettingsManager(targetProjectRoot)
+  }, [sessionProjectRoot, settingsManager])
+  const inlineSettingsManager = showInlineSettings
+    ? getSettingsManagerForProjectRoot(inlineSettingsProjectRoot || sessionProjectRoot)
+    : settingsManager
 
   useEffect(() => {
     if (!showFooterTips || footerTips.length <= 1) {
@@ -380,6 +393,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     controlPaneId,
     availableAgents,
     settingsManager,
+    getSettingsManagerForProjectRoot,
     projectSettings,
 
     // Callbacks
@@ -1214,10 +1228,13 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     setInlineSettingsEditingValueIndex,
     inlineSettingsScopeIndex,
     setInlineSettingsScopeIndex,
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
     resetInlineSettings,
     projectSettings,
     saveSettings,
     settingsManager,
+    getSettingsManagerForProjectRoot,
     popupManager,
     actionSystem,
     controlPaneId,
@@ -1334,9 +1351,9 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         {/* Inline settings dialog - fallback when tmux popups unavailable */}
         {showInlineSettings && (
           <SettingsDialog
-            settings={settingsManager.getSettings()}
-            globalSettings={settingsManager.getGlobalSettings()}
-            projectSettings={settingsManager.getProjectSettings()}
+            settings={inlineSettingsManager.getSettings()}
+            globalSettings={inlineSettingsManager.getGlobalSettings()}
+            projectSettings={inlineSettingsManager.getProjectSettings()}
             settingDefinitions={SETTING_DEFINITIONS}
             selectedIndex={inlineSettingsIndex}
             mode={inlineSettingsMode}

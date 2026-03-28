@@ -20,6 +20,7 @@ export function useDialogState() {
   const [inlineSettingsEditingKey, setInlineSettingsEditingKey] = useState<keyof DmuxSettings | undefined>(undefined)
   const [inlineSettingsEditingValueIndex, setInlineSettingsEditingValueIndex] = useState(0)
   const [inlineSettingsScopeIndex, setInlineSettingsScopeIndex] = useState(0)
+  const [inlineSettingsProjectRoot, setInlineSettingsProjectRoot] = useState<string | undefined>(undefined)
 
   /**
    * Check if any dialog is currently open
@@ -60,6 +61,7 @@ export function useDialogState() {
     setInlineSettingsEditingKey(undefined)
     setInlineSettingsEditingValueIndex(0)
     setInlineSettingsScopeIndex(0)
+    setInlineSettingsProjectRoot(undefined)
   }
 
   const resetInlineSettings = () => {
@@ -69,6 +71,7 @@ export function useDialogState() {
     setInlineSettingsEditingKey(undefined)
     setInlineSettingsEditingValueIndex(0)
     setInlineSettingsScopeIndex(0)
+    setInlineSettingsProjectRoot(undefined)
   }
 
   return {
@@ -99,6 +102,8 @@ export function useDialogState() {
     setInlineSettingsEditingValueIndex,
     inlineSettingsScopeIndex,
     setInlineSettingsScopeIndex,
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
     resetInlineSettings,
 
     // Helper functions

@@ -18,9 +18,9 @@ function pane(id: string, hidden = false): DmuxPane {
 }
 
 describe('presentationMode helpers', () => {
-  it('falls back to grid for unknown presentation modes', () => {
+  it('maps legacy single-pane mode to focus and falls back to grid for unknown values', () => {
     expect(resolvePresentationMode('grid')).toBe('grid');
-    expect(resolvePresentationMode('single-pane')).toBe('grid');
+    expect(resolvePresentationMode('single-pane')).toBe('focus');
     expect(resolvePresentationMode('focus')).toBe('focus');
     expect(resolvePresentationMode('unknown')).toBe('grid');
   });

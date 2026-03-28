@@ -43,22 +43,34 @@ function pane(id: string, options: Partial<DmuxPane> = {}): DmuxPane {
 
 function Harness({
   settingsManager,
+  getSettingsManagerForProjectRoot = vi.fn(() => settingsManager),
   setStatusMessage = vi.fn(),
   setInlineSettingsMode = vi.fn(),
   setInlineSettingsEditingKey = vi.fn(),
   setInlineSettingsEditingValueIndex = vi.fn(),
   setInlineSettingsScopeIndex = vi.fn(),
+  inlineSettingsEditingKey = "defaultAgent",
+  inlineSettingsEditingValueIndex = 99,
+  inlineSettingsScopeIndex = 0,
+  inlineSettingsProjectRoot,
+  setInlineSettingsProjectRoot = vi.fn(),
 }: {
   settingsManager: {
     getEffectiveScope: ReturnType<typeof vi.fn>
     getSettings: ReturnType<typeof vi.fn>
     updateSetting: ReturnType<typeof vi.fn>
   }
+  getSettingsManagerForProjectRoot?: ReturnType<typeof vi.fn>
   setStatusMessage?: ReturnType<typeof vi.fn>
   setInlineSettingsMode?: ReturnType<typeof vi.fn>
   setInlineSettingsEditingKey?: ReturnType<typeof vi.fn>
   setInlineSettingsEditingValueIndex?: ReturnType<typeof vi.fn>
   setInlineSettingsScopeIndex?: ReturnType<typeof vi.fn>
+  inlineSettingsEditingKey?: keyof import("../src/types.js").DmuxSettings
+  inlineSettingsEditingValueIndex?: number
+  inlineSettingsScopeIndex?: number
+  inlineSettingsProjectRoot?: string
+  setInlineSettingsProjectRoot?: ReturnType<typeof vi.fn>
 }) {
   useInputHandling({
     panes: [pane("1")],
@@ -87,16 +99,19 @@ function Harness({
     setInlineSettingsIndex: vi.fn(),
     inlineSettingsMode: "scope",
     setInlineSettingsMode,
-    inlineSettingsEditingKey: "defaultAgent",
+    inlineSettingsEditingKey,
     setInlineSettingsEditingKey,
-    inlineSettingsEditingValueIndex: 99,
+    inlineSettingsEditingValueIndex,
     setInlineSettingsEditingValueIndex,
-    inlineSettingsScopeIndex: 0,
+    inlineSettingsScopeIndex,
     setInlineSettingsScopeIndex,
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
     resetInlineSettings: vi.fn(),
     projectSettings: {},
     saveSettings: vi.fn(),
     settingsManager,
+    getSettingsManagerForProjectRoot,
     popupManager: {
       launchSettingsPopup: vi.fn(async () => ({ kind: "cancelled" as const })),
     } as any,
@@ -227,6 +242,48 @@ describe("useInputHandling inline settings", () => {
     expect(setInlineSettingsEditingKey).toHaveBeenCalledWith(undefined)
     expect(setInlineSettingsEditingValueIndex).toHaveBeenCalledWith(0)
     expect(setInlineSettingsScopeIndex).toHaveBeenCalledWith(0)
+
+    unmount()
+  })
+
+  it("saves project-scoped inline settings to the selected non-session project root", async () => {
+    defaultAgentDefinition.options = [
+      { value: "codex", label: "Codex" },
+      { value: "claude", label: "Claude" },
+    ]
+
+    const sessionSettingsManager = {
+      getEffectiveScope: vi.fn(() => "global"),
+      getSettings: vi.fn(() => ({ defaultAgent: "claude" })),
+      updateSetting: vi.fn(),
+    }
+    const repoBSettingsManager = {
+      getSettings: vi.fn(() => ({ defaultAgent: "claude" })),
+      updateSetting: vi.fn(),
+    }
+    const getSettingsManagerForProjectRoot = vi.fn((projectRoot: string) =>
+      projectRoot === "/repo-b" ? repoBSettingsManager : sessionSettingsManager
+    )
+
+    const { stdin, unmount } = render(
+      <Harness
+        settingsManager={sessionSettingsManager}
+        getSettingsManagerForProjectRoot={getSettingsManagerForProjectRoot}
+        inlineSettingsScopeIndex={1}
+        inlineSettingsProjectRoot="/repo-b"
+      />
+    )
+
+    await sleep(20)
+    stdin.write("\r")
+    await sleep(80)
+
+    expect(repoBSettingsManager.updateSetting).toHaveBeenCalledWith(
+      "defaultAgent",
+      "codex",
+      "project"
+    )
+    expect(sessionSettingsManager.updateSetting).not.toHaveBeenCalled()
 
     unmount()
   })

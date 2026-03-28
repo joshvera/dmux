@@ -15,6 +15,7 @@ interface UseServicesProps {
   controlPaneId?: string
   availableAgents: AgentName[]
   settingsManager: any
+  getSettingsManagerForProjectRoot: (projectRoot: string) => any
   projectSettings: ProjectSettings
 
   // Callbacks
@@ -36,6 +37,7 @@ export function useServices(props: UseServicesProps) {
       controlPaneId: props.controlPaneId,
       availableAgents: props.availableAgents,
       settingsManager: props.settingsManager,
+      getSettingsManagerForProjectRoot: props.getSettingsManagerForProjectRoot,
       projectSettings: props.projectSettings,
       trackProjectActivity: props.trackProjectActivity,
     }
@@ -55,6 +57,7 @@ export function useServices(props: UseServicesProps) {
     props.controlPaneId,
     props.availableAgents,
     props.settingsManager,
+    props.getSettingsManagerForProjectRoot,
     props.projectSettings,
     props.setStatusMessage,
     props.setIgnoreInput,

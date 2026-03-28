@@ -28,7 +28,7 @@ import {
   isNotificationSoundId,
   type NotificationSoundId,
 } from './notificationSounds.js';
-import { isPresentationMode } from './presentationMode.js';
+import { isPresentationMode, resolvePresentationMode } from './presentationMode.js';
 
 const GLOBAL_SETTINGS_PATH = join(homedir(), '.dmux.global.json');
 const PERMISSION_MODES = ['', 'plan', 'acceptEdits', 'bypassPermissions'] as const;
@@ -274,9 +274,7 @@ export class SettingsManager {
       ...this.projectSettings,
     });
 
-    merged.presentationMode = isPresentationMode(merged.presentationMode)
-      ? merged.presentationMode
-      : DEFAULT_SETTINGS.presentationMode;
+    merged.presentationMode = resolvePresentationMode(merged.presentationMode);
 
     // Pane width bounds are global-only; ignore any project override values.
     const paneWidths = this.resolveGlobalPaneWidths();

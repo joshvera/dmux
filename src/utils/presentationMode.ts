@@ -13,6 +13,9 @@ export function isPresentationMode(value: unknown): value is PresentationMode {
 export function resolvePresentationMode(
   value: unknown
 ): PresentationMode {
+  if (value === 'single-pane') {
+    return 'focus';
+  }
   return isPresentationMode(value) ? value : 'grid';
 }
 

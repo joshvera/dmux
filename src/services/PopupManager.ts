@@ -9,7 +9,7 @@ import {
 import { StateManager } from "../shared/StateManager.js"
 import { LogService } from "./LogService.js"
 import { TmuxService } from "./TmuxService.js"
-import { SETTING_DEFINITIONS } from "../utils/settingsManager.js"
+import { SettingsManager, SETTING_DEFINITIONS } from "../utils/settingsManager.js"
 import type { DmuxPane, DmuxSettings, ProjectSettings } from "../types.js"
 import {
   getPaneMenuActions,
@@ -46,6 +46,7 @@ export interface PopupManagerConfig {
   controlPaneId?: string
   availableAgents: AgentName[]
   settingsManager: any
+  getSettingsManagerForProjectRoot?: (projectRoot: string) => any
   projectSettings: ProjectSettings
   trackProjectActivity: TrackProjectActivity
 }
@@ -176,6 +177,17 @@ export class PopupManager {
     this.setStatusMessage = setStatusMessage
     this.setIgnoreInput = setIgnoreInput
     this.trackProjectActivity = config.trackProjectActivity
+  }
+
+  private getSettingsManagerForProjectRoot(projectRoot?: string): any {
+    const resolvedProjectRoot = projectRoot || this.config.projectRoot
+    if (this.config.getSettingsManagerForProjectRoot) {
+      return this.config.getSettingsManagerForProjectRoot(resolvedProjectRoot)
+    }
+    if (resolvedProjectRoot === this.config.projectRoot) {
+      return this.config.settingsManager
+    }
+    return new SettingsManager(resolvedProjectRoot)
   }
 
   private clampPopupSizeToClient(
@@ -563,7 +575,7 @@ export class PopupManager {
 
     try {
       const agentsJson = JSON.stringify(this.config.availableAgents)
-      const settings = this.config.settingsManager.getSettings()
+      const settings = this.getSettingsManagerForProjectRoot(projectRoot).getSettings()
       const defaultAgent = settings.defaultAgent
       const initialSelectedAgents =
         defaultAgent &&
@@ -601,7 +613,7 @@ export class PopupManager {
     if (this.config.availableAgents.length === 0) return null
 
     try {
-      const settings = this.config.settingsManager.getSettings()
+      const settings = this.getSettingsManagerForProjectRoot(projectRoot).getSettings()
       const defaultAgent = settings.defaultAgent
       const popupHeight = Math.max(12, Math.min(20, this.config.availableAgents.length + 8))
 
@@ -762,6 +774,8 @@ export class PopupManager {
     }
 
     try {
+      const payloadProjectRoot = projectRoot ?? this.config.projectRoot
+      const popupSettingsManager = this.getSettingsManagerForProjectRoot(payloadProjectRoot)
       let settingsPopupWidth = 84
       try {
         // Use tmux client dimensions, not the dmux pane's stdout width.
@@ -782,10 +796,10 @@ export class PopupManager {
         },
         {
           settingDefinitions: SETTING_DEFINITIONS,
-          settings: this.config.settingsManager.getSettings(),
-          globalSettings: this.config.settingsManager.getGlobalSettings(),
-          projectSettings: this.config.settingsManager.getProjectSettings(),
-          projectRoot: this.config.projectRoot,
+          settings: popupSettingsManager.getSettings(),
+          globalSettings: popupSettingsManager.getGlobalSettings(),
+          projectSettings: popupSettingsManager.getProjectSettings(),
+          projectRoot: payloadProjectRoot,
           controlPaneId: this.config.controlPaneId,
         },
         projectRoot
@@ -850,7 +864,7 @@ export class PopupManager {
     if (!this.checkPopupSupport()) return null
 
     try {
-      const settings = this.config.settingsManager.getSettings()
+      const settings = this.getSettingsManagerForProjectRoot(projectRoot).getSettings()
       const configuredEnabled = resolveEnabledAgentsSelection(settings.enabledAgents)
       const definitions = getAgentDefinitions().map((definition) => ({
         id: definition.id,
@@ -900,7 +914,7 @@ export class PopupManager {
     if (!this.checkPopupSupport()) return null
 
     try {
-      const settings = this.config.settingsManager.getSettings()
+      const settings = this.getSettingsManagerForProjectRoot(projectRoot).getSettings()
       const configuredEnabled = resolveNotificationSoundsSelection(settings.enabledNotificationSounds)
       const definitions = getNotificationSoundDefinitions().map((definition) => ({
         id: definition.id,

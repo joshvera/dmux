@@ -41,6 +41,8 @@ function createDialogState(overrides: Record<string, unknown> = {}) {
     setInlineSettingsEditingValueIndex: vi.fn(),
     inlineSettingsScopeIndex: 0,
     setInlineSettingsScopeIndex: vi.fn(),
+    inlineSettingsProjectRoot: undefined,
+    setInlineSettingsProjectRoot: vi.fn(),
     resetInlineSettings: vi.fn(),
     ...overrides,
   }

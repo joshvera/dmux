@@ -46,6 +46,7 @@ function Harness({
   presentationMode,
   popupManager,
   settingsManager,
+  getSettingsManagerForProjectRoot = vi.fn(() => settingsManager),
   controlPaneId = "%0",
   setSelectedIndex = vi.fn(),
   setStatusMessage = vi.fn(),
@@ -54,6 +55,8 @@ function Harness({
   handlePaneCreationWithAgent = vi.fn(async () => []),
   showInlineSettings = false,
   setShowInlineSettings = vi.fn(),
+  inlineSettingsProjectRoot,
+  setInlineSettingsProjectRoot = vi.fn(),
   projectActionItems = [],
 }: {
   panes: DmuxPane[]
@@ -61,6 +64,7 @@ function Harness({
   presentationMode: "grid" | "focus"
   popupManager: any
   settingsManager: any
+  getSettingsManagerForProjectRoot?: ReturnType<typeof vi.fn>
   controlPaneId?: string
   setSelectedIndex?: ReturnType<typeof vi.fn>
   setStatusMessage?: ReturnType<typeof vi.fn>
@@ -69,6 +73,8 @@ function Harness({
   handlePaneCreationWithAgent?: ReturnType<typeof vi.fn>
   showInlineSettings?: boolean
   setShowInlineSettings?: ReturnType<typeof vi.fn>
+  inlineSettingsProjectRoot?: string
+  setInlineSettingsProjectRoot?: ReturnType<typeof vi.fn>
   projectActionItems?: ProjectActionItem[]
 }) {
   useInputHandling({
@@ -104,10 +110,13 @@ function Harness({
     setInlineSettingsEditingValueIndex: vi.fn(),
     inlineSettingsScopeIndex: 0,
     setInlineSettingsScopeIndex: vi.fn(),
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
     resetInlineSettings: vi.fn(),
     projectSettings: {},
     saveSettings: vi.fn(),
     settingsManager,
+    getSettingsManagerForProjectRoot,
     popupManager,
     actionSystem: {
       actionState: {},
@@ -329,6 +338,171 @@ describe("useInputHandling focus mode", () => {
     renderResult.unmount()
   })
 
+  it("applies non-session project settings updates to the selected sidebar project root", async () => {
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ shortcut: "m", targetPaneId: "%999" }])
+
+    const popupManager = {
+      launchHooksPopup: vi.fn(async () => null),
+      launchSettingsPopup: vi.fn(async () => ({
+        kind: "completed" as const,
+        updates: [{
+          key: "showFooterTips",
+          value: false,
+          scope: "project" as const,
+        }],
+      })),
+    }
+    const sessionSettingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => "global"),
+      getSettings: vi.fn(() => ({ showFooterTips: true })),
+    }
+    const repoBSettingsManager = {
+      updateSetting: vi.fn(),
+      getSettings: vi.fn(() => ({ showFooterTips: true })),
+    }
+    const getSettingsManagerForProjectRoot = vi.fn((projectRoot: string) =>
+      projectRoot === "/repo-b" ? repoBSettingsManager : sessionSettingsManager
+    )
+
+    const { unmount } = render(
+      <Harness
+        panes={[pane("1")]}
+        selectedIndex={1}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={sessionSettingsManager}
+        getSettingsManagerForProjectRoot={getSettingsManagerForProjectRoot}
+        projectActionItems={[
+          { index: 1, projectRoot: "/repo-b", projectName: "repo-b", kind: "new-agent", hotkey: "n" },
+        ]}
+      />
+    )
+
+    await sleep(40)
+    process.emit("dmux-external-command-signal" as any)
+    await sleep(80)
+
+    expect(repoBSettingsManager.updateSetting).toHaveBeenCalledWith(
+      "showFooterTips",
+      false,
+      "project"
+    )
+    expect(sessionSettingsManager.updateSetting).not.toHaveBeenCalled()
+
+    unmount()
+  })
+
+  it("targets the selected sidebar project when falling back to inline settings", async () => {
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ shortcut: "m", targetPaneId: "%999" }])
+
+    const setShowInlineSettings = vi.fn()
+    const setInlineSettingsProjectRoot = vi.fn()
+    const popupManager = {
+      launchHooksPopup: vi.fn(async () => null),
+      launchSettingsPopup: vi.fn(async () => ({
+        kind: "unavailable" as const,
+        reason: "unsupported" as const,
+      })),
+    }
+
+    const { unmount } = render(
+      <Harness
+        panes={[pane("1")]}
+        selectedIndex={1}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => "global"),
+          getSettings: vi.fn(() => ({})),
+        }}
+        setShowInlineSettings={setShowInlineSettings}
+        setInlineSettingsProjectRoot={setInlineSettingsProjectRoot}
+        projectActionItems={[
+          { index: 1, projectRoot: "/repo-b", projectName: "repo-b", kind: "new-agent", hotkey: "n" },
+        ]}
+      />
+    )
+
+    await sleep(40)
+    process.emit("dmux-external-command-signal" as any)
+    await sleep(80)
+
+    expect(setInlineSettingsProjectRoot).toHaveBeenCalledWith("/repo-b")
+    expect(setShowInlineSettings).toHaveBeenCalledWith(true)
+
+    unmount()
+  })
+
+  it("persists non-session project presentation mode without live-applying it to the current session", async () => {
+    vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
+    vi.mocked(drainRemotePaneActions)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ shortcut: "m", targetPaneId: "%999" }])
+
+    const popupManager = {
+      launchHooksPopup: vi.fn(async () => null),
+      launchSettingsPopup: vi.fn(async () => ({
+        kind: "completed" as const,
+        updates: [{
+          key: "presentationMode",
+          value: "focus",
+          scope: "project" as const,
+        }],
+      })),
+    }
+    const sessionSettingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => "global"),
+      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+    }
+    const repoBSettingsManager = {
+      updateSetting: vi.fn(),
+      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+    }
+    const getSettingsManagerForProjectRoot = vi.fn((projectRoot: string) =>
+      projectRoot === "/repo-b" ? repoBSettingsManager : sessionSettingsManager
+    )
+    const savePanes = vi.fn(async () => {})
+
+    const { unmount } = render(
+      <Harness
+        panes={[pane("1"), pane("2")]}
+        selectedIndex={2}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={sessionSettingsManager}
+        getSettingsManagerForProjectRoot={getSettingsManagerForProjectRoot}
+        savePanes={savePanes}
+        projectActionItems={[
+          { index: 2, projectRoot: "/repo-b", projectName: "repo-b", kind: "new-agent", hotkey: "n" },
+        ]}
+      />
+    )
+
+    await sleep(40)
+    process.emit("dmux-external-command-signal" as any)
+    await sleep(80)
+
+    expect(repoBSettingsManager.updateSetting).toHaveBeenCalledWith(
+      "presentationMode",
+      "focus",
+      "project"
+    )
+    expect(sessionSettingsManager.updateSetting).not.toHaveBeenCalled()
+    expect(tmuxServiceMock.breakPaneToWindow).not.toHaveBeenCalled()
+    expect(savePanes).not.toHaveBeenCalled()
+
+    unmount()
+  })
+
   it("blocks remote queued actions while inline settings are open", async () => {
     vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
     vi.mocked(drainRemotePaneActions).mockResolvedValue([
@@ -408,6 +582,102 @@ describe("useInputHandling focus mode", () => {
       expect.any(Number),
       { forceLayout: true }
     )
+
+    unmount()
+  })
+
+  it("does not persist presentation mode when the live tmux apply fails", async () => {
+    tmuxServiceMock.breakPaneToWindow.mockRejectedValueOnce(new Error("break-pane failed"))
+
+    const popupManager = {
+      launchSettingsPopup: vi.fn(async () => ({
+        kind: "completed" as const,
+        updates: [{
+          key: "presentationMode",
+          value: "focus",
+          scope: "global" as const,
+        }],
+      })),
+    }
+    const settingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => "global"),
+      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+    }
+    const setStatusMessage = vi.fn()
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane("1"), pane("2")]}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={settingsManager}
+        setStatusMessage={setStatusMessage}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("s")
+    await sleep(80)
+
+    expect(settingsManager.updateSetting).not.toHaveBeenCalled()
+    expect(setStatusMessage).toHaveBeenCalledWith(
+      "Failed to save setting: break-pane failed"
+    )
+
+    unmount()
+  })
+
+  it("restores the previous pane visibility snapshot when presentation mode persistence fails", async () => {
+    const popupManager = {
+      launchSettingsPopup: vi.fn(async () => ({
+        kind: "completed" as const,
+        updates: [{
+          key: "presentationMode",
+          value: "focus",
+          scope: "global" as const,
+        }],
+      })),
+    }
+    const settingsManager = {
+      updateSetting: vi.fn(() => {
+        throw new Error("disk full")
+      }),
+      getEffectiveScope: vi.fn(() => "global"),
+      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+    }
+    const savePanes = vi.fn(async () => {})
+    const loadPanes = vi.fn(async () => {})
+    const setStatusMessage = vi.fn()
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane("1"), pane("2")]}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={settingsManager}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+        setStatusMessage={setStatusMessage}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("s")
+    await sleep(100)
+
+    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%2", "dmux-hidden-2")
+    expect(tmuxServiceMock.joinPaneToTarget).toHaveBeenCalledWith("%2", "%1")
+    expect(savePanes).toHaveBeenNthCalledWith(1, [
+      expect.objectContaining({ id: "1", hidden: false }),
+      expect.objectContaining({ id: "2", hidden: true }),
+    ])
+    expect(savePanes.mock.calls[1]?.[0]).toEqual([
+      expect.objectContaining({ id: "1" }),
+      expect.objectContaining({ id: "2" }),
+    ])
+    expect((savePanes.mock.calls[1]?.[0] as DmuxPane[]).every((pane) => pane.hidden !== true)).toBe(true)
+    expect(setStatusMessage).toHaveBeenCalledWith("Failed to save setting: disk full")
 
     unmount()
   })
