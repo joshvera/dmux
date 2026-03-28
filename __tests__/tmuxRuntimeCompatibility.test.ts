@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
-import { existsSync, readFileSync, statSync } from 'fs';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, readFileSync, statSync, writeFileSync, symlinkSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -87,5 +87,30 @@ describe('ensureOsc52CopyScript', () => {
 
     const mode = statSync(scriptPath).mode & 0o777;
     expect(mode & 0o111).not.toBe(0); // executable
+  });
+
+  it('skips write when content already matches', () => {
+    // First write creates the file.
+    const scriptPath = ensureOsc52CopyScript();
+    const mtimeBefore = statSync(scriptPath).mtimeMs;
+
+    // Second call should not rewrite.
+    ensureOsc52CopyScript();
+    const mtimeAfter = statSync(scriptPath).mtimeMs;
+
+    expect(mtimeAfter).toBe(mtimeBefore);
+  });
+
+  it('does not follow symlinks', () => {
+    const dmuxDir = join(tempDir, '.dmux');
+    mkdirSync(dmuxDir, { recursive: true });
+    const targetPath = join(tempDir, 'real-file.sh');
+    writeFileSync(targetPath, 'original content');
+    symlinkSync(targetPath, join(dmuxDir, 'osc52-copy.sh'));
+
+    ensureOsc52CopyScript();
+
+    // The symlink target should not be overwritten.
+    expect(readFileSync(targetPath, 'utf-8')).toBe('original content');
   });
 });
