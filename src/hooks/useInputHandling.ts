@@ -722,7 +722,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         }
       } else {
         settingsManager.updateSetting(
-          update.key as keyof DmuxSettings,
+          update.key,
           update.value,
           update.scope
         )

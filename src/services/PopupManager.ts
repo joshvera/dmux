@@ -117,6 +117,25 @@ function isMergeUncommittedChoiceData(
   return true
 }
 
+const DISALLOWED_SETTINGS_POPUP_KEYS = new Set([
+  "hooks",
+  "__proto__",
+  "constructor",
+  "prototype",
+])
+
+const SETTINGS_POPUP_UPDATE_KEYS = new Set<keyof DmuxSettings>(
+  SETTING_DEFINITIONS.flatMap(({ key }) =>
+    typeof key === "string" && !DISALLOWED_SETTINGS_POPUP_KEYS.has(key)
+      ? [key as keyof DmuxSettings]
+      : []
+  )
+)
+
+function isSettingsPopupKey(key: unknown): key is keyof DmuxSettings {
+  return typeof key === "string" && SETTINGS_POPUP_UPDATE_KEYS.has(key as keyof DmuxSettings)
+}
+
 function isSettingsPopupUpdate(update: unknown): update is SettingsPopupUpdate {
   if (!update || typeof update !== "object") {
     return false
@@ -124,7 +143,7 @@ function isSettingsPopupUpdate(update: unknown): update is SettingsPopupUpdate {
 
   const candidate = update as Record<string, unknown>
   return (
-    typeof candidate.key === "string"
+    isSettingsPopupKey(candidate.key)
     && (candidate.scope === "global" || candidate.scope === "project")
   )
 }
@@ -771,6 +790,7 @@ export class PopupManager {
         },
         projectRoot
       )
+      this.ignoreInputBriefly()
 
       if (!result.success) {
         if (result.cancelled) {

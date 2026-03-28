@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from "vitest"
 import { PopupManager, type PopupManagerConfig } from "../src/services/PopupManager.js"
+import { INPUT_IGNORE_DELAY } from "../src/constants/timing.js"
 
-function createPopupManager(popupsSupported: boolean = true): PopupManager {
+function createPopupManager({
+  popupsSupported = true,
+  setStatusMessage = () => {},
+  setIgnoreInput = () => {},
+}: {
+  popupsSupported?: boolean
+  setStatusMessage?: (message: string) => void
+  setIgnoreInput?: (ignore: boolean) => void
+} = {}): PopupManager {
   const config: PopupManagerConfig = {
     sidebarWidth: 40,
     projectRoot: "/tmp/project",
@@ -19,12 +28,12 @@ function createPopupManager(popupsSupported: boolean = true): PopupManager {
     trackProjectActivity: async (work) => await work(),
   }
 
-  return new PopupManager(config, () => {}, () => {})
+  return new PopupManager(config, setStatusMessage, setIgnoreInput)
 }
 
 describe("PopupManager launchSettingsPopup", () => {
   it("reports unsupported popup environments explicitly", async () => {
-    const manager = createPopupManager(false)
+    const manager = createPopupManager({ popupsSupported: false })
 
     await expect(
       manager.launchSettingsPopup(async () => {})
@@ -35,21 +44,37 @@ describe("PopupManager launchSettingsPopup", () => {
   })
 
   it("preserves popup cancellation instead of collapsing it into fallback-unavailable", async () => {
-    const manager = createPopupManager() as any
+    vi.useFakeTimers()
+
+    const setIgnoreInput = vi.fn()
+    const manager = createPopupManager({ setIgnoreInput }) as any
     manager.launchPopup = vi.fn().mockResolvedValue({
       success: false,
       cancelled: true,
     })
 
-    await expect(
-      manager.launchSettingsPopup(async () => {})
-    ).resolves.toEqual({
-      kind: "cancelled",
-    })
+    try {
+      await expect(
+        manager.launchSettingsPopup(async () => {})
+      ).resolves.toEqual({
+        kind: "cancelled",
+      })
+
+      expect(setIgnoreInput).toHaveBeenCalledWith(true)
+
+      vi.advanceTimersByTime(INPUT_IGNORE_DELAY)
+
+      expect(setIgnoreInput).toHaveBeenLastCalledWith(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("normalizes successful updates into the completed updates array shape", async () => {
-    const manager = createPopupManager() as any
+    vi.useFakeTimers()
+
+    const setIgnoreInput = vi.fn()
+    const manager = createPopupManager({ setIgnoreInput }) as any
     manager.launchPopup = vi.fn().mockResolvedValue({
       success: true,
       data: {
@@ -59,15 +84,98 @@ describe("PopupManager launchSettingsPopup", () => {
       },
     })
 
+    try {
+      await expect(
+        manager.launchSettingsPopup(async () => {})
+      ).resolves.toEqual({
+        kind: "completed",
+        updates: [{
+          key: "presentationMode",
+          value: "focus",
+          scope: "global",
+        }],
+      })
+
+      expect(setIgnoreInput).toHaveBeenCalledWith(true)
+
+      vi.advanceTimersByTime(INPUT_IGNORE_DELAY)
+
+      expect(setIgnoreInput).toHaveBeenLastCalledWith(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("drops invalid top-level setting keys instead of returning them as updates", async () => {
+    const manager = createPopupManager() as any
+    manager.launchPopup = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        key: "hooks",
+        value: "ignored",
+        scope: "project",
+      },
+    })
+
     await expect(
       manager.launchSettingsPopup(async () => {})
     ).resolves.toEqual({
       kind: "completed",
-      updates: [{
-        key: "presentationMode",
-        value: "focus",
-        scope: "global",
-      }],
+      updates: [],
+    })
+  })
+
+  it("keeps valid mixed updates and drops unknown or blocked keys", async () => {
+    const manager = createPopupManager() as any
+    manager.launchPopup = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        updates: [
+          {
+            key: "presentationMode",
+            value: "focus",
+            scope: "global",
+          },
+          {
+            key: "enabledAgents",
+            value: ["claude"],
+            scope: "project",
+          },
+          {
+            key: "hooks",
+            value: "ignored",
+            scope: "project",
+          },
+          {
+            key: "__proto__",
+            value: { polluted: true },
+            scope: "global",
+          },
+          {
+            key: "notASetting",
+            value: "ignored",
+            scope: "global",
+          },
+        ],
+      },
+    })
+
+    await expect(
+      manager.launchSettingsPopup(async () => {})
+    ).resolves.toEqual({
+      kind: "completed",
+      updates: [
+        {
+          key: "presentationMode",
+          value: "focus",
+          scope: "global",
+        },
+        {
+          key: "enabledAgents",
+          value: ["claude"],
+          scope: "project",
+        },
+      ],
     })
   })
 })
