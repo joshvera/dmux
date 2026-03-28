@@ -1834,7 +1834,18 @@ export function useInputHandling(params: UseInputHandlingParams) {
             if (currentDef.type === 'boolean') {
               newValue = inlineSettingsEditingValueIndex === 0
             } else if (currentDef.type === 'select' && currentDef.options) {
-              newValue = currentDef.options[inlineSettingsEditingValueIndex]?.value || ''
+              const selectedOption = currentDef.options[inlineSettingsEditingValueIndex]
+                ?? currentDef.options[0]
+              if (!selectedOption) {
+                setStatusMessage(`${currentDef.label} has no available options`)
+                setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+                setInlineSettingsMode('list')
+                setInlineSettingsEditingKey(undefined)
+                setInlineSettingsEditingValueIndex(0)
+                setInlineSettingsScopeIndex(0)
+                return
+              }
+              newValue = selectedOption.value
             }
 
             try {

@@ -21,6 +21,8 @@ import { createMockExecSync, createMockOpenRouterAPI } from '../helpers/integrat
 const fsMock = vi.hoisted(() => ({
   readFileSync: vi.fn(() => JSON.stringify({ controlPaneId: '%0' })),
   writeFileSync: vi.fn(),
+  renameSync: vi.fn(),
+  unlinkSync: vi.fn(),
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
 }));
@@ -346,6 +348,105 @@ describe('Pane Lifecycle Integration Tests', () => {
         typeof cmd === 'string' && cmd.includes('git worktree add')
       );
       expect(worktreeCall?.[0]).toContain('cd "/target/repo" && git worktree add "/target/repo/.dmux/worktrees/target-slug"');
+    });
+
+    it('should split from the last visible pane when hidden panes trail the list', async () => {
+      const { createPane } = await import('../../src/utils/paneCreation.js');
+
+      await createPane(
+        {
+          prompt: 'create from visible pane',
+          agent: 'claude',
+          projectName: 'test-project',
+          existingPanes: [
+            {
+              id: 'dmux-1',
+              slug: 'visible',
+              prompt: 'visible pane',
+              paneId: '%1',
+              projectRoot: '/test',
+              worktreePath: '/test/.dmux/worktrees/visible',
+            },
+            {
+              id: 'dmux-2',
+              slug: 'hidden',
+              prompt: 'hidden pane',
+              paneId: '%2',
+              hidden: true,
+              projectRoot: '/test',
+              worktreePath: '/test/.dmux/worktrees/hidden',
+            },
+          ],
+        },
+        ['claude']
+      );
+
+      const splitCall = mockExecSync.mock.calls.find(([cmd]) =>
+        typeof cmd === 'string' && cmd.includes('tmux split-window')
+      );
+      expect(splitCall?.[0]).toContain("-t '%1'");
+      expect(splitCall?.[0]).not.toContain("-t '%2'");
+    });
+
+    it('should reuse the recovered control pane when retrying a split with all panes hidden', async () => {
+      const { createPane } = await import('../../src/utils/paneCreation.js');
+
+      fsMock.readFileSync.mockReturnValue(JSON.stringify({ controlPaneId: '%stale' }));
+
+      const defaultExecSync = mockExecSync.getMockImplementation();
+      let splitAttempts = 0;
+      mockExecSync.mockImplementation((command: string, options?: any) => {
+        const cmd = command.toString().trim();
+
+        if (cmd.includes("display-message -t '%stale' -p '#{pane_id}'")) {
+          return options?.encoding === 'utf-8' ? '%stale' : Buffer.from('%stale');
+        }
+
+        if (cmd.includes('tmux split-window') && cmd.includes("-t '%stale'")) {
+          splitAttempts += 1;
+          throw new Error("can't find pane: %stale");
+        }
+
+        return defaultExecSync?.(command, options) as string | Buffer;
+      });
+
+      await createPane(
+        {
+          prompt: 'create from recovered control pane',
+          agent: 'claude',
+          projectName: 'test-project',
+          existingPanes: [
+            {
+              id: 'dmux-1',
+              slug: 'hidden-one',
+              prompt: 'hidden pane one',
+              paneId: '%1',
+              hidden: true,
+              projectRoot: '/test',
+              worktreePath: '/test/.dmux/worktrees/hidden-one',
+            },
+            {
+              id: 'dmux-2',
+              slug: 'hidden-two',
+              prompt: 'hidden pane two',
+              paneId: '%2',
+              hidden: true,
+              projectRoot: '/test',
+              worktreePath: '/test/.dmux/worktrees/hidden-two',
+            },
+          ],
+        },
+        ['claude']
+      );
+
+      const splitCalls = mockExecSync.mock.calls
+        .map(([cmd]) => cmd)
+        .filter((cmd): cmd is string => typeof cmd === 'string' && cmd.includes('tmux split-window'));
+
+      expect(splitAttempts).toBe(1);
+      expect(splitCalls).toHaveLength(2);
+      expect(splitCalls[0]).toContain("-t '%stale'");
+      expect(splitCalls[1]).toContain("-t '%0'");
     });
 
     it('should handle slug generation failure (fallback to timestamp)', async () => {

@@ -18,6 +18,7 @@ import { recalculateAndApplyLayout } from './layoutManager.js';
 import { buildWorktreePaneTitle } from './paneTitle.js';
 import { SettingsManager } from './settingsManager.js';
 import { LogService } from '../services/LogService.js';
+import { getPreferredSplitTargetPaneId } from './panePlacement.js';
 
 export interface AttachAgentOptions {
   targetPane: DmuxPane;
@@ -91,9 +92,8 @@ export async function attachAgentToWorktree(
     controlPaneId = originalPaneId;
   }
 
-  // Split from the last existing pane (standard grid placement)
-  const dmuxPaneIds = existingPanes.map(p => p.paneId);
-  const splitTarget = dmuxPaneIds[dmuxPaneIds.length - 1];
+  // Split from the visible dmux window so hidden focus-mode panes are never targeted.
+  const splitTarget = getPreferredSplitTargetPaneId(existingPanes, controlPaneId);
   const paneInfo = splitPane({
     targetPane: splitTarget,
     cwd: projectRoot,

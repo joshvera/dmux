@@ -37,6 +37,7 @@ import { ensureGeminiFolderTrusted } from './geminiTrust.js';
 import { isValidBranchName } from './git.js';
 import { sendPromptViaTmux } from './agentPromptDispatch.js';
 import { readWorktreeMetadata, writeWorktreeMetadata } from './worktreeMetadata.js';
+import { getPreferredSplitTargetPaneId } from './panePlacement.js';
 
 export interface CreatePaneOptions {
   prompt: string;
@@ -255,10 +256,8 @@ export async function createPane(
       // This way we can save the pane to config first, THEN destroy welcome pane
       paneInfo = setupSidebarLayout(controlPaneId, projectRoot);
     } else {
-      // Subsequent panes - always split horizontally, let layout manager organize
-      // Get actual dmux pane IDs (not welcome pane) from existingPanes
-      const dmuxPaneIds = existingPanes.map(p => p.paneId);
-      const targetPane = dmuxPaneIds[dmuxPaneIds.length - 1]; // Split from the most recent dmux pane
+      // Subsequent panes always split from the active dmux window, never a hidden detached pane.
+      const targetPane = getPreferredSplitTargetPaneId(existingPanes, controlPaneId);
 
       // Always split horizontally - the layout manager will organize panes optimally
       paneInfo = splitPane({ targetPane, cwd: projectRoot });
@@ -295,8 +294,7 @@ export async function createPane(
       if (isFirstContentPane) {
         paneInfo = setupSidebarLayout(controlPaneId, projectRoot);
       } else {
-        const dmuxPaneIds = existingPanes.map(p => p.paneId);
-        const targetPane = dmuxPaneIds[dmuxPaneIds.length - 1];
+        const targetPane = getPreferredSplitTargetPaneId(existingPanes, controlPaneId);
         paneInfo = splitPane({ targetPane, cwd: projectRoot });
       }
     } else {

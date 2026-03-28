@@ -21,6 +21,7 @@ import { SettingsManager } from './settingsManager.js';
 import { filterEnabledAgents, getInstalledAgents } from './agentDetection.js';
 import { getCurrentBranch } from './git.js';
 import { readWorktreeMetadata } from './worktreeMetadata.js';
+import { getPreferredSplitTargetPaneId } from './panePlacement.js';
 
 export interface ReopenWorktreeOptions {
   agent?: AgentName;
@@ -110,9 +111,8 @@ export async function reopenWorktree(
     paneInfo = setupSidebarLayout(controlPaneId, projectRoot);
     await new Promise((resolve) => setTimeout(resolve, 300));
   } else {
-    // Subsequent panes - always split horizontally
-    const dmuxPaneIds = existingPanes.map(p => p.paneId);
-    const targetPane = dmuxPaneIds[dmuxPaneIds.length - 1];
+    // Subsequent panes always split from the visible dmux window.
+    const targetPane = getPreferredSplitTargetPaneId(existingPanes, controlPaneId);
     paneInfo = splitPane({ targetPane });
   }
 
