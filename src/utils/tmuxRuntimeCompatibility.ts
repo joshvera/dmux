@@ -90,6 +90,11 @@ export function ensureOsc52CopyScript(dmuxDir = join(homedir(), '.dmux')): strin
   const scriptPath = join(dmuxDir, 'osc52-copy.sh');
   if (!existsSync(dmuxDir)) {
     mkdirSync(dmuxDir, { recursive: true });
+  } else if (!lstatSync(dmuxDir).isDirectory()) {
+    throw new Error(
+      `Expected ${dmuxDir} to be a directory but it is not. ` +
+      `Remove or rename it so dmux can create its config directory.`
+    );
   }
   if (existsSync(scriptPath)) {
     // Don't follow symlinks or overwrite non-regular files.
@@ -142,8 +147,11 @@ export function ensureTmuxRuntimeCompatibility(sessionName: string): void {
         ['bind-key', '-T', 'copy-mode-vi', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-pipe-and-cancel', scriptPath],
       );
     }
-  } catch {
+  } catch (err) {
     // Non-fatal: clipboard copy-mode bindings will use default tmux behavior.
+    if (err instanceof Error) {
+      console.warn(`[dmux] Failed to install clipboard helper: ${err.message}`);
+    }
   }
 
   for (const args of commands) {
