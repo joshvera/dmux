@@ -149,9 +149,8 @@ export function ensureTmuxRuntimeCompatibility(sessionName: string): void {
     }
   } catch (err) {
     // Non-fatal: clipboard copy-mode bindings will use default tmux behavior.
-    // Surface filesystem-state errors so users know why clipboard isn't working.
-    if (err instanceof Error && err.message.includes('Expected')) {
-      console.warn(`[dmux] ${err.message}`);
+    if (err instanceof Error) {
+      console.warn(`[dmux] Failed to install clipboard helper: ${err.message}`);
     }
   }
 
