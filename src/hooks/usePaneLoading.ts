@@ -9,6 +9,7 @@ import { PaneLifecycleManager } from '../services/PaneLifecycleManager.js';
 import { TMUX_COMMAND_TIMEOUT, TMUX_RETRY_DELAY } from '../constants/timing.js';
 import { atomicWriteJson } from '../utils/atomicWrite.js';
 import { ensureGeminiFolderTrusted } from '../utils/geminiTrust.js';
+import { normalizePaneConfigForSave } from '../utils/paneConfigNormalization.js';
 import { getPaneTmuxTitle } from '../utils/paneTitle.js';
 import { buildPaneRestoreCommands } from '../utils/paneRestore.js';
 import {
@@ -40,17 +41,7 @@ async function saveNormalizedPaneConfig(
   panes: DmuxPane[]
 ): Promise<void> {
   const configContent = await fs.readFile(panesFile, 'utf-8');
-  const config = JSON.parse(configContent);
-  config.panes = panes;
-  const projectRoot = config.projectRoot || path.dirname(path.dirname(panesFile));
-  const projectName = config.projectName || path.basename(projectRoot);
-  config.sidebarProjects = normalizeSidebarProjects(
-    config.sidebarProjects,
-    panes,
-    projectRoot,
-    projectName
-  );
-  config.lastUpdated = new Date().toISOString();
+  const config = normalizePaneConfigForSave(JSON.parse(configContent), panes, panesFile);
   await atomicWriteJson(panesFile, config);
 }
 

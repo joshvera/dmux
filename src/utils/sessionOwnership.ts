@@ -30,6 +30,8 @@ export interface RuntimeMetadataPublicationInput {
   isRecordedControllerAlive: boolean;
 }
 
+type ProcessAliveProbe = (pid: number, signal: 0) => void;
+
 function normalizeProjectRoot(projectRoot: string): string {
   try {
     return fs.realpathSync.native(projectRoot);
@@ -74,9 +76,16 @@ export function classifySessionOwnership({
   };
 }
 
-export function isControllerProcessAlive(pid: number): boolean {
+function defaultProcessAliveProbe(pid: number, signal: 0): void {
+  process.kill(pid, signal);
+}
+
+export function isControllerProcessAlive(
+  pid: number,
+  probe: ProcessAliveProbe = defaultProcessAliveProbe
+): boolean {
   try {
-    process.kill(pid, 0);
+    probe(pid, 0);
     return true;
   } catch (error) {
     const code = getErrnoCode(error);

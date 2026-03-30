@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   classifySessionOwnership,
   isControllerProcessAlive,
@@ -10,10 +10,6 @@ import {
 
 const CURRENT_PROJECT_ROOT = '/sample/projects/dmux-fixture';
 const FOREIGN_PROJECT_ROOT = '/sample/projects/foreign-fixture';
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
 
 describe('sessionOwnership', () => {
   const tempDirs: string[] = [];
@@ -232,47 +228,42 @@ describe('shouldPublishRuntimeMetadata', () => {
 
 describe('isControllerProcessAlive', () => {
   it('treats successful probes as alive', () => {
-    vi.spyOn(process, 'kill').mockImplementation(
-      ((pid: number | string) => pid) as typeof process.kill
-    );
+    const probeCalls: Array<[number, 0]> = [];
+    const probe = (pid: number, signal: 0) => {
+      probeCalls.push([pid, signal]);
+    };
 
-    expect(isControllerProcessAlive(1234)).toBe(true);
-    expect(process.kill).toHaveBeenCalledWith(1234, 0);
+    expect(isControllerProcessAlive(1234, probe)).toBe(true);
+    expect(probeCalls).toEqual([[1234, 0]]);
   });
 
   it('treats EPERM as alive', () => {
-    vi.spyOn(process, 'kill').mockImplementation(
-      (() => {
-        const error = new Error('permission denied') as NodeJS.ErrnoException;
-        error.code = 'EPERM';
-        throw error;
-      }) as typeof process.kill
-    );
+    const probe = () => {
+      const error = new Error('permission denied') as NodeJS.ErrnoException;
+      error.code = 'EPERM';
+      throw error;
+    };
 
-    expect(isControllerProcessAlive(1234)).toBe(true);
+    expect(isControllerProcessAlive(1234, probe)).toBe(true);
   });
 
   it('treats ESRCH as dead', () => {
-    vi.spyOn(process, 'kill').mockImplementation(
-      (() => {
-        const error = new Error('no such process') as NodeJS.ErrnoException;
-        error.code = 'ESRCH';
-        throw error;
-      }) as typeof process.kill
-    );
+    const probe = () => {
+      const error = new Error('no such process') as NodeJS.ErrnoException;
+      error.code = 'ESRCH';
+      throw error;
+    };
 
-    expect(isControllerProcessAlive(1234)).toBe(false);
+    expect(isControllerProcessAlive(1234, probe)).toBe(false);
   });
 
   it('treats unknown probe failures as alive', () => {
-    vi.spyOn(process, 'kill').mockImplementation(
-      (() => {
-        const error = new Error('probe failed') as NodeJS.ErrnoException;
-        error.code = 'EACCES';
-        throw error;
-      }) as typeof process.kill
-    );
+    const probe = () => {
+      const error = new Error('probe failed') as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      throw error;
+    };
 
-    expect(isControllerProcessAlive(1234)).toBe(true);
+    expect(isControllerProcessAlive(1234, probe)).toBe(true);
   });
 });
