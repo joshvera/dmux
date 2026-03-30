@@ -1,11 +1,19 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   classifySessionOwnership,
+  isControllerProcessAlive,
   shouldPublishRuntimeMetadata,
 } from '../src/utils/sessionOwnership.js';
+
+const CURRENT_PROJECT_ROOT = '/sample/projects/dmux-fixture';
+const FOREIGN_PROJECT_ROOT = '/sample/projects/foreign-fixture';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('sessionOwnership', () => {
   const tempDirs: string[] = [];
@@ -22,7 +30,7 @@ describe('sessionOwnership', () => {
       currentPaneId: '%17',
       controlPaneId: '%17',
       sessionContext: null,
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(classification.shouldOfferAttachToCurrentSession).toBe(false);
@@ -35,9 +43,9 @@ describe('sessionOwnership', () => {
       currentPaneId: '%17',
       controlPaneId: '%17',
       sessionContext: {
-        sessionProjectRoot: '/Users/vera/github/bankroll',
+        sessionProjectRoot: FOREIGN_PROJECT_ROOT,
       },
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(classification.isForeignManagedSession).toBe(true);
@@ -51,9 +59,9 @@ describe('sessionOwnership', () => {
       currentPaneId: '%19',
       controlPaneId: '%17',
       sessionContext: {
-        sessionProjectRoot: '/Users/vera/github/dmux',
+        sessionProjectRoot: CURRENT_PROJECT_ROOT,
       },
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(classification.isForeignManagedSession).toBe(false);
@@ -67,7 +75,7 @@ describe('sessionOwnership', () => {
       currentPaneId: '%3',
       controlPaneId: '%3',
       sessionContext: null,
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(classification.shouldOfferAttachToCurrentSession).toBe(false);
@@ -80,9 +88,9 @@ describe('sessionOwnership', () => {
       currentPaneId: '%17',
       controlPaneId: '%17',
       sessionContext: {
-        sessionProjectRoot: '/Users/vera/github/dmux',
+        sessionProjectRoot: CURRENT_PROJECT_ROOT,
       },
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(classification.isForeignManagedSession).toBe(false);
@@ -122,9 +130,9 @@ describe('shouldPublishRuntimeMetadata', () => {
       currentPaneId: '%17',
       controlPaneId: '%17',
       sessionContext: {
-        sessionProjectRoot: '/Users/vera/github/dmux',
+        sessionProjectRoot: CURRENT_PROJECT_ROOT,
       },
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(
@@ -143,9 +151,9 @@ describe('shouldPublishRuntimeMetadata', () => {
       currentPaneId: '%19',
       controlPaneId: '%17',
       sessionContext: {
-        sessionProjectRoot: '/Users/vera/github/dmux',
+        sessionProjectRoot: CURRENT_PROJECT_ROOT,
       },
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(
@@ -164,9 +172,9 @@ describe('shouldPublishRuntimeMetadata', () => {
       currentPaneId: '%19',
       controlPaneId: '%17',
       sessionContext: {
-        sessionProjectRoot: '/Users/vera/github/dmux',
+        sessionProjectRoot: CURRENT_PROJECT_ROOT,
       },
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(
@@ -185,9 +193,9 @@ describe('shouldPublishRuntimeMetadata', () => {
       currentPaneId: '%19',
       controlPaneId: '%17',
       sessionContext: {
-        sessionProjectRoot: '/Users/vera/github/dmux',
+        sessionProjectRoot: CURRENT_PROJECT_ROOT,
       },
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(
@@ -206,9 +214,9 @@ describe('shouldPublishRuntimeMetadata', () => {
       currentPaneId: '%19',
       controlPaneId: '%17',
       sessionContext: {
-        sessionProjectRoot: '/Users/vera/github/bankroll',
+        sessionProjectRoot: FOREIGN_PROJECT_ROOT,
       },
-      currentProjectRoot: '/Users/vera/github/dmux',
+      currentProjectRoot: CURRENT_PROJECT_ROOT,
     });
 
     expect(
@@ -219,5 +227,52 @@ describe('shouldPublishRuntimeMetadata', () => {
         isRecordedControllerAlive: false,
       })
     ).toBe(false);
+  });
+});
+
+describe('isControllerProcessAlive', () => {
+  it('treats successful probes as alive', () => {
+    vi.spyOn(process, 'kill').mockImplementation(
+      ((pid: number | string) => pid) as typeof process.kill
+    );
+
+    expect(isControllerProcessAlive(1234)).toBe(true);
+    expect(process.kill).toHaveBeenCalledWith(1234, 0);
+  });
+
+  it('treats EPERM as alive', () => {
+    vi.spyOn(process, 'kill').mockImplementation(
+      (() => {
+        const error = new Error('permission denied') as NodeJS.ErrnoException;
+        error.code = 'EPERM';
+        throw error;
+      }) as typeof process.kill
+    );
+
+    expect(isControllerProcessAlive(1234)).toBe(true);
+  });
+
+  it('treats ESRCH as dead', () => {
+    vi.spyOn(process, 'kill').mockImplementation(
+      (() => {
+        const error = new Error('no such process') as NodeJS.ErrnoException;
+        error.code = 'ESRCH';
+        throw error;
+      }) as typeof process.kill
+    );
+
+    expect(isControllerProcessAlive(1234)).toBe(false);
+  });
+
+  it('treats unknown probe failures as alive', () => {
+    vi.spyOn(process, 'kill').mockImplementation(
+      (() => {
+        const error = new Error('probe failed') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      }) as typeof process.kill
+    );
+
+    expect(isControllerProcessAlive(1234)).toBe(true);
   });
 });

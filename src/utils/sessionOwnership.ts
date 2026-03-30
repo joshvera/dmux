@@ -38,6 +38,15 @@ function normalizeProjectRoot(projectRoot: string): string {
   }
 }
 
+function getErrnoCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return undefined;
+  }
+
+  const { code } = error as { code?: unknown };
+  return typeof code === 'string' ? code : undefined;
+}
+
 export function classifySessionOwnership({
   sessionName,
   currentPaneId,
@@ -63,6 +72,20 @@ export function classifySessionOwnership({
     shouldOfferAttachToCurrentSession: isForeignManagedSession,
     shouldPublishRuntimeMetadata: ownsCurrentSession && !isForeignManagedSession,
   };
+}
+
+export function isControllerProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = getErrnoCode(error);
+    if (code === 'ESRCH') {
+      return false;
+    }
+
+    return true;
+  }
 }
 
 export function shouldPublishRuntimeMetadata({

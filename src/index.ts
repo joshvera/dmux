@@ -51,6 +51,7 @@ import {
 } from './utils/remotePaneActions.js';
 import {
   classifySessionOwnership,
+  isControllerProcessAlive,
   shouldPublishRuntimeMetadata,
   type SessionOwnershipClassification,
 } from './utils/sessionOwnership.js';
@@ -141,15 +142,6 @@ function parseControllerPid(value: string | null): number | null {
   }
 
   return Number(value);
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 class Dmux {
@@ -645,7 +637,7 @@ class Dmux {
       currentPaneOwnsControlPane: sessionOwnership.ownsCurrentSession,
       hasRecordedControllerPid: recordedControllerPid !== null,
       isRecordedControllerAlive:
-        recordedControllerPid !== null && isProcessAlive(recordedControllerPid),
+        recordedControllerPid !== null && isControllerProcessAlive(recordedControllerPid),
     });
     if (shouldPublishSessionMetadata) {
       this.publishSessionMetadata(metadataSessionName, controlPaneId);
