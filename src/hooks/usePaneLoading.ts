@@ -11,6 +11,7 @@ import { atomicWriteJson } from '../utils/atomicWrite.js';
 import { buildAgentResumeOrLaunchCommand } from '../utils/agentLaunch.js';
 import { ensureGeminiFolderTrusted } from '../utils/geminiTrust.js';
 import { getPaneTmuxTitle } from '../utils/paneTitle.js';
+import { shellQuote } from '../utils/promptStore.js';
 import {
   getVisiblePanes,
   syncHiddenStateFromCurrentWindow,
@@ -54,6 +55,45 @@ async function restoreAgentSessionForPane(
     buildAgentResumeOrLaunchCommand(pane.agent, pane.permissionMode)
   );
   await tmuxService.sendTmuxKeys(paneId, 'Enter');
+}
+
+function buildRestoreInfoCommand(message: string): string {
+  return `printf '%s\\n' ${shellQuote(message)}`;
+}
+
+async function sendRestoreShellCommand(
+  tmuxService: TmuxService,
+  paneId: string,
+  command: string
+): Promise<void> {
+  await tmuxService.sendShellCommand(paneId, command);
+  await tmuxService.sendTmuxKeys(paneId, 'Enter');
+}
+
+async function restorePaneShellState(
+  tmuxService: TmuxService,
+  pane: DmuxPane,
+  paneId: string,
+  cwd: string,
+  options: { alwaysShowPromptPreview?: boolean } = {}
+): Promise<void> {
+  await sendRestoreShellCommand(
+    tmuxService,
+    paneId,
+    buildRestoreInfoCommand(`# Pane restored: ${pane.slug}`)
+  );
+
+  if (options.alwaysShowPromptPreview || pane.prompt) {
+    const promptPreview = pane.prompt?.substring(0, 50) || '';
+    await sendRestoreShellCommand(
+      tmuxService,
+      paneId,
+      buildRestoreInfoCommand(`# Original prompt: ${promptPreview}...`)
+    );
+  }
+
+  await sendRestoreShellCommand(tmuxService, paneId, `cd ${shellQuote(cwd)}`);
+  await restoreAgentSessionForPane(tmuxService, pane, paneId);
 }
 
 /**
@@ -185,12 +225,13 @@ export async function recreateMissingPanes(
       // Update the pane with new ID
       missingPane.paneId = newPaneId;
 
-      // Send a message to the pane indicating it was restored
-      await tmuxService.sendKeys(newPaneId, `"echo '# Pane restored: ${missingPane.slug}'" Enter`);
-      const promptPreview = missingPane.prompt?.substring(0, 50) || '';
-      await tmuxService.sendKeys(newPaneId, `"echo '# Original prompt: ${promptPreview}...'" Enter`);
-      await tmuxService.sendKeys(newPaneId, `"cd ${missingPane.worktreePath || process.cwd()}" Enter`);
-      await restoreAgentSessionForPane(tmuxService, missingPane, newPaneId);
+      await restorePaneShellState(
+        tmuxService,
+        missingPane,
+        newPaneId,
+        missingPane.worktreePath || process.cwd(),
+        { alwaysShowPromptPreview: true }
+      );
     } catch (error) {
       // If we can't create the pane, skip it
     }
@@ -252,8 +293,13 @@ export async function recreateKilledWorktreePanes(
 
   for (const pane of worktreePanesToRecreate) {
     try {
+      const worktreePath = pane.worktreePath;
+      if (!worktreePath) {
+        continue;
+      }
+
       // Create new pane in the worktree directory
-      const newPaneId = splitPane({ cwd: pane.worktreePath });
+      const newPaneId = splitPane({ cwd: worktreePath });
 
       // Set pane title
       await tmuxService.setPaneTitle(newPaneId, getPaneTmuxTitle(pane, sessionProjectRoot));
@@ -264,14 +310,12 @@ export async function recreateKilledWorktreePanes(
         updatedPanes[paneIndex] = { ...pane, paneId: newPaneId };
       }
 
-      // Send a message to the pane indicating it was restored
-      await tmuxService.sendKeys(newPaneId, `"echo '# Pane restored: ${pane.slug}'" Enter`);
-      if (pane.prompt) {
-        const promptPreview = pane.prompt.substring(0, 50) || '';
-        await tmuxService.sendKeys(newPaneId, `"echo '# Original prompt: ${promptPreview}...'" Enter`);
-      }
-      await tmuxService.sendKeys(newPaneId, `"cd ${pane.worktreePath}" Enter`);
-      await restoreAgentSessionForPane(tmuxService, pane, newPaneId);
+      await restorePaneShellState(
+        tmuxService,
+        pane,
+        newPaneId,
+        worktreePath
+      );
 
   //       LogService.getInstance().debug(
   //         `Recreated worktree pane ${pane.id} (${pane.slug}) with new ID ${newPaneId}`,
