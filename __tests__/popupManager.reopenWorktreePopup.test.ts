@@ -16,6 +16,7 @@ function createPopupManager(availableAgents: AgentName[]): PopupManager {
       getGlobalSettings: () => ({}),
       getProjectSettings: () => ({}),
     },
+    getSettingsManagerForProjectRoot: () => config.settingsManager,
     projectSettings: {},
     trackProjectActivity: async (work) => await work(),
   };

@@ -92,14 +92,17 @@ describe('remotePaneActions', () => {
     expect(setupCommands[0]).toContain('--remote-pane-action m');
     expect(
       setupCommands.some((command) =>
-        command.includes('bind-key -T dmux-detach-confirm q detach-client -t "#{client_tty}"')
+        command.includes('bind-key -T dmux-detach-confirm q detach-client')
       )
     ).toBe(true);
     expect(
       setupCommands.some((command) =>
-        command.includes('bind-key -T dmux-detach-confirm C-c detach-client -t "#{client_tty}"')
+        command.includes('bind-key -T dmux-detach-confirm C-c detach-client')
       )
     ).toBe(true);
+    expect(
+      setupCommands.some((command) => command.includes('#{client_tty}'))
+    ).toBe(false);
     expect(
       setupCommands.some((command) =>
         command.includes('bind-key -T dmux-detach-confirm Escape switch-client -T root')

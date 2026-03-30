@@ -5,6 +5,7 @@ import path from 'path';
 import React, { useState } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import { LogService } from '../services/LogService.js';
+import { shellQuote } from './shellQuote.js';
 
 export type TmuxPresetTheme = 'dark' | 'light';
 
@@ -102,26 +103,18 @@ export function buildRecommendedTmuxConfig(theme: TmuxPresetTheme): string {
     'set -g set-clipboard on',
     'set -gq allow-passthrough all',
     '',
-    '# Copy selected text to system clipboard (best effort by platform)',
-    `if-shell "command -v pbcopy >/dev/null 2>&1" "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel 'pbcopy'"`,
-    `if-shell "command -v pbcopy >/dev/null 2>&1" "bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel 'pbcopy'"`,
-    `if-shell "command -v wl-copy >/dev/null 2>&1" "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel 'wl-copy'"`,
-    `if-shell "command -v wl-copy >/dev/null 2>&1" "bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel 'wl-copy'"`,
-    `if-shell "command -v xclip >/dev/null 2>&1" "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel 'xclip -selection clipboard -in'"`,
-    `if-shell "command -v xclip >/dev/null 2>&1" "bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel 'xclip -selection clipboard -in'"`,
+    '# Copy selected text to system clipboard via OSC 52 (works over SSH)',
+    `bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.dmux/osc52-copy.sh"`,
+    `bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$HOME/.dmux/osc52-copy.sh"`,
     '',
     '# Clipboard and cursor compatibility',
-    "set -ga terminal-overrides ',xterm-256color:Ms=\\E]52;c;%p2%s\\007'",
+    "set -ga terminal-overrides ',*:Ms=\\E]52;c;%p2%s\\007'",
     "set -ga terminal-overrides ',*:Ss=\\E[%p1%d q:Se=\\E[2 q'",
     '',
     '# Preserve terminal program info inside tmux',
     'set -ga update-environment "TERM_PROGRAM"',
     '',
   ].join('\n');
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 async function readOnboardingState(statePath: string): Promise<OnboardingState> {

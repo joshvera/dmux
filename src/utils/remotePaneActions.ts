@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { buildRemotePaneActionCommand } from './dmuxCommand.js';
+import { shellQuote } from './shellQuote.js';
 
 export const DMUX_CONTROLLER_PID_OPTION = '@dmux_controller_pid';
 export const DMUX_CONTROL_PANE_OPTION = '@dmux_control_pane';
@@ -75,10 +76,6 @@ const DETACH_CONFIRM_PASSTHROUGH_KEYS = [
 
 function escapeForDoubleQuotes(value: string): string {
   return value.replace(/[\\$"`]/g, '\\$&');
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function sanitizeSessionName(sessionName: string): string {
@@ -289,8 +286,8 @@ export function buildRemotePaneActionBindingCommands(): string[] {
   );
 
   commands.push(
-    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} q detach-client -t "#{client_tty}"`,
-    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} C-c detach-client -t "#{client_tty}"`,
+    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} q detach-client`,
+    `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} C-c detach-client`,
     `bind-key -T ${DMUX_DETACH_CONFIRM_TABLE} Escape switch-client -T root`,
     ...DETACH_CONFIRM_PASSTHROUGH_KEYS.map(
       (key) =>

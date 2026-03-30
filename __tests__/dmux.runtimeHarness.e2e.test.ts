@@ -23,7 +23,7 @@ describe.sequential("dmux runtime harness", () => {
     })
   }, 120000)
 
-  it.runIf(canRunDmuxRuntimeE2E)("opens the focus navigator and action sheet from a real work pane on 80x24", async () => {
+  it.runIf(canRunDmuxRuntimeE2E)("opens the pane-anchored menu from a real work pane on 80x24", async () => {
     await withDmuxRuntimeHarness(async (harness) => {
       const repoA = await harness.createProject("repo-a", {
         presentationMode: "focus",
@@ -33,8 +33,7 @@ describe.sequential("dmux runtime harness", () => {
       await harness.sendControlInput("t")
       await harness.waitForPaneCount(repoA, 1)
 
-      await harness.openFocusNavigatorFromActivePane()
-      await harness.openActionSheetFromFocusNavigator()
+      await harness.openPaneMenuFromActivePane()
 
       await harness.sendClientInput("Escape")
     })

@@ -28,7 +28,7 @@ import {
   isNotificationSoundId,
   type NotificationSoundId,
 } from './notificationSounds.js';
-import { isPresentationMode } from './presentationMode.js';
+import { isPresentationMode, resolvePresentationMode } from './presentationMode.js';
 
 const GLOBAL_SETTINGS_PATH = join(homedir(), '.dmux.global.json');
 const PERMISSION_MODES = ['', 'plan', 'acceptEdits', 'bypassPermissions'] as const;
@@ -135,11 +135,10 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
   {
     key: 'presentationMode',
     label: 'Presentation Mode',
-    description: 'Choose between the default grid, a sidebar-visible single-pane view, or fullscreen focus mode.',
+    description: 'Choose between the default grid and the sidebar-visible focus view.',
     type: 'select',
     options: [
       { value: 'grid', label: 'Grid' },
-      { value: 'single-pane', label: 'Single Pane' },
       { value: 'focus', label: 'Focus' },
     ],
   },
@@ -180,7 +179,7 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
   {
     key: 'maxPaneWidth',
     label: 'Max Pane Width',
-    description: 'Global maximum content-pane width in characters before wrapping/spacer logic.',
+    description: 'Global maximum content-pane width in characters for multi-pane layouts before wrapping/spacer logic.',
     type: 'number',
     min: MIN_MAX_PANE_WIDTH,
     max: MAX_MAX_PANE_WIDTH,
@@ -274,6 +273,8 @@ export class SettingsManager {
       ...this.globalSettings,
       ...this.projectSettings,
     });
+
+    merged.presentationMode = resolvePresentationMode(merged.presentationMode);
 
     // Pane width bounds are global-only; ignore any project override values.
     const paneWidths = this.resolveGlobalPaneWidths();

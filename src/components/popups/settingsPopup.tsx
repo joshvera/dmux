@@ -484,7 +484,12 @@ const SettingsPopupApp: React.FC<SettingsPopupProps> = ({
           if (currentDef.type === 'boolean') {
             newValue = editingValueIndex === 0;
           } else if (currentDef.type === 'select' && currentDef.options) {
-            newValue = currentDef.options[editingValueIndex]?.value || '';
+            const selectedOption = currentDef.options[editingValueIndex] ?? currentDef.options[0];
+            if (!selectedOption) {
+              resetEditingState();
+              return;
+            }
+            newValue = selectedOption.value;
           } else if (currentDef.type === 'text') {
             newValue = textValue;
           } else if (currentDef.type === 'number') {

@@ -70,6 +70,25 @@ describe('SettingsManager defaults', () => {
     ).toThrow('Invalid presentationMode');
   });
 
+  it('migrates legacy single-pane presentation mode values to focus when reading settings', async () => {
+    vi.mock('fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('fs')>();
+      return {
+        ...actual,
+        existsSync: vi.fn(() => false),
+        readFileSync: vi.fn(),
+        writeFileSync: vi.fn(),
+        mkdirSync: vi.fn(),
+      };
+    });
+
+    const { SettingsManager } = await import('../src/utils/settingsManager.js');
+    const manager = new SettingsManager('/tmp/test-project');
+    (manager as any).projectSettings = { presentationMode: 'single-pane' };
+
+    expect(manager.getSettings().presentationMode).toBe('focus');
+  });
+
   it('allows overriding showFooterTips', async () => {
     vi.mock('fs', async (importOriginal) => {
       const actual = await importOriginal<typeof import('fs')>();

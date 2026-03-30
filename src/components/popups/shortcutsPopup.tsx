@@ -39,7 +39,7 @@ export const ShortcutsPopupApp: React.FC<ShortcutsPopupAppProps> = ({
   });
 
   const shortcuts = [
-    { key: 'Alt+Shift+M', description: 'Open the focused-pane menu or focus navigator' },
+    { key: 'Alt+Shift+M', description: 'Open the focused-pane menu' },
     { key: 'j', description: 'Jump to selected pane' },
     { key: 'm', description: 'Open pane menu' },
     { key: 'x', description: 'Close selected pane' },
@@ -86,7 +86,7 @@ export const ShortcutsPopupApp: React.FC<ShortcutsPopupAppProps> = ({
         ))}
 
         <Box marginTop={1}>
-          <Text dimColor>Press Alt+Shift+M in any focused pane to open pane actions without returning to the sidebar. In focus mode, it opens the fullscreen navigator. Press e for hooks, or Esc/? to close</Text>
+          <Text dimColor>Press Alt+Shift+M in any focused pane to open pane actions without returning to the sidebar. Press e for hooks, or Esc/? to close</Text>
         </Box>
       </Box>
     </PopupWrapper>

@@ -139,7 +139,7 @@ describe('reopenWorktree', () => {
     expect(result.pane.permissionMode).toBe('bypassPermissions');
   });
 
-  it('keeps the reopened pane zoomed in focus mode', async () => {
+  it('does not preserve zoom semantics when reopening in focus mode', async () => {
     getSettingsMock.mockReturnValue({
       permissionMode: 'plan',
       enabledAgents: ['claude', 'codex'],
@@ -158,10 +158,43 @@ describe('reopenWorktree', () => {
       sessionConfigPath: '/repo/.dmux/dmux.config.json',
     });
 
-    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1', {
-      preserveZoom: true,
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1');
+    expect(tmuxServiceMock.setPaneZoom).not.toHaveBeenCalled();
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%0');
+  });
+
+  it('splits reopened panes from the last visible pane when hidden panes trail the list', async () => {
+    const { reopenWorktree } = await import('../src/utils/reopenWorktree.js');
+
+    await reopenWorktree({
+      slug: 'reopen-me',
+      worktreePath: '/repo/.dmux/worktrees/reopen-me',
+      projectRoot: '/repo',
+      existingPanes: [
+        {
+          id: 'pane-1',
+          slug: 'visible',
+          prompt: 'visible prompt',
+          paneId: '%1',
+          projectRoot: '/repo',
+          projectName: 'repo',
+          worktreePath: '/repo/.dmux/worktrees/visible',
+        },
+        {
+          id: 'pane-2',
+          slug: 'hidden',
+          prompt: 'hidden prompt',
+          paneId: '%2',
+          hidden: true,
+          projectRoot: '/repo',
+          projectName: 'repo',
+          worktreePath: '/repo/.dmux/worktrees/hidden',
+        },
+      ],
+      sessionProjectRoot: '/repo',
+      sessionConfigPath: '/repo/.dmux/dmux.config.json',
     });
-    expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%1', true);
-    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith('%0');
+
+    expect(splitPaneMock).toHaveBeenCalledWith({ targetPane: '%1' });
   });
 });

@@ -73,7 +73,7 @@ describe('attachAgentToWorktree focus mode', () => {
     });
   });
 
-  it('keeps the attached agent pane zoomed in focus mode', async () => {
+  it('does not preserve zoom semantics when attaching an agent in focus mode', async () => {
     const { attachAgentToWorktree } = await import('../src/utils/attachAgent.js');
 
     await attachAgentToWorktree({
@@ -105,10 +105,58 @@ describe('attachAgentToWorktree focus mode', () => {
       sessionConfigPath: '/repo/.dmux/dmux.config.json',
     });
 
-    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1', {
-      preserveZoom: true,
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%1');
+    expect(tmuxServiceMock.setPaneZoom).not.toHaveBeenCalled();
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith('%0');
+  });
+
+  it('falls back to the control pane when all existing panes are hidden', async () => {
+    const { attachAgentToWorktree } = await import('../src/utils/attachAgent.js');
+
+    await attachAgentToWorktree({
+      targetPane: {
+        id: 'pane-1',
+        slug: 'feature-a',
+        prompt: 'prompt',
+        paneId: '%1',
+        projectRoot: '/repo',
+        projectName: 'repo',
+        worktreePath: '/repo/.dmux/worktrees/feature-a',
+        branchName: 'feature-a',
+      },
+      prompt: 'attach another agent',
+      agent: 'codex',
+      existingPanes: [
+        {
+          id: 'pane-1',
+          slug: 'feature-a',
+          prompt: 'prompt',
+          paneId: '%1',
+          hidden: true,
+          projectRoot: '/repo',
+          projectName: 'repo',
+          worktreePath: '/repo/.dmux/worktrees/feature-a',
+          branchName: 'feature-a',
+        },
+        {
+          id: 'pane-2',
+          slug: 'feature-b',
+          prompt: 'prompt',
+          paneId: '%2',
+          hidden: true,
+          projectRoot: '/repo',
+          projectName: 'repo',
+          worktreePath: '/repo/.dmux/worktrees/feature-b',
+          branchName: 'feature-b',
+        },
+      ],
+      sessionProjectRoot: '/repo',
+      sessionConfigPath: '/repo/.dmux/dmux.config.json',
     });
-    expect(tmuxServiceMock.setPaneZoom).toHaveBeenCalledWith('%1', true);
-    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith('%0');
+
+    expect(splitPaneMock).toHaveBeenCalledWith({
+      targetPane: '%0',
+      cwd: '/repo',
+    });
   });
 });
