@@ -51,6 +51,8 @@ import {
 } from './utils/remotePaneActions.js';
 import {
   classifySessionOwnership,
+  isControllerProcessAlive,
+  shouldPublishRuntimeMetadata,
   type SessionOwnershipClassification,
 } from './utils/sessionOwnership.js';
 import {
@@ -132,6 +134,14 @@ async function handleRemotePaneActionCli(shortcutArg: string): Promise<number> {
     showTmuxMessage(`Failed to queue dmux pane action: ${message}`);
     return 1;
   }
+}
+
+function parseControllerPid(value: string | null): number | null {
+  if (!value || !/^\d+$/.test(value)) {
+    return null;
+  }
+
+  return Number(value);
 }
 
 class Dmux {
@@ -619,7 +629,17 @@ class Dmux {
       process.env.TMUX_PANE || getFocusedTmuxPaneId(),
       controlPaneId
     );
-    if (sessionOwnership.shouldPublishRuntimeMetadata) {
+    const recordedControllerPid = parseControllerPid(
+      this.getTmuxOptionValue(metadataSessionName, DMUX_CONTROLLER_PID_OPTION)
+    );
+    const shouldPublishSessionMetadata = shouldPublishRuntimeMetadata({
+      sessionOwnership,
+      currentPaneOwnsControlPane: sessionOwnership.ownsCurrentSession,
+      hasRecordedControllerPid: recordedControllerPid !== null,
+      isRecordedControllerAlive:
+        recordedControllerPid !== null && isControllerProcessAlive(recordedControllerPid),
+    });
+    if (shouldPublishSessionMetadata) {
       this.publishSessionMetadata(metadataSessionName, controlPaneId);
       this.clearRemotePaneModeIndicators(metadataSessionName);
       this.setupRemotePaneActionBindings(metadataSessionName);

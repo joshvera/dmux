@@ -9,6 +9,7 @@ import { PaneLifecycleManager } from '../services/PaneLifecycleManager.js';
 import { TMUX_COMMAND_TIMEOUT, TMUX_RETRY_DELAY } from '../constants/timing.js';
 import { atomicWriteJson } from '../utils/atomicWrite.js';
 import { ensureGeminiFolderTrusted } from '../utils/geminiTrust.js';
+import { normalizePaneConfigForSave } from '../utils/paneConfigNormalization.js';
 import { getPaneTmuxTitle } from '../utils/paneTitle.js';
 import { buildPaneRestoreCommands } from '../utils/paneRestore.js';
 import {
@@ -33,6 +34,15 @@ interface PaneLoadResult {
   panes: DmuxPane[];
   allPaneIds: string[];
   titleToId: Map<string, string>;
+}
+
+async function saveNormalizedPaneConfig(
+  panesFile: string,
+  panes: DmuxPane[]
+): Promise<void> {
+  const configContent = await fs.readFile(panesFile, 'utf-8');
+  const config = normalizePaneConfigForSave(JSON.parse(configContent), panes, panesFile);
+  await atomicWriteJson(panesFile, config);
 }
 
 async function restoreRecreatedPane(
@@ -246,8 +256,13 @@ export async function recreateKilledWorktreePanes(
 
   for (const pane of worktreePanesToRecreate) {
     try {
+      const worktreePath = pane.worktreePath;
+      if (!worktreePath) {
+        continue;
+      }
+
       // Create new pane in the worktree directory
-      const newPaneId = splitPane({ cwd: pane.worktreePath });
+      const newPaneId = splitPane({ cwd: worktreePath });
 
       // Set pane title
       await tmuxService.setPaneTitle(newPaneId, getPaneTmuxTitle(pane, sessionProjectRoot));
@@ -346,20 +361,7 @@ export async function loadAndProcessPanes(
 
       // Save the cleaned config immediately to prevent these panes from reappearing
       try {
-        const fs = await import('fs/promises');
-        const configContent = await fs.readFile(panesFile, 'utf-8');
-        const config = JSON.parse(configContent);
-        config.panes = reboundPanes;
-        const projectRoot = config.projectRoot || path.dirname(path.dirname(panesFile));
-        const projectName = config.projectName || path.basename(projectRoot);
-        config.sidebarProjects = normalizeSidebarProjects(
-          config.sidebarProjects,
-          reboundPanes,
-          projectRoot,
-          projectName
-        );
-        config.lastUpdated = new Date().toISOString();
-        await atomicWriteJson(panesFile, config);
+        await saveNormalizedPaneConfig(panesFile, reboundPanes);
         LogService.getInstance().debug('Saved cleaned config after removing stale shell panes', 'usePaneLoading');
       } catch (saveError) {
         LogService.getInstance().debug(
@@ -392,6 +394,15 @@ export async function loadAndProcessPanes(
       reboundPanes.map(p => rebindPaneByTitle(p, titleToId, allPaneIds)),
       currentWindowPaneIds
     );
+
+    try {
+      await saveNormalizedPaneConfig(panesFile, reboundPanes);
+    } catch (saveError) {
+      LogService.getInstance().debug(
+        `Failed to save rebound config after pane recreation: ${saveError}`,
+        'usePaneLoading'
+      );
+    }
   }
 
   return { panes: reboundPanes, allPaneIds, titleToId };
