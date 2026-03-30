@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { classifySessionOwnership } from '../src/utils/sessionOwnership.js';
+import {
+  classifySessionOwnership,
+  shouldPublishRuntimeMetadata,
+} from '../src/utils/sessionOwnership.js';
 
 describe('sessionOwnership', () => {
   const tempDirs: string[] = [];
@@ -109,5 +112,112 @@ describe('sessionOwnership', () => {
     expect(classification.isForeignManagedSession).toBe(false);
     expect(classification.shouldOfferAttachToCurrentSession).toBe(false);
     expect(classification.shouldPublishRuntimeMetadata).toBe(true);
+  });
+});
+
+describe('shouldPublishRuntimeMetadata', () => {
+  it('publishes metadata when the current pane still owns the same-project session', () => {
+    const sessionOwnership = classifySessionOwnership({
+      sessionName: 'dmux-devv',
+      currentPaneId: '%17',
+      controlPaneId: '%17',
+      sessionContext: {
+        sessionProjectRoot: '/Users/vera/github/dmux',
+      },
+      currentProjectRoot: '/Users/vera/github/dmux',
+    });
+
+    expect(
+      shouldPublishRuntimeMetadata({
+        sessionOwnership,
+        currentPaneOwnsControlPane: true,
+        hasRecordedControllerPid: true,
+        isRecordedControllerAlive: true,
+      })
+    ).toBe(true);
+  });
+
+  it('skips metadata publication for nested same-project panes while the recorded controller is alive', () => {
+    const sessionOwnership = classifySessionOwnership({
+      sessionName: 'dmux-dmux-0270e009',
+      currentPaneId: '%19',
+      controlPaneId: '%17',
+      sessionContext: {
+        sessionProjectRoot: '/Users/vera/github/dmux',
+      },
+      currentProjectRoot: '/Users/vera/github/dmux',
+    });
+
+    expect(
+      shouldPublishRuntimeMetadata({
+        sessionOwnership,
+        currentPaneOwnsControlPane: false,
+        hasRecordedControllerPid: true,
+        isRecordedControllerAlive: true,
+      })
+    ).toBe(false);
+  });
+
+  it('publishes metadata for nested same-project panes when controller metadata are missing', () => {
+    const sessionOwnership = classifySessionOwnership({
+      sessionName: 'dmux-dmux-0270e009',
+      currentPaneId: '%19',
+      controlPaneId: '%17',
+      sessionContext: {
+        sessionProjectRoot: '/Users/vera/github/dmux',
+      },
+      currentProjectRoot: '/Users/vera/github/dmux',
+    });
+
+    expect(
+      shouldPublishRuntimeMetadata({
+        sessionOwnership,
+        currentPaneOwnsControlPane: false,
+        hasRecordedControllerPid: false,
+        isRecordedControllerAlive: false,
+      })
+    ).toBe(true);
+  });
+
+  it('publishes metadata for nested same-project panes when the recorded controller is stale', () => {
+    const sessionOwnership = classifySessionOwnership({
+      sessionName: 'dmux-dmux-0270e009',
+      currentPaneId: '%19',
+      controlPaneId: '%17',
+      sessionContext: {
+        sessionProjectRoot: '/Users/vera/github/dmux',
+      },
+      currentProjectRoot: '/Users/vera/github/dmux',
+    });
+
+    expect(
+      shouldPublishRuntimeMetadata({
+        sessionOwnership,
+        currentPaneOwnsControlPane: false,
+        hasRecordedControllerPid: true,
+        isRecordedControllerAlive: false,
+      })
+    ).toBe(true);
+  });
+
+  it('still skips metadata publication for foreign managed sessions when controller metadata are stale', () => {
+    const sessionOwnership = classifySessionOwnership({
+      sessionName: 'dmux-bankroll',
+      currentPaneId: '%19',
+      controlPaneId: '%17',
+      sessionContext: {
+        sessionProjectRoot: '/Users/vera/github/bankroll',
+      },
+      currentProjectRoot: '/Users/vera/github/dmux',
+    });
+
+    expect(
+      shouldPublishRuntimeMetadata({
+        sessionOwnership,
+        currentPaneOwnsControlPane: false,
+        hasRecordedControllerPid: true,
+        isRecordedControllerAlive: false,
+      })
+    ).toBe(false);
   });
 });

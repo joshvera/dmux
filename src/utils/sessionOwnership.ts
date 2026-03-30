@@ -20,6 +20,16 @@ export interface SessionOwnershipClassification {
   shouldPublishRuntimeMetadata: boolean;
 }
 
+export interface RuntimeMetadataPublicationInput {
+  sessionOwnership: Pick<
+    SessionOwnershipClassification,
+    'isForeignManagedSession' | 'ownsCurrentSession'
+  >;
+  currentPaneOwnsControlPane: boolean;
+  hasRecordedControllerPid: boolean;
+  isRecordedControllerAlive: boolean;
+}
+
 function normalizeProjectRoot(projectRoot: string): string {
   try {
     return fs.realpathSync.native(projectRoot);
@@ -53,4 +63,21 @@ export function classifySessionOwnership({
     shouldOfferAttachToCurrentSession: isForeignManagedSession,
     shouldPublishRuntimeMetadata: ownsCurrentSession && !isForeignManagedSession,
   };
+}
+
+export function shouldPublishRuntimeMetadata({
+  sessionOwnership,
+  currentPaneOwnsControlPane,
+  hasRecordedControllerPid,
+  isRecordedControllerAlive,
+}: RuntimeMetadataPublicationInput): boolean {
+  if (sessionOwnership.isForeignManagedSession) {
+    return false;
+  }
+
+  if (currentPaneOwnsControlPane || sessionOwnership.ownsCurrentSession) {
+    return true;
+  }
+
+  return !hasRecordedControllerPid || !isRecordedControllerAlive;
 }
