@@ -132,12 +132,38 @@ export function hasCommand(command: string): boolean {
 
 export function detectDmuxRunner(cwd: string = process.cwd()): DmuxRunner | null {
   const distPath = path.join(cwd, "dist", "index.js")
+  const preferredRunner = process.env.DMUX_E2E_RUNNER?.trim()
+  const pnpmDevCommand = `cd ${shellQuote(cwd)} && pnpm dev`
+  const pnpmBuildDistCommand =
+    `(cd ${shellQuote(cwd)} && pnpm run generate:hooks-docs && pnpm exec tsc) && node "${distPath}"`
+
+  if (preferredRunner === "pnpm-dev" && hasCommand("pnpm")) {
+    return { cmd: pnpmDevCommand, label: "pnpm-dev" }
+  }
+
+  if (preferredRunner === "pnpm-build-dist" && hasCommand("pnpm")) {
+    return { cmd: pnpmBuildDistCommand, label: "pnpm-build-dist" }
+  }
+
+  if (preferredRunner === "tsx-src" && hasCommand("tsx")) {
+    return {
+      cmd: `tsx "${path.join(cwd, "src", "index.ts")}"`,
+      label: "tsx-src",
+    }
+  }
+
+  if (preferredRunner === "node-dist") {
+    return fs.existsSync(distPath)
+      ? { cmd: `node "${distPath}"`, label: "node-dist" }
+      : null
+  }
+
   if (fs.existsSync(distPath)) {
     return { cmd: `node "${distPath}"`, label: "node-dist" }
   }
 
   if (hasCommand("pnpm")) {
-    return { cmd: "pnpm dev", label: "pnpm-dev" }
+    return { cmd: pnpmBuildDistCommand, label: "pnpm-build-dist" }
   }
 
   if (hasCommand("tsx")) {
@@ -822,6 +848,10 @@ export class DmuxRuntimeHarness {
     }
 
     return this.execTmux(["capture-pane", "-p", "-t", controlPaneId])
+  }
+
+  async readPaneCapture(paneId: string): Promise<string> {
+    return this.execTmux(["capture-pane", "-p", "-J", "-t", paneId])
   }
 
   async readConfig(project: RuntimeProject): Promise<DmuxConfig | null> {

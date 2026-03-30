@@ -36,6 +36,25 @@ interface PaneLoadResult {
   titleToId: Map<string, string>;
 }
 
+async function saveNormalizedPaneConfig(
+  panesFile: string,
+  panes: DmuxPane[]
+): Promise<void> {
+  const configContent = await fs.readFile(panesFile, 'utf-8');
+  const config = JSON.parse(configContent);
+  config.panes = panes;
+  const projectRoot = config.projectRoot || path.dirname(path.dirname(panesFile));
+  const projectName = config.projectName || path.basename(projectRoot);
+  config.sidebarProjects = normalizeSidebarProjects(
+    config.sidebarProjects,
+    panes,
+    projectRoot,
+    projectName
+  );
+  config.lastUpdated = new Date().toISOString();
+  await atomicWriteJson(panesFile, config);
+}
+
 async function restoreAgentSessionForPane(
   tmuxService: TmuxService,
   pane: DmuxPane,
@@ -403,20 +422,7 @@ export async function loadAndProcessPanes(
 
       // Save the cleaned config immediately to prevent these panes from reappearing
       try {
-        const fs = await import('fs/promises');
-        const configContent = await fs.readFile(panesFile, 'utf-8');
-        const config = JSON.parse(configContent);
-        config.panes = reboundPanes;
-        const projectRoot = config.projectRoot || path.dirname(path.dirname(panesFile));
-        const projectName = config.projectName || path.basename(projectRoot);
-        config.sidebarProjects = normalizeSidebarProjects(
-          config.sidebarProjects,
-          reboundPanes,
-          projectRoot,
-          projectName
-        );
-        config.lastUpdated = new Date().toISOString();
-        await atomicWriteJson(panesFile, config);
+        await saveNormalizedPaneConfig(panesFile, reboundPanes);
         LogService.getInstance().debug('Saved cleaned config after removing stale shell panes', 'usePaneLoading');
       } catch (saveError) {
         LogService.getInstance().debug(
@@ -449,6 +455,15 @@ export async function loadAndProcessPanes(
       reboundPanes.map(p => rebindPaneByTitle(p, titleToId, allPaneIds)),
       currentWindowPaneIds
     );
+
+    try {
+      await saveNormalizedPaneConfig(panesFile, reboundPanes);
+    } catch (saveError) {
+      LogService.getInstance().debug(
+        `Failed to save rebound config after pane recreation: ${saveError}`,
+        'usePaneLoading'
+      );
+    }
   }
 
   return { panes: reboundPanes, allPaneIds, titleToId };
