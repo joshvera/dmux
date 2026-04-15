@@ -161,6 +161,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const availableAgents = resolveEnabledAgentsSelection(
     settings.enabledAgents
   )
+  const getAvailableAgentsForProject = (targetProjectRoot: string = selectedProjectRoot) =>
+    resolveEnabledAgentsSelection(new SettingsManager(targetProjectRoot).getSettings().enabledAgents)
   const footerTips = useMemo(() => getFooterTips(isDevMode), [isDevMode])
   const showFooterTips = settings.showFooterTips !== false && footerTips.length > 0
   const [footerTipIndex, setFooterTipIndex] = useState(() => getRandomFooterTipIndex(footerTips.length))
@@ -587,12 +589,13 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const selectAgentsForPaneCreation = async (
     targetProjectRoot?: string
   ): Promise<AgentName[] | null> => {
-    if (availableAgents.length === 0) {
+    const targetRoot = targetProjectRoot || selectedProjectRoot
+    if (getAvailableAgentsForProject(targetRoot).length === 0) {
       return []
     }
 
     const selectedAgents = await popupManager.launchAgentChoicePopup(
-      targetProjectRoot || selectedProjectRoot
+      targetRoot
     )
     if (selectedAgents === null) {
       return null
@@ -783,7 +786,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     let selectedAgent: AgentName | undefined
 
     if (!candidate.path) {
-      if (availableAgents.length === 0) {
+      if (getAvailableAgentsForProject(reopenProjectRoot).length === 0) {
         setStatusMessage("No enabled agents available for opening this branch")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
         return
@@ -1237,7 +1240,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     saveSidebarProjects,
     loadPanes,
     cleanExit,
-    availableAgents,
+    getAvailableAgentsForProject,
     panesFile,
     projectRoot: sessionProjectRoot,
     projectActionItems: projectActionLayout.actionItems,
