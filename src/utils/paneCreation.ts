@@ -382,7 +382,7 @@ export async function createPane(
       }
       if (resolvedStartPoint) {
         try {
-          execSync(`git rev-parse --verify "refs/heads/${resolvedStartPoint}"`, {
+          execSync(`git rev-parse --verify "${resolvedStartPoint}"`, {
             stdio: 'pipe',
             cwd: projectRoot,
           });
