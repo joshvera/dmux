@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react"
 import { Box, Text, useApp, useStdout, useInput } from "ink"
+import stringWidth from "string-width"
 import { TmuxService } from "./services/TmuxService.js"
 
 // Hooks
@@ -1249,7 +1250,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   // - Normal mode calculation:
   //   - Base footer: 4 lines (marginTop + logs divider + logs line + keyboard shortcuts)
   //   - Footer tip: +1 line when footer tips are enabled
-  //   - Toast: +2 lines (toast message + marginBottom) if currentToast exists
+  //   - Toast (active): wrapped lines + header + marginBottom
+  //   - Toast (queued, transitioning): header + marginBottom (2 lines)
   //   - Debug info: +1 line if DEBUG_DMUX
   //   - Status line: +1 line if updateAvailable/currentBranch/debugMessage
   //   - Status messages: +1 line per active message
@@ -1270,14 +1272,19 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       // Add toast notification (calculate wrapped lines + header)
       if (currentToast) {
         // Toast format: "✓ message" - icon (1) + space (1) + message
-        const iconAndSpaceLength = 2;
-        const toastTextLength = iconAndSpaceLength + currentToast.message.length;
+        // Use stringWidth for CJK-aware display width calculation
+        const iconAndSpaceWidth = 2;
+        const toastDisplayWidth = iconAndSpaceWidth + stringWidth(currentToast.message);
 
         // Available width is sidebar width (40) minus padding/margins (~2)
         const availableWidth = SIDEBAR_WIDTH - 2;
-        const wrappedLines = Math.ceil(toastTextLength / availableWidth);
+        const wrappedLines = Math.ceil(toastDisplayWidth / availableWidth);
 
         footerLines += wrappedLines + 1 + 1; // wrapped lines + header line + marginBottom
+      } else if (toastQueueLength > 0) {
+        // When there are queued toasts but no current toast (transition state),
+        // FooterHelp still renders the notification header + marginBottom
+        footerLines += 1 + 1; // header line + marginBottom
       }
 
       // Add debug info
