@@ -368,7 +368,7 @@ export class PopupManager {
         [getPaneDisplayName(pane), JSON.stringify(actions)],
         {
           width: 60,
-          height: Math.min(21, actions.length + 6),
+          height: Math.min(26, actions.length + 6),
           title: `Menu: ${getPaneDisplayName(pane)}`,
           positioning: options.anchorToPane ? "pane" : "standard",
           targetPaneId: options.anchorToPane ? pane.paneId : undefined,
@@ -1036,25 +1036,85 @@ export class PopupManager {
     }
   }
 
-  async launchInputPopup(
-    title: string,
-    message: string,
-    placeholder?: string,
-    defaultValue?: string,
+  async launchPRReviewPopup(
+    data: {
+      title: string
+      message: string
+      defaultValue: string
+      repoPath: string
+      sourceBranch: string
+      targetBranch: string
+      files: string[]
+      aiFailed?: boolean
+    },
     projectRoot?: string
   ): Promise<string | null> {
     if (!this.checkPopupSupport()) return null
 
     try {
+      const sidebar = this.config.sidebarWidth
+      const client = TmuxService.getInstance().getTerminalDimensionsSync()
+      const clientWidth = client.width || this.config.terminalWidth
+      const clientHeight = client.height || this.config.terminalHeight
+      const available = Math.max(0, clientWidth - sidebar - 2)
+      const width = Math.max(72, Math.floor(available * 0.4))
+      const height = Math.max(24, Math.min(clientHeight - 2, 48))
+
+      const result = await this.launchPopup<string>(
+        "prReviewPopup.js",
+        [],
+        {
+          width,
+          height,
+          title: data.title || "Pull Request",
+        },
+        data,
+        projectRoot
+      )
+
+      return this.handleResult(result)
+    } catch (error: any) {
+      this.showTempMessage(`Failed to launch popup: ${error.message}`)
+      return null
+    }
+  }
+
+  async launchInputPopup(
+    title: string,
+    message: string,
+    placeholder?: string,
+    defaultValue?: string,
+    projectRoot?: string,
+    maxVisibleLines?: number
+  ): Promise<string | null> {
+    if (!this.checkPopupSupport()) return null
+
+    try {
+      const messageLines = message ? message.split("\n").length : 1
+      const scrollable = typeof maxVisibleLines === "number" && maxVisibleLines > 0
+
+      // Overhead: borders(2) + container padding(2) + input border(2) + input padding(0) +
+      // section spacing(1) + input bottom margin(1) + help line(1) + safety(1) = ~10
+      const overhead = 10
+      const inputLines = scrollable ? maxVisibleLines! : 1
+      const desiredHeight = messageLines + inputLines + overhead
+      const maxHeight = Math.max(10, this.config.terminalHeight - 2)
+      const height = Math.min(maxHeight, Math.max(15, desiredHeight))
+
+      const desiredWidth = scrollable
+        ? Math.min(this.config.terminalWidth - this.config.sidebarWidth - 4, 100)
+        : 70
+      const width = Math.max(50, desiredWidth)
+
       const result = await this.launchPopup<string>(
         "inputPopup.js",
         [],
         {
-          width: 70,
-          height: 15,
+          width,
+          height,
           title: title || "Input",
         },
-        { title, message, placeholder, defaultValue },
+        { title, message, placeholder, defaultValue, maxVisibleLines },
         projectRoot
       )
 

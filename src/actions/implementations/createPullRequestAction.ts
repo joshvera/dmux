@@ -9,6 +9,13 @@ import {
 } from '../../utils/mergeTargets.js';
 import { createGitHubPullRequest } from '../../utils/githubPullRequest.js';
 import { getPaneDisplayName } from '../../utils/paneTitle.js';
+import {
+  generatePRSummary,
+  getChangedFiles,
+  formatPRSummary,
+  parsePRSummary,
+} from '../../utils/prSummary.js';
+import { LogService } from '../../services/LogService.js';
 
 function buildFallbackPullRequestMessage(
   paneName: string,
@@ -192,12 +199,17 @@ export async function createPullRequest(
     };
   }
 
-  const submitPullRequest = async (): Promise<ActionResult> => {
+  const submitWithSummary = async (
+    title: string | undefined,
+    body: string | undefined
+  ): Promise<ActionResult> => {
     try {
       const result = createGitHubPullRequest({
         repoPath: pane.worktreePath!,
         sourceBranch,
         targetBranch: mergeTarget.targetBranch,
+        title,
+        body,
       });
 
       return {
@@ -213,6 +225,80 @@ export async function createPullRequest(
         message: `Failed to create pull request: ${error instanceof Error ? error.message : String(error)}`,
         dismissable: true,
       };
+    }
+  };
+
+  const buildReviewResult = (
+    defaultValue: string,
+    files: string[],
+    aiFailed: boolean
+  ): ActionResult => {
+    const message = aiFailed
+      ? '⚠️ AI summary failed. Edit title (first line), blank line, then markdown body.'
+      : 'Review the AI-generated summary. First line is the title; blank line; then body.';
+
+    return {
+      type: 'pr_review',
+      title: `PR into ${mergeTarget.targetLabel}`,
+      message,
+      defaultValue,
+      reviewData: {
+        repoPath: pane.worktreePath!,
+        sourceBranch,
+        targetBranch: mergeTarget.targetBranch,
+        files,
+        aiFailed,
+      },
+      onSubmit: async (value: string) => {
+        const { title, body } = parsePRSummary(value);
+        if (!title) {
+          return {
+            type: 'error',
+            message: 'PR title cannot be empty',
+            dismissable: true,
+          };
+        }
+        return submitWithSummary(title, body);
+      },
+      dismissable: true,
+    };
+  };
+
+  const submitPullRequest = async (): Promise<ActionResult> => {
+    try {
+      const files = getChangedFiles(
+        pane.worktreePath!,
+        sourceBranch,
+        mergeTarget.targetBranch
+      );
+      const generated = await generatePRSummary(
+        pane.worktreePath!,
+        sourceBranch,
+        mergeTarget.targetBranch
+      );
+
+      if (generated) {
+        return buildReviewResult(formatPRSummary(generated), files, false);
+      }
+
+      LogService.getInstance().warn(
+        'AI PR summary generation returned null; showing review popup with empty default',
+        'createPullRequestAction'
+      );
+      return buildReviewResult('', files, true);
+    } catch (error) {
+      LogService.getInstance().error(
+        `AI PR summary generation error: ${error}`,
+        'createPullRequestAction',
+        undefined,
+        error instanceof Error ? error : undefined
+      );
+      const files = getChangedFiles(
+        pane.worktreePath!,
+        sourceBranch,
+        mergeTarget.targetBranch
+      );
+      return buildReviewResult('', files, true);
     }
   };
 

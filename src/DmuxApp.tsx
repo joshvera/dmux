@@ -1222,7 +1222,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         result.message,
         result.placeholder,
         result.defaultValue,
-        selectedProjectRoot
+        selectedProjectRoot,
+        result.inputMaxVisibleLines
       )
       if (inputValue !== null) {
         const nextResult = await trackProjectActivity(
@@ -1230,6 +1231,30 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
           selectedProjectRoot
         )
         // Recursively handle nested results
+        if (nextResult) {
+          await handleActionResult(nextResult)
+        }
+      }
+    } else if (result.type === "pr_review") {
+      if (!result.onSubmit || !result.reviewData) return
+      const inputValue = await popupManager.launchPRReviewPopup(
+        {
+          title: result.title || "Pull Request",
+          message: result.message || "",
+          defaultValue: result.defaultValue || "",
+          repoPath: result.reviewData.repoPath,
+          sourceBranch: result.reviewData.sourceBranch,
+          targetBranch: result.reviewData.targetBranch,
+          files: result.reviewData.files,
+          aiFailed: result.reviewData.aiFailed,
+        },
+        selectedProjectRoot
+      )
+      if (inputValue !== null) {
+        const nextResult = await trackProjectActivity(
+          () => result.onSubmit!(inputValue),
+          selectedProjectRoot
+        )
         if (nextResult) {
           await handleActionResult(nextResult)
         }
@@ -1311,6 +1336,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
           launchConfirmPopup: popupManager.launchConfirmPopup.bind(popupManager),
           launchChoicePopup: popupManager.launchChoicePopup.bind(popupManager),
           launchInputPopup: popupManager.launchInputPopup.bind(popupManager),
+          launchPRReviewPopup: popupManager.launchPRReviewPopup.bind(popupManager),
           launchProgressPopup:
             popupManager.launchProgressPopup.bind(popupManager),
         }
@@ -1536,7 +1562,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     footerLines = 0
 
     if (showFooterHelp) {
-      footerLines = 4 // marginTop + logs divider + logs + shortcuts
+      footerLines = 3 // logs divider + logs + shortcuts
 
       if (currentFooterTip) {
         footerLines += 1
