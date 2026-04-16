@@ -69,6 +69,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+const ACTIVE_PANE_SYNC_INTERVAL_MS = 350
 import type {
   DmuxPane,
   DmuxAppProps,
@@ -85,6 +86,7 @@ import {
   buildVisualNavigationRows,
   buildGroupStartRows,
   getProjectActionByIndex,
+  resolveSelectionAfterPaneClose,
 } from "./utils/projectActions.js"
 import { getPaneProjectRoot } from "./utils/paneProject.js"
 import { normalizeDmuxTheme } from "./theme/themePalette.js"
@@ -581,6 +583,57 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // findCardInDirection provided by useNavigation
 
+  const syncSelectedIndexToFocusedPane = React.useCallback(async (activePaneId?: string | null) => {
+    try {
+      const focusedPaneId = activePaneId ?? await TmuxService.getInstance().getActivePaneId()
+      if (!focusedPaneId || focusedPaneId === controlPaneId) {
+        return
+      }
+
+      const focusedIndex = panes.findIndex((pane) => pane.paneId === focusedPaneId)
+      if (focusedIndex === -1) {
+        return
+      }
+
+      setSelectedIndex((currentIndex) =>
+        currentIndex === focusedIndex ? currentIndex : focusedIndex
+      )
+    } catch {
+      // Focus sync is best-effort; pane lifecycle handling will correct stale IDs.
+    }
+  }, [controlPaneId, panes])
+
+  useEffect(() => {
+    const paneEventService = PaneEventService.getInstance()
+    return paneEventService.onPaneFocusChanged((event) => {
+      void syncSelectedIndexToFocusedPane(event.activePaneId)
+    })
+  }, [syncSelectedIndexToFocusedPane])
+
+  useEffect(() => {
+    if (!process.env.TMUX || panes.length === 0) {
+      return
+    }
+
+    let syncInFlight = false
+    const syncActivePane = () => {
+      if (syncInFlight) {
+        return
+      }
+
+      syncInFlight = true
+      void syncSelectedIndexToFocusedPane().finally(() => {
+        syncInFlight = false
+      })
+    }
+
+    syncActivePane()
+    const interval = setInterval(syncActivePane, ACTIVE_PANE_SYNC_INTERVAL_MS)
+    return () => {
+      clearInterval(interval)
+    }
+  }, [panes.length, syncSelectedIndexToFocusedPane])
+
   // savePanes moved to usePanes
 
   // applySmartLayout moved to utils/tmux
@@ -1012,25 +1065,39 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       // Mark pane as closing to prevent race condition with worker
       await lifecycleManager.beginClose(paneId, 'user requested')
 
-      // Adjust selectedIndex before removing from list
-      const removedIndex = panes.findIndex((p) => p.paneId === paneId)
-      if (removedIndex >= 0 && selectedIndex >= panes.length - 1) {
-        setSelectedIndex(Math.max(0, panes.length - 2))
-      }
+      const nextSelection = resolveSelectionAfterPaneClose(
+        panes,
+        paneId,
+        sidebarProjects,
+        sessionProjectRoot,
+        projectName
+      )
 
       // Remove from panes list
       const updatedPanes = panes.filter((p) => p.paneId !== paneId)
-      savePanes(updatedPanes)
+      await savePanes(updatedPanes)
+
+      if (nextSelection) {
+        setSelectedIndex(nextSelection.selectedIndex)
+      } else {
+        const maxIndex = Math.max(0, projectActionLayout.totalItems - 2)
+        if (selectedIndex > maxIndex) {
+          setSelectedIndex(maxIndex)
+        }
+      }
 
       // Mark close as completed (no more lock needed)
       await lifecycleManager.completeClose(paneId)
 
-      // Return focus to control pane
-      if (controlPaneId) {
+      const targetPaneId = nextSelection?.pane && !nextSelection.pane.hidden
+        ? nextSelection.pane.paneId
+        : controlPaneId
+
+      if (targetPaneId) {
         try {
-          await TmuxService.getInstance().selectPane(controlPaneId)
+          await TmuxService.getInstance().selectPane(targetPaneId)
         } catch {
-          // Ignore - control pane might not exist
+          // Ignore - the target pane might have closed during cleanup
         }
       }
     },

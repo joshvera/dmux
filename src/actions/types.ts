@@ -85,7 +85,7 @@ export interface ActionContext {
 
   // Optional callbacks for specific actions
   onPaneUpdate?: (pane: DmuxPane) => void;
-  onPaneRemove?: (paneId: string) => void;
+  onPaneRemove?: (paneId: string) => void | Promise<void>;
   onActionResult?: (result: ActionResult) => Promise<void>;
 }
 

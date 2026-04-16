@@ -23,7 +23,7 @@ interface UseActionSystemParams {
   projectName: string;
   defaultProjectRoot: string;
   onPaneUpdate?: (pane: DmuxPane) => void;
-  onPaneRemove?: (paneId: string) => void;
+  onPaneRemove?: (paneId: string) => void | Promise<void>;
   onActionResult?: (result: ActionResult) => Promise<void>;
   trackProjectActivity: TrackProjectActivity;
 
