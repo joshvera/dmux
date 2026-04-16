@@ -845,7 +845,7 @@ export class DmuxFocusService extends EventEmitter {
 
     try {
       const [currentPaneId, currentWindowId, paneWindowId] = await Promise.all([
-        this.tmuxService.getCurrentPaneId(),
+        this.tmuxService.getActivePaneId(),
         this.tmuxService.getCurrentWindowId(),
         this.tmuxService.getPaneWindowId(tmuxPaneId),
       ]);
@@ -978,7 +978,7 @@ export class DmuxFocusService extends EventEmitter {
     }
 
     try {
-      const currentPaneId = await this.tmuxService.getCurrentPaneId();
+      const currentPaneId = await this.tmuxService.getActivePaneId();
       if (!currentPaneId) {
         this.setFullyFocusedPaneId(null);
         return;

@@ -258,7 +258,7 @@ async function executeCloseOption(
       }
 
       if (context.onPaneRemove) {
-        context.onPaneRemove(pane.paneId); // Pass tmux pane ID, not dmux ID
+        await context.onPaneRemove(pane.paneId); // Pass tmux pane ID, not dmux ID
       }
 
       // Recalculate layout for remaining panes

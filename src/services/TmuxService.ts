@@ -318,6 +318,24 @@ export class TmuxService {
   }
 
   /**
+   * Get the pane currently selected in the active dmux window.
+   *
+   * This uses pane_active from list-panes instead of display-message so it
+   * reflects tmux focus changes after this process was launched.
+   */
+  async getActivePaneId(scope: PaneListScope = 'window'): Promise<string | null> {
+    return this.executeWithRetry(
+      () => {
+        const lines = this.listPanesLines('#{pane_id} #{pane_active}', scope);
+        const activeLine = lines.find((line) => line.endsWith(' 1'));
+        return activeLine ? activeLine.split(' ')[0] : null;
+      },
+      RetryStrategy.IDEMPOTENT,
+      `getActivePaneId(${scope})`
+    );
+  }
+
+  /**
    * Get current window ID
    */
   async getCurrentWindowId(): Promise<string> {
