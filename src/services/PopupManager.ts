@@ -962,7 +962,8 @@ export class PopupManager {
       const client = TmuxService.getInstance().getTerminalDimensionsSync()
       const clientWidth = client.width || this.config.terminalWidth
       const clientHeight = client.height || this.config.terminalHeight
-      const width = Math.max(80, clientWidth - sidebar - 2)
+      const available = Math.max(0, clientWidth - sidebar - 2)
+      const width = Math.max(72, Math.floor(available * 0.4))
       const height = Math.max(24, Math.min(clientHeight - 2, 48))
 
       const result = await this.launchPopup<string>(
