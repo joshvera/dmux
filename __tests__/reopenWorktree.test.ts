@@ -121,7 +121,9 @@ describe('reopenWorktree', () => {
 
     expect(tmuxServiceMock.sendShellCommand).toHaveBeenCalledWith(
       '%1',
-      'codex resume --last --dangerously-bypass-approvals-and-sandbox'
+      expect.stringMatching(
+        /^export DMUX_PANE_ID='dmux-\d+'; export DMUX_TMUX_PANE_ID='%1'; codex --enable codex_hooks resume --last --dangerously-bypass-approvals-and-sandbox$/
+      )
     );
     expect(tmuxServiceMock.setSessionOptionSync).toHaveBeenCalledWith(
       'dmux-test',

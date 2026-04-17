@@ -29,6 +29,16 @@ vi.mock('../src/utils/projectRoot.js', async () => {
   };
 });
 
+vi.mock('../src/utils/settingsManager.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/utils/settingsManager.js')>('../src/utils/settingsManager.js');
+  return {
+    ...actual,
+    SettingsManager: vi.fn(() => ({
+      getSettings: vi.fn(() => ({ colorTheme: 'orange' })),
+    })),
+  };
+});
+
 vi.mock('../src/utils/remotePaneActions.js', () => ({
   drainRemotePaneActions: vi.fn(async () => []),
   getCurrentTmuxSessionName: vi.fn(() => null),
@@ -176,7 +186,12 @@ describe('useInputHandling reopen project selection', () => {
     expect(saveSidebarProjects).toHaveBeenCalledWith([
       { projectRoot: '/repo-root', projectName: 'repo-root' },
       { projectRoot: '/repo-selected', projectName: 'repo-selected' },
-      { projectRoot: '/repo-root/new-project', projectName: 'new-project' },
+      {
+        projectRoot: '/repo-root/new-project',
+        projectName: 'new-project',
+        colorTheme: 'red',
+        colorThemeSource: 'auto',
+      },
     ]);
     expect(setStatusMessage).toHaveBeenCalledWith('Created new-project and added it to the sidebar');
 

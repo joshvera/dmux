@@ -219,12 +219,16 @@ export function createGitHubPullRequest(options: {
   sourceBranch: string;
   targetBranch: string;
   remoteName?: string;
+  title?: string;
+  body?: string;
 }): GitHubPullRequestResult {
   const {
     repoPath,
     sourceBranch,
     targetBranch,
     remoteName = getPreferredPushRemote(repoPath),
+    title,
+    body,
   } = options;
 
   ensureGitHubCliAvailable(repoPath);
@@ -242,16 +246,25 @@ export function createGitHubPullRequest(options: {
 
   runGit(repoPath, ['push', '--set-upstream', remoteName, sourceBranch]);
 
+  const hasExplicitTitle = typeof title === 'string' && title.trim().length > 0;
+  const createArgs = [
+    'pr',
+    'create',
+    '--base',
+    targetBranch,
+    '--head',
+    sourceBranch,
+  ];
+
+  if (hasExplicitTitle) {
+    createArgs.push('--title', title!.trim());
+    createArgs.push('--body', (body ?? '').trim());
+  } else {
+    createArgs.push('--fill');
+  }
+
   try {
-    runGh(repoPath, [
-      'pr',
-      'create',
-      '--base',
-      targetBranch,
-      '--head',
-      sourceBranch,
-      '--fill',
-    ]);
+    runGh(repoPath, createArgs);
   } catch (error) {
     const existingAfterCreate = findExistingPullRequestUrl(repoPath, sourceBranch);
     if (existingAfterCreate) {

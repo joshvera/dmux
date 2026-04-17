@@ -32,7 +32,7 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: nu
 /**
  * Call OpenRouter API for AI assistance with model fallback
  */
-async function callOpenRouter(prompt: string, maxTokens: number = 1000, timeoutMs: number = 12000): Promise<string | null> {
+export async function callOpenRouter(prompt: string, maxTokens: number = 1000, timeoutMs: number = 12000): Promise<string | null> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return null;
 
@@ -269,6 +269,9 @@ export async function aiResolveConflict(
     }
 
     // For now, use a simple strategy: try to intelligently merge both versions
+    const conflictStart = '<<<<<<<';
+    const conflictSeparator = '=======';
+    const conflictEnd = '>>>>>>>';
     const prompt = `You are resolving a git merge conflict. Below is a file with conflict markers.
 
 Your task: Provide the COMPLETE resolved file content that intelligently combines both versions. Do NOT include any explanations, just the final file content.
@@ -280,11 +283,11 @@ ${conflicts
   .map(
     (c, i) => `
 Conflict ${i + 1}:
-<<<<<<< OURS (current branch)
+${conflictStart} OURS (current branch)
 ${c.ours}
-=======
->>>>>>> THEIRS (incoming branch)
+${conflictSeparator}
 ${c.theirs}
+${conflictEnd} THEIRS (incoming branch)
 `
   )
   .join('\n')}

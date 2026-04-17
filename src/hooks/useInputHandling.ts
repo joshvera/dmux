@@ -41,16 +41,28 @@ import {
 import { buildFilesOnlyCommand } from "../utils/dmuxCommand.js"
 import {
   addSidebarProject,
+  getAutoSidebarProjectColorTheme,
+  getSidebarProjectColorTheme,
   hasSidebarProject,
   removeSidebarProject,
+  setSidebarProjectColorThemeSettingValue,
   sameSidebarProjectRoot,
+  SIDEBAR_PROJECT_COLOR_THEME_SETTING_KEY,
 } from "../utils/sidebarProjects.js"
 import {
   drainRemotePaneActions,
   getCurrentTmuxSessionName,
   type RemotePaneActionShortcut,
 } from "../utils/remotePaneActions.js"
-import { SettingsManager } from "../utils/settingsManager.js"
+import {
+  DEFAULT_COLOR_THEME_SETTING_KEY,
+  SettingsManager,
+} from "../utils/settingsManager.js"
+import {
+  resolveProjectColorTheme,
+  syncPaneColorThemes,
+} from "../utils/paneColors.js"
+import { syncWelcomePaneVisibility } from "../utils/welcomePaneManager.js"
 
 // Type for the action system returned by useActionSystem hook
 interface ActionSystem {
@@ -91,7 +103,7 @@ interface UseInputHandlingParams {
   projectSettings: any
   saveSettings: (settings: any) => Promise<void>
   settingsManager: any
-  refreshDmuxSettings: (projectRoot?: string, nextTheme?: string) => void
+  refreshDmuxSettings: (projectRoot?: string) => void
 
   // Services
   popupManager: PopupManager
@@ -236,6 +248,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
         getNextDmuxId(panes)
       )
       shellPane.projectRoot = targetProjectRoot
+      shellPane.projectName = path.basename(targetProjectRoot)
+      shellPane.colorTheme = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
       await savePanes([...panes, shellPane])
 
       setIsCreatingPane(false)
@@ -295,6 +309,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
         getNextDmuxId(panes)
       )
       shellPane.projectRoot = targetProjectRoot
+      shellPane.projectName = path.basename(targetProjectRoot)
+      shellPane.colorTheme = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
       await savePanes([...panes, shellPane])
 
       setStatusMessage(`Opened terminal in ${getPaneDisplayName(selectedPane)}`)
@@ -363,6 +379,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         paneId: newPaneId,
         projectRoot: targetProjectRoot,
         projectName: targetProjectName,
+        colorTheme: resolveProjectColorTheme(targetProjectRoot, sidebarProjects),
         type: "shell",
         shellType: "fb",
         browserPath: selectedPane.worktreePath,
@@ -398,10 +415,22 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
+    const resolveProjectTheme = (targetProjectRoot: string) =>
+      getSidebarProjectColorTheme(sidebarProjects, targetProjectRoot)
+      || new SettingsManager(targetProjectRoot).getSettings().colorTheme
+
     try {
       const { resolveProjectRootFromPath } = await import("../utils/projectRoot.js")
       const resolved = resolveProjectRootFromPath(requestedProjectPath, projectRoot)
-      const nextProjects = addSidebarProject(sidebarProjects, resolved)
+      const nextProjects = addSidebarProject(sidebarProjects, {
+        ...resolved,
+        colorTheme: getAutoSidebarProjectColorTheme(
+          sidebarProjects,
+          resolved,
+          resolveProjectTheme
+        ),
+        colorThemeSource: 'auto',
+      })
 
       if (nextProjects === sidebarProjects) {
         selectProjectAction(resolved.projectRoot)
@@ -448,7 +477,15 @@ export function useInputHandling(params: UseInputHandlingParams) {
       try {
         setStatusMessage(`Creating ${path.basename(target.absolutePath) || "project"}...`)
         const createdProject = createEmptyGitProject(requestedProjectPath, projectRoot)
-        const nextProjects = addSidebarProject(sidebarProjects, createdProject)
+        const nextProjects = addSidebarProject(sidebarProjects, {
+          ...createdProject,
+          colorTheme: getAutoSidebarProjectColorTheme(
+            sidebarProjects,
+            createdProject,
+            resolveProjectTheme
+          ),
+          colorThemeSource: 'auto',
+        })
 
         if (nextProjects === sidebarProjects) {
           selectProjectAction(createdProject.projectRoot)
@@ -528,6 +565,25 @@ export function useInputHandling(params: UseInputHandlingParams) {
     })
   }
 
+  const syncWelcomePaneForPanes = async (
+    nextPanes: DmuxPane[],
+    targetProjectRoot: string = getActiveProjectRoot()
+  ) => {
+    if (!controlPaneId) {
+      return
+    }
+
+    const hasVisiblePanes = nextPanes.some((pane) => !pane.hidden)
+    const themeName = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
+
+    await syncWelcomePaneVisibility(
+      projectRoot,
+      controlPaneId,
+      !hasVisiblePanes,
+      themeName
+    )
+  }
+
   const getPaneShowTarget = async (excludedPaneId?: string): Promise<string | null> => {
     const visiblePaneId = panes.find(
       (pane) => !pane.hidden && pane.paneId !== excludedPaneId
@@ -571,12 +627,16 @@ export function useInputHandling(params: UseInputHandlingParams) {
         )
       }
 
-      await savePanes(
-        panes.map((pane) =>
-          pane.id === selectedPane.id
-            ? { ...pane, hidden: !selectedPane.hidden }
-            : pane
-        )
+      const updatedPanes = panes.map((pane) =>
+        pane.id === selectedPane.id
+          ? { ...pane, hidden: !selectedPane.hidden }
+          : pane
+      )
+
+      await savePanes(updatedPanes)
+      await syncWelcomePaneForPanes(
+        updatedPanes,
+        getPaneProjectRoot(selectedPane, projectRoot)
       )
       await refreshPaneLayout()
       await loadPanes()
@@ -638,10 +698,14 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
 
       const targetPaneIds = new Set(targetPanes.map((pane) => pane.id))
-      await savePanes(
-        panes.map((pane) =>
-          targetPaneIds.has(pane.id) ? { ...pane, hidden } : pane
-        )
+      const updatedPanes = panes.map((pane) =>
+        targetPaneIds.has(pane.id) ? { ...pane, hidden } : pane
+      )
+
+      await savePanes(updatedPanes)
+      await syncWelcomePaneForPanes(
+        updatedPanes,
+        getPaneProjectRoot(selectedPane, projectRoot)
       )
       await refreshPaneLayout()
       await loadPanes()
@@ -722,17 +786,18 @@ export function useInputHandling(params: UseInputHandlingParams) {
       const shownPaneIds = new Set(panesToShow.map((pane) => pane.id))
       const hiddenPaneIds = new Set(panesToHide.map((pane) => pane.id))
 
-      await savePanes(
-        panes.map((pane) => {
-          if (shownPaneIds.has(pane.id)) {
-            return { ...pane, hidden: false }
-          }
-          if (hiddenPaneIds.has(pane.id)) {
-            return { ...pane, hidden: true }
-          }
-          return pane
-        })
-      )
+      const updatedPanes = panes.map((pane) => {
+        if (shownPaneIds.has(pane.id)) {
+          return { ...pane, hidden: false }
+        }
+        if (hiddenPaneIds.has(pane.id)) {
+          return { ...pane, hidden: true }
+        }
+        return pane
+      })
+
+      await savePanes(updatedPanes)
+      await syncWelcomePaneForPanes(updatedPanes, targetProjectRoot)
       await refreshPaneLayout()
       await loadPanes()
 
@@ -1261,7 +1326,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         await popupManager.launchHooksPopup(async () => {
           await launchHooksAuthoringSession()
         }, getActiveProjectRoot())
-      }, getActiveProjectRoot())
+      }, getActiveProjectRoot(), sidebarProjects)
       if (result) {
         try {
           const activeProjectRoot = getActiveProjectRoot()
@@ -1272,33 +1337,72 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
           let savedCount = 0
           let layoutBoundsUpdated = false
-          let lastScope: "global" | "project" | null = null
+          let lastScope: "global" | "project" | "session" | null = null
+          let themeSettingsChanged = false
+          let effectiveSidebarProjects = sidebarProjects
+          const resolveSavedProjectTheme = (targetProjectRoot: string) =>
+            new SettingsManager(targetProjectRoot).getSettings().colorTheme
 
           for (const update of updates) {
             if (
               !update
               || typeof update.key !== "string"
-              || (update.scope !== "global" && update.scope !== "project")
             ) {
               continue
             }
 
+            if (update.scope === "session") {
+              if (update.key !== SIDEBAR_PROJECT_COLOR_THEME_SETTING_KEY) {
+                continue
+              }
+
+              const updatedProjects = setSidebarProjectColorThemeSettingValue(
+                effectiveSidebarProjects,
+                activeProjectRoot,
+                update.value,
+                resolveSavedProjectTheme
+              )
+              await saveSidebarProjects(updatedProjects)
+              effectiveSidebarProjects = updatedProjects
+              refreshDmuxSettings(activeProjectRoot)
+              savedCount += 1
+              lastScope = update.scope
+              themeSettingsChanged = true
+              continue
+            }
+
+            if (update.scope !== "global" && update.scope !== "project") {
+              continue
+            }
+
+            const resolvedUpdateKey = update.key === DEFAULT_COLOR_THEME_SETTING_KEY
+              ? "colorTheme"
+              : update.key
             projectSettingsManager.updateSetting(
-              update.key as keyof import("../types.js").DmuxSettings,
+              resolvedUpdateKey as keyof import("../types.js").DmuxSettings,
               update.value,
               update.scope
             )
-            refreshDmuxSettings(
-              activeProjectRoot,
-              update.key === "colorTheme" && typeof update.value === "string"
-                ? update.value
-                : undefined
-            )
+            refreshDmuxSettings(activeProjectRoot)
             savedCount += 1
             lastScope = update.scope
+            if (resolvedUpdateKey === "colorTheme") {
+              themeSettingsChanged = true
+            }
 
-            if (update.key === "minPaneWidth" || update.key === "maxPaneWidth") {
+            if (resolvedUpdateKey === "minPaneWidth" || resolvedUpdateKey === "maxPaneWidth") {
               layoutBoundsUpdated = true
+            }
+          }
+
+          if (themeSettingsChanged) {
+            const syncedPanes = syncPaneColorThemes(
+              panes,
+              effectiveSidebarProjects,
+              projectRoot
+            )
+            if (syncedPanes !== panes) {
+              await savePanes(syncedPanes)
             }
           }
 

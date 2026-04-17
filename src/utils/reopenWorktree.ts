@@ -25,6 +25,8 @@ import {
   buildCodexHookedCommand,
   installCodexPaneHooks,
 } from './codexHooks.js';
+import { resolveProjectColorTheme } from './paneColors.js';
+import type { SidebarProject } from '../types.js';
 
 export interface ReopenWorktreeOptions {
   agent?: AgentName;
@@ -69,11 +71,13 @@ export async function reopenWorktree(
   const configPath = optionsSessionConfigPath
     || path.join(sessionProjectRoot, '.dmux', 'dmux.config.json');
   let controlPaneId: string | undefined;
+  let configSidebarProjects: SidebarProject[] = [];
 
   try {
     const configContent = fs.readFileSync(configPath, 'utf-8');
     const config: DmuxConfig = JSON.parse(configContent);
     controlPaneId = config.controlPaneId;
+    configSidebarProjects = Array.isArray(config.sidebarProjects) ? config.sidebarProjects : [];
 
     // Verify the control pane ID from config still exists
     if (controlPaneId) {
@@ -221,6 +225,7 @@ export async function reopenWorktree(
     paneId: paneInfo,
     projectRoot,
     projectName: paneProjectName,
+    colorTheme: resolveProjectColorTheme(projectRoot, configSidebarProjects),
     worktreePath,
     agent,
     permissionMode,

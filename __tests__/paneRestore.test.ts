@@ -50,7 +50,9 @@ describe('pane restoration', () => {
 
     expect(tmuxServiceMock.sendShellCommand).toHaveBeenCalledWith(
       '%9',
-      'codex resume --last --dangerously-bypass-approvals-and-sandbox'
+      expect.stringContaining(
+        "export DMUX_PANE_ID='dmux-1'; export DMUX_TMUX_PANE_ID='%9'; codex --enable codex_hooks resume --last --dangerously-bypass-approvals-and-sandbox"
+      )
     );
     expect(tmuxServiceMock.sendTmuxKeys).toHaveBeenCalledWith('%9', 'Enter');
   });
