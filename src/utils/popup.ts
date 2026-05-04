@@ -15,6 +15,7 @@ export interface PopupOptions {
   width?: number;
   height?: number;
   title?: string;
+  themeName?: string;
   // If true, popup is centered. If false, you can provide x/y coordinates
   centered?: boolean;
   x?: number;
@@ -516,6 +517,7 @@ export function launchNodePopupNonBlocking<T = any>(
     width = 80,
     height = 20,
     title,
+    themeName,
     centered = true,
     x,
     y,
@@ -545,7 +547,15 @@ export function launchNodePopupNonBlocking<T = any>(
     .replace(/\\/g, '\\\\')
     .replace(/'/g, "'\\''");
 
-  const command = `DMUX_POPUP_READY_FILE='${escapedReadyFile}' node ${escapedArgs.join(' ')}`;
+  const envAssignments = [`DMUX_POPUP_READY_FILE='${escapedReadyFile}'`];
+  if (themeName) {
+    const escapedThemeName = themeName
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "'\\''");
+    envAssignments.push(`DMUX_THEME='${escapedThemeName}'`);
+  }
+
+  const command = `${envAssignments.join(' ')} node ${escapedArgs.join(' ')}`;
 
   // Build tmux popup command
   const tmuxArgs: string[] = [

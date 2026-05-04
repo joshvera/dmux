@@ -12,20 +12,22 @@ import {
 } from '../src/utils/projectRoot.js';
 
 vi.mock('../src/utils/resumeBranches.js', async () => {
-  const actual = await vi.importActual<typeof import('../src/utils/resumeBranches.js')>('../src/utils/resumeBranches.js');
-  return {
-    ...actual,
-    getResumableBranches: vi.fn(),
-  };
-});
-
-vi.mock('../src/utils/projectRoot.js', async () => {
-  const actual = await vi.importActual<typeof import('../src/utils/projectRoot.js')>('../src/utils/projectRoot.js');
+  const actual = await vi.importActual<typeof import('../src/utils/settingsManager.js')>('../src/utils/settingsManager.js');
   return {
     ...actual,
     createEmptyGitProject: vi.fn(actual.createEmptyGitProject),
     inspectProjectCreationTarget: vi.fn(actual.inspectProjectCreationTarget),
     resolveProjectRootFromPath: vi.fn(actual.resolveProjectRootFromPath),
+  };
+});
+
+vi.mock('../src/utils/settingsManager.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/utils/settingsManager.js')>('../src/utils/settingsManager.js');
+  return {
+    ...actual,
+    SettingsManager: vi.fn(() => ({
+      getSettings: vi.fn(() => ({ colorTheme: 'orange' })),
+    })),
   };
 });
 
@@ -40,6 +42,7 @@ function Harness({
   selectedIndex,
   projectActionItems,
   popupManager,
+  activeProjectRoot = '/repo-root',
   trackProjectActivity = vi.fn(async (work: () => unknown) => await work()),
   handleReopenWorktree = vi.fn(async () => null),
   setStatusMessage = vi.fn(),
@@ -48,6 +51,7 @@ function Harness({
   selectedIndex: number;
   projectActionItems: ProjectActionItem[];
   popupManager: any;
+  activeProjectRoot?: string;
   trackProjectActivity?: any;
   handleReopenWorktree?: any;
   setStatusMessage?: ReturnType<typeof vi.fn>;
@@ -121,9 +125,10 @@ function Harness({
     saveSidebarProjects,
     loadPanes: vi.fn(),
     cleanExit: vi.fn(),
-    availableAgents: [],
+    getAvailableAgentsForProject: vi.fn(() => []),
     panesFile: '/tmp/dmux.config.json',
     projectRoot: '/repo-root',
+    activeProjectRoot,
     projectActionItems,
     findCardInDirection: vi.fn(() => null),
   });
@@ -154,15 +159,17 @@ describe('useInputHandling reopen project selection', () => {
     const setStatusMessage = vi.fn();
     const saveSidebarProjects = vi.fn(async (projects) => projects);
     const popupManager = {
-      launchProjectSelectPopup: vi.fn(async () => '/repo-root/new-project'),
-      launchConfirmPopup: vi.fn(async () => true),
+      launchReopenWorktreePopup: vi.fn().mockResolvedValue({
+        action: 'select',
+        candidate: selectedCandidate,
+      }),
     };
 
     const projectActionItems: ProjectActionItem[] = [
       {
         index: 0,
-        projectRoot: '/repo-root',
-        projectName: 'repo-root',
+        projectRoot: '/repo-selected',
+        projectName: 'repo-selected',
         kind: 'new-agent',
         hotkey: 'n',
       },
@@ -173,35 +180,29 @@ describe('useInputHandling reopen project selection', () => {
         selectedIndex={0}
         projectActionItems={projectActionItems}
         popupManager={popupManager}
-        setStatusMessage={setStatusMessage}
-        saveSidebarProjects={saveSidebarProjects}
+        activeProjectRoot="/repo-selected"
+        trackProjectActivity={trackProjectActivity}
+        handleReopenWorktree={handleReopenWorktree}
       />
     );
 
     await sleep(20);
-    stdin.write('p');
-    await sleep(60);
+    stdin.write('s');
+    await sleep(40);
 
-    expect(popupManager.launchProjectSelectPopup).toHaveBeenCalledWith('/repo-root', '/repo-root');
-    expect(popupManager.launchConfirmPopup).toHaveBeenCalledWith(
-      'Create Project',
-      'This project does not exist yet:\n/repo-root/new-project\n\nCreate a new empty git repository here?',
-      'Create Project',
-      'Cancel',
-      '/repo-root'
+    expect(popupManager.launchSettingsPopup).toHaveBeenCalledWith(
+      expect.any(Function),
+      '/repo-selected',
+      [
+        { projectRoot: '/repo-root', projectName: 'repo-root' },
+        { projectRoot: '/repo-selected', projectName: 'repo-selected' },
+      ]
     );
-    expect(createEmptyGitProject).toHaveBeenCalledWith('/repo-root/new-project', '/repo-root');
-    expect(saveSidebarProjects).toHaveBeenCalledWith([
-      { projectRoot: '/repo-root', projectName: 'repo-root' },
-      { projectRoot: '/repo-selected', projectName: 'repo-selected' },
-      { projectRoot: '/repo-root/new-project', projectName: 'new-project' },
-    ]);
-    expect(setStatusMessage).toHaveBeenCalledWith('Created new-project and added it to the sidebar');
 
     unmount();
   });
 
-  it('opens the resumable branch picker for the currently selected sidebar project', async () => {
+  it('reopens the selected candidate returned from the popup', async () => {
     const resumableBranches = [
       {
         branchName: 'feature-a',
@@ -218,7 +219,10 @@ describe('useInputHandling reopen project selection', () => {
     vi.mocked(getResumableBranches).mockReturnValue(resumableBranches);
 
     const popupManager = {
-      launchReopenWorktreePopup: vi.fn(async () => null),
+      launchReopenWorktreePopup: vi.fn().mockResolvedValue({
+        action: 'select',
+        candidate: selectedCandidate,
+      }),
     };
     const trackProjectActivity = vi.fn(async (work: () => unknown) => await work());
 
@@ -237,32 +241,23 @@ describe('useInputHandling reopen project selection', () => {
         selectedIndex={0}
         projectActionItems={projectActionItems}
         popupManager={popupManager}
+        activeProjectRoot="/repo-selected"
         trackProjectActivity={trackProjectActivity}
+        handleReopenWorktree={handleReopenWorktree}
       />
     );
 
     await sleep(20);
-    stdin.write('r');
+    stdin.write('s');
     await sleep(40);
 
-    expect(getResumableBranches).toHaveBeenCalledWith('/repo-selected', [], {
-      includeRemoteBranches: false,
-    });
-    expect(trackProjectActivity).toHaveBeenCalledWith(
+    expect(popupManager.launchSettingsPopup).toHaveBeenCalledWith(
       expect.any(Function),
-      '/repo-selected'
-    );
-    expect(popupManager.launchReopenWorktreePopup).toHaveBeenCalledWith(
-      resumableBranches,
       '/repo-selected',
-      {
-        includeWorktrees: true,
-        includeLocalBranches: true,
-        includeRemoteBranches: false,
-        remoteLoaded: false,
-        filterQuery: '',
-      },
-      []
+      [
+        { projectRoot: '/repo-root', projectName: 'repo-root' },
+        { projectRoot: '/repo-selected', projectName: 'repo-selected' },
+      ]
     );
 
     unmount();
@@ -313,6 +308,7 @@ describe('useInputHandling reopen project selection', () => {
         selectedIndex={0}
         projectActionItems={projectActionItems}
         popupManager={popupManager}
+        activeProjectRoot="/repo-selected"
         trackProjectActivity={trackProjectActivity}
         handleReopenWorktree={handleReopenWorktree}
       />
@@ -332,7 +328,7 @@ describe('useInputHandling reopen project selection', () => {
       {
         includeWorktrees: true,
         includeLocalBranches: true,
-        includeRemoteBranches: false,
+        includeRemoteBranches: true,
         remoteLoaded: false,
         filterQuery: '',
       },

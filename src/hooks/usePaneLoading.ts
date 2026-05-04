@@ -8,10 +8,14 @@ import { TmuxService } from '../services/TmuxService.js';
 import { PaneLifecycleManager } from '../services/PaneLifecycleManager.js';
 import { TMUX_COMMAND_TIMEOUT, TMUX_RETRY_DELAY } from '../constants/timing.js';
 import { atomicWriteJson } from '../utils/atomicWrite.js';
+import { syncPaneColorThemes } from '../utils/paneColors.js';
+import { buildAgentResumeOrLaunchCommand } from '../utils/agentLaunch.js';
 import { ensureGeminiFolderTrusted } from '../utils/geminiTrust.js';
-import { normalizePaneConfigForSave } from '../utils/paneConfigNormalization.js';
+import {
+  buildCodexHookedCommand,
+  installCodexPaneHooks,
+} from '../utils/codexHooks.js';
 import { getPaneTmuxTitle } from '../utils/paneTitle.js';
-import { buildPaneRestoreCommands } from '../utils/paneRestore.js';
 import {
   getVisiblePanes,
   syncHiddenStateFromCurrentWindow,
@@ -36,33 +40,43 @@ interface PaneLoadResult {
   titleToId: Map<string, string>;
 }
 
-async function saveNormalizedPaneConfig(
-  panesFile: string,
-  panes: DmuxPane[]
-): Promise<void> {
-  const configContent = await fs.readFile(panesFile, 'utf-8');
-  const config = normalizePaneConfigForSave(JSON.parse(configContent), panes, panesFile);
-  await atomicWriteJson(panesFile, config);
-}
-
-async function restoreRecreatedPane(
+async function restoreAgentSessionForPane(
   tmuxService: TmuxService,
   pane: DmuxPane,
   paneId: string
 ): Promise<void> {
+  if (!pane.agent) {
+    return;
+  }
+
   if (pane.agent === 'gemini' && pane.worktreePath) {
     ensureGeminiFolderTrusted(pane.worktreePath);
   }
 
-  const commands = buildPaneRestoreCommands(pane, process.cwd());
-  const resumeCommandIndex = pane.agent ? commands.length - 1 : -1;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  let command = buildAgentResumeOrLaunchCommand(pane.agent, pane.permissionMode);
 
-  for (const [index, command] of commands.entries()) {
-    if (index === resumeCommandIndex) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
+  if (pane.agent === 'codex' && pane.worktreePath) {
+    let codexHookEventFile: string | undefined;
+    try {
+      codexHookEventFile = installCodexPaneHooks({
+        worktreePath: pane.worktreePath,
+        dmuxPaneId: pane.id,
+        tmuxPaneId: paneId,
+      }).eventFile;
+    } catch {
+      // Hook installation is best effort; Codex can still resume normally.
     }
-    await tmuxService.sendShellCommandAndEnter(paneId, command);
+
+    command = buildCodexHookedCommand(command, {
+      dmuxPaneId: pane.id,
+      tmuxPaneId: paneId,
+      eventFile: codexHookEventFile,
+    });
   }
+
+  await tmuxService.sendShellCommand(paneId, command);
+  await tmuxService.sendTmuxKeys(paneId, 'Enter');
 }
 
 /**
@@ -116,15 +130,20 @@ export async function fetchTmuxPaneIds(maxRetries = 2): Promise<{
  * Handles both old array format and new config format
  */
 export async function loadPanesFromFile(panesFile: string): Promise<DmuxPane[]> {
+  const fallbackProjectRoot = path.dirname(path.dirname(panesFile));
+
   try {
     const content = await fs.readFile(panesFile, 'utf-8');
     const parsed: any = JSON.parse(content);
 
     if (Array.isArray(parsed)) {
-      return parsed as DmuxPane[];
+      return syncPaneColorThemes(parsed as DmuxPane[], [], fallbackProjectRoot);
     } else {
       const config = parsed as DmuxConfig;
-      return config.panes || [];
+      const projectRoot = config.projectRoot || fallbackProjectRoot;
+      const panes = Array.isArray(config.panes) ? config.panes : [];
+      const sidebarProjects = Array.isArray(config.sidebarProjects) ? config.sidebarProjects : [];
+      return syncPaneColorThemes(panes, sidebarProjects, projectRoot);
     }
   } catch (error) {
     // Return empty array if config file doesn't exist or is invalid
@@ -194,7 +213,12 @@ export async function recreateMissingPanes(
       // Update the pane with new ID
       missingPane.paneId = newPaneId;
 
-      await restoreRecreatedPane(tmuxService, missingPane, newPaneId);
+      // Send a message to the pane indicating it was restored
+      await tmuxService.sendKeys(newPaneId, `"echo '# Pane restored: ${missingPane.slug}'" Enter`);
+      const promptPreview = missingPane.prompt?.substring(0, 50) || '';
+      await tmuxService.sendKeys(newPaneId, `"echo '# Original prompt: ${promptPreview}...'" Enter`);
+      await tmuxService.sendKeys(newPaneId, `"cd ${missingPane.worktreePath || process.cwd()}" Enter`);
+      await restoreAgentSessionForPane(tmuxService, missingPane, newPaneId);
     } catch (error) {
       // If we can't create the pane, skip it
     }
@@ -256,13 +280,8 @@ export async function recreateKilledWorktreePanes(
 
   for (const pane of worktreePanesToRecreate) {
     try {
-      const worktreePath = pane.worktreePath;
-      if (!worktreePath) {
-        continue;
-      }
-
       // Create new pane in the worktree directory
-      const newPaneId = splitPane({ cwd: worktreePath });
+      const newPaneId = splitPane({ cwd: pane.worktreePath });
 
       // Set pane title
       await tmuxService.setPaneTitle(newPaneId, getPaneTmuxTitle(pane, sessionProjectRoot));
@@ -273,7 +292,14 @@ export async function recreateKilledWorktreePanes(
         updatedPanes[paneIndex] = { ...pane, paneId: newPaneId };
       }
 
-      await restoreRecreatedPane(tmuxService, pane, newPaneId);
+      // Send a message to the pane indicating it was restored
+      await tmuxService.sendKeys(newPaneId, `"echo '# Pane restored: ${pane.slug}'" Enter`);
+      if (pane.prompt) {
+        const promptPreview = pane.prompt.substring(0, 50) || '';
+        await tmuxService.sendKeys(newPaneId, `"echo '# Original prompt: ${promptPreview}...'" Enter`);
+      }
+      await tmuxService.sendKeys(newPaneId, `"cd ${pane.worktreePath}" Enter`);
+      await restoreAgentSessionForPane(tmuxService, pane, newPaneId);
 
   //       LogService.getInstance().debug(
   //         `Recreated worktree pane ${pane.id} (${pane.slug}) with new ID ${newPaneId}`,
@@ -361,7 +387,20 @@ export async function loadAndProcessPanes(
 
       // Save the cleaned config immediately to prevent these panes from reappearing
       try {
-        await saveNormalizedPaneConfig(panesFile, reboundPanes);
+        const fs = await import('fs/promises');
+        const configContent = await fs.readFile(panesFile, 'utf-8');
+        const config = JSON.parse(configContent);
+        config.panes = reboundPanes;
+        const projectRoot = config.projectRoot || path.dirname(path.dirname(panesFile));
+        const projectName = config.projectName || path.basename(projectRoot);
+        config.sidebarProjects = normalizeSidebarProjects(
+          config.sidebarProjects,
+          reboundPanes,
+          projectRoot,
+          projectName
+        );
+        config.lastUpdated = new Date().toISOString();
+        await atomicWriteJson(panesFile, config);
         LogService.getInstance().debug('Saved cleaned config after removing stale shell panes', 'usePaneLoading');
       } catch (saveError) {
         LogService.getInstance().debug(
@@ -394,15 +433,6 @@ export async function loadAndProcessPanes(
       reboundPanes.map(p => rebindPaneByTitle(p, titleToId, allPaneIds)),
       currentWindowPaneIds
     );
-
-    try {
-      await saveNormalizedPaneConfig(panesFile, reboundPanes);
-    } catch (saveError) {
-      LogService.getInstance().debug(
-        `Failed to save rebound config after pane recreation: ${saveError}`,
-        'usePaneLoading'
-      );
-    }
   }
 
   return { panes: reboundPanes, allPaneIds, titleToId };

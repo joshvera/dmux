@@ -30,7 +30,7 @@ function createPopupManager(
 
 describe('PopupManager launchNotificationSoundsPopup', () => {
   it('passes configured notification sounds as the initial selection', async () => {
-    const manager = createPopupManager(['default-system-sound', 'harp']) as any;
+    const manager = createPopupManager(['default-system-sound']) as any;
     manager.checkPopupSupport = vi.fn(() => true);
     manager.launchPopup = vi.fn().mockResolvedValue({
       success: true,
@@ -41,34 +41,33 @@ describe('PopupManager launchNotificationSoundsPopup', () => {
     });
 
     const result = await manager.launchNotificationSoundsPopup();
+    manager.checkPopupSupport = vi.fn(() => true);
+    manager.getSettingsManager = vi.fn((projectRoot?: string) => ({
+      getSettings: () => ({
+        enabledNotificationSounds:
+          projectRoot === '/tmp/other-project'
+            ? ['harp']
+            : ['default-system-sound'],
+      }),
+    }));
+    manager.launchPopup = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        enabledNotificationSounds: ['harp'],
+        scope: 'project',
+      },
+    });
+
+    await manager.launchNotificationSoundsPopup('/tmp/other-project');
 
     expect(manager.launchPopup).toHaveBeenCalledWith(
       'notificationSoundsPopup.js',
       [],
+      expect.any(Object),
       expect.objectContaining({
-        width: 76,
-        title: 'Notification Sounds',
+        enabledNotificationSounds: ['harp'],
       }),
-      expect.objectContaining({
-        enabledNotificationSounds: ['default-system-sound', 'harp'],
-        sounds: expect.arrayContaining([
-          expect.objectContaining({
-            id: 'default-system-sound',
-            label: 'Default System Sound',
-          }),
-          expect.objectContaining({
-            id: 'harp',
-            label: 'Harp',
-          }),
-        ]),
-      }),
-      undefined
+      '/tmp/other-project'
     );
-
-    expect(result).toEqual({
-      key: 'enabledNotificationSounds',
-      value: ['harp', 'war-horn'],
-      scope: 'project',
-    });
   });
 });

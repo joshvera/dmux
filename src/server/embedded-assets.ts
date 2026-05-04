@@ -906,20 +906,12 @@ class Dmux {
                 // Determine the dmux command to use
                 let dmuxCommand;
                 if (isDev) {
-                    dmuxCommand = \`cd "\${devDirectory}" && pnpm dev:watch\`;
+                    const cleanPath = (process.env.PATH || '').split(path.delimiter).filter((entry) => entry && !entry.includes(\`\${path.sep}node_modules\${path.sep}.bin\`)).join(path.delimiter);
+                    dmuxCommand = \`cd "\${devDirectory}" && PATH='\${cleanPath.replace(/'/g, \`'\\\\''\`)}' pnpm dev:watch\`;
                 }
                 else {
-                    // Check if we're running from a local installation
-                    // __dirname is 'dist' when compiled, so '../dmux' points to the wrapper
-                    const localDmuxPath = path.join(__dirname, '..', 'dmux');
-                    if (fsSync.existsSync(localDmuxPath)) {
-                        // Use absolute path to local dmux (works for both local builds and global installs)
-                        dmuxCommand = \`"\${localDmuxPath}"\`;
-                    }
-                    else {
-                        // Fallback to global dmux command
-                        dmuxCommand = 'dmux';
-                    }
+                    const cleanPath = (process.env.PATH || '').split(path.delimiter).filter((entry) => entry && !entry.includes(\`\${path.sep}node_modules\${path.sep}.bin\`)).join(path.delimiter);
+                    dmuxCommand = \`PATH='\${cleanPath.replace(/'/g, \`'\\\\''\`)}' dmux\`;
                 }
                 execSync(\`tmux send-keys -t \${this.sessionName} "\${dmuxCommand}" Enter\`, { stdio: 'inherit' });
             }

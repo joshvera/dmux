@@ -4,8 +4,8 @@ import { execAsync } from '../utils/execAsync.js';
 import {
   DMUX_DETACH_CONFIRM_TABLE,
 } from '../utils/remotePaneActions.js';
-import type { PanePosition, WindowDimensions } from '../types.js';
 import { shellQuote } from '../utils/shellQuote.js';
+import type { PanePosition, WindowDimensions } from '../types.js';
 
 export type PaneListScope = 'window' | 'session';
 
@@ -358,6 +358,24 @@ export class TmuxService {
   }
 
   /**
+   * Get the pane currently selected in the active dmux window.
+   *
+   * This uses pane_active from list-panes instead of display-message so it
+   * reflects tmux focus changes after this process was launched.
+   */
+  async getActivePaneId(scope: PaneListScope = 'window'): Promise<string | null> {
+    return this.executeWithRetry(
+      () => {
+        const lines = this.listPanesLines('#{pane_id} #{pane_active}', scope);
+        const activeLine = lines.find((line) => line.endsWith(' 1'));
+        return activeLine ? activeLine.split(' ')[0] : null;
+      },
+      RetryStrategy.IDEMPOTENT,
+      `getActivePaneId(${scope})`
+    );
+  }
+
+  /**
    * Get current window ID
    */
   async getCurrentWindowId(): Promise<string> {
@@ -566,7 +584,6 @@ export class TmuxService {
     return this.executeWithRetry(
       () => {
         let cmd = 'tmux split-window -h -P -F \'#{pane_id}\'';
-
         if (options.preserveZoom) {
           cmd += ' -Z';
         }
@@ -648,95 +665,14 @@ export class TmuxService {
   /**
    * Select a pane (make it active)
    */
-  async selectPane(
-    paneId: string,
-    options: { preserveZoom?: boolean } = {}
-  ): Promise<void> {
+  async selectPane(paneId: string): Promise<void> {
     await this.executeWithRetry(
       () => {
-        const zoomFlag = options.preserveZoom ? ' -Z' : '';
-        this.execute(`tmux select-pane -t '${paneId}'${zoomFlag}`);
+        this.execute(`tmux select-pane -t '${paneId}'`);
       },
       RetryStrategy.FAST,
       `selectPane(${paneId})`
     );
-  }
-
-  /**
-   * Detach the current tmux client from the session.
-   */
-  async detachCurrentClient(): Promise<void> {
-    const targetClientTty = await this.getCurrentClientTty();
-    if (!targetClientTty) {
-      throw new Error('No active tmux client could be resolved for detach');
-    }
-
-    await this.detachClient(targetClientTty);
-  }
-
-  /**
-   * Detach a specific tmux client from the session.
-   */
-  async detachClient(targetClientTty: string): Promise<void> {
-    await this.executeWithRetry(
-      () => {
-        this.execute(`tmux detach-client -t '${targetClientTty}'`);
-      },
-      RetryStrategy.FAST,
-      `detachClient(${targetClientTty})`
-    );
-  }
-
-  /**
-   * Enter the client-local detach confirmation key table and show guidance.
-   */
-  async enterDetachConfirmMode(): Promise<void> {
-    await this.executeWithRetry(
-      () => {
-        this.execute(
-          `tmux switch-client -T '${DMUX_DETACH_CONFIRM_TABLE}'`
-        );
-        this.execute(
-          `tmux display-message -d 3000 'Press q or Ctrl+C again to detach. Esc cancels.'`
-        );
-      },
-      RetryStrategy.FAST,
-      'enterDetachConfirmMode'
-    );
-  }
-
-  async togglePaneZoom(targetPaneId?: string): Promise<void> {
-    await this.executeWithRetry(
-      () => {
-        const target = targetPaneId ? ` -t '${targetPaneId}'` : '';
-        this.execute(`tmux resize-pane${target} -Z`);
-      },
-      RetryStrategy.FAST,
-      `togglePaneZoom(${targetPaneId || 'current'})`
-    );
-  }
-
-  async isWindowZoomed(targetPaneId?: string): Promise<boolean> {
-    return this.executeWithRetry(
-      () => {
-        const target = targetPaneId ? ` -t '${targetPaneId}'` : '';
-        const result = this.execute(
-          `tmux display-message${target} -p '#{window_zoomed_flag}'`
-        ).trim();
-        return result === '1';
-      },
-      RetryStrategy.IDEMPOTENT,
-      `isWindowZoomed(${targetPaneId || 'current'})`
-    );
-  }
-
-  async setPaneZoom(targetPaneId: string | undefined, zoomed: boolean): Promise<void> {
-    const currentlyZoomed = await this.isWindowZoomed(targetPaneId);
-    if (currentlyZoomed === zoomed) {
-      return;
-    }
-
-    await this.togglePaneZoom(targetPaneId);
   }
 
   /**
@@ -793,7 +729,8 @@ export class TmuxService {
    * @see sendTmuxKeys For sending tmux key sequences (Enter, C-l, etc.)
    */
   async sendShellCommand(paneId: string, command: string): Promise<void> {
-    const quotedCommand = shellQuote(command);
+    // Quote the command to preserve spaces, escaping any single quotes
+    const quotedCommand = `'${command.replace(/'/g, "'\\''")}'`;
     await this.executeWithRetry(
       () => {
         this.execute(`tmux send-keys -t '${paneId}' ${quotedCommand}`);
@@ -804,10 +741,7 @@ export class TmuxService {
   }
 
   /**
-   * Send a shell command to a pane and execute it atomically.
-   *
-   * This uses a single `tmux send-keys` invocation so the command is not left
-   * partially typed if a follow-up Enter send fails.
+   * Send a shell command to a pane and press Enter in a single tmux invocation.
    */
   async sendShellCommandAndEnter(paneId: string, command: string): Promise<void> {
     const quotedCommand = shellQuote(command);
@@ -845,6 +779,81 @@ export class TmuxService {
       RetryStrategy.FAST,
       `sendTmuxKeys(${paneId})`
     );
+  }
+
+  /**
+   * Detach the current tmux client from the session.
+   */
+  async detachCurrentClient(): Promise<void> {
+    const targetClientTty = await this.getCurrentClientTty();
+    if (!targetClientTty) {
+      throw new Error('No active tmux client could be resolved for detach');
+    }
+
+    await this.detachClient(targetClientTty);
+  }
+
+  /**
+   * Detach a specific tmux client from the session.
+   */
+  async detachClient(targetClientTty: string): Promise<void> {
+    await this.executeWithRetry(
+      () => {
+        this.execute(`tmux detach-client -t '${targetClientTty}'`);
+      },
+      RetryStrategy.FAST,
+      `detachClient(${targetClientTty})`
+    );
+  }
+
+  /**
+   * Enter the client-local detach confirmation key table and show guidance.
+   */
+  async enterDetachConfirmMode(): Promise<void> {
+    await this.executeWithRetry(
+      () => {
+        this.execute(`tmux switch-client -T '${DMUX_DETACH_CONFIRM_TABLE}'`);
+        this.execute(
+          `tmux display-message -d 3000 'Press q or Ctrl+C again to detach. Esc cancels.'`
+        );
+      },
+      RetryStrategy.FAST,
+      'enterDetachConfirmMode'
+    );
+  }
+
+  async togglePaneZoom(targetPaneId?: string): Promise<void> {
+    await this.executeWithRetry(
+      () => {
+        const target = targetPaneId ? ` -t '${targetPaneId}'` : '';
+        this.execute(`tmux resize-pane${target} -Z`);
+      },
+      RetryStrategy.FAST,
+      `togglePaneZoom(${targetPaneId || 'current'})`
+    );
+  }
+
+  async isWindowZoomed(targetPaneId?: string): Promise<boolean> {
+    return this.executeWithRetry(
+      () => {
+        const target = targetPaneId ? ` -t '${targetPaneId}'` : '';
+        const result = this.execute(
+          `tmux display-message${target} -p '#{window_zoomed_flag}'`
+        ).trim();
+        return result === '1';
+      },
+      RetryStrategy.IDEMPOTENT,
+      `isWindowZoomed(${targetPaneId || 'current'})`
+    );
+  }
+
+  async setPaneZoom(targetPaneId: string | undefined, zoomed: boolean): Promise<void> {
+    const currentlyZoomed = await this.isWindowZoomed(targetPaneId);
+    if (currentlyZoomed === zoomed) {
+      return;
+    }
+
+    await this.togglePaneZoom(targetPaneId);
   }
 
   /**
@@ -951,13 +960,8 @@ export class TmuxService {
   async joinPaneToTarget(
     sourcePaneId: string,
     targetPaneId: string,
-    horizontal: boolean = true,
-    preserveZoom: boolean = false
+    horizontal: boolean = true
   ): Promise<void> {
-    const shouldRestoreZoom = preserveZoom
-      ? await this.isWindowZoomed(targetPaneId)
-      : false;
-
     await this.executeWithRetry(
       () => {
         const direction = horizontal ? '-h' : '-v';
@@ -968,10 +972,6 @@ export class TmuxService {
       RetryStrategy.FAST,
       `joinPaneToTarget(${sourcePaneId})`
     );
-
-    if (shouldRestoreZoom) {
-      await this.setPaneZoom(targetPaneId, true);
-    }
   }
 
   /**
@@ -1272,7 +1272,6 @@ export class TmuxService {
     preserveZoom?: boolean;
   } = {}): string {
     let cmd = 'tmux split-window -h -P -F \'#{pane_id}\'';
-
     if (options.preserveZoom) {
       cmd += ' -Z';
     }
@@ -1411,7 +1410,11 @@ export class TmuxService {
    */
   setPaneOptionSync(paneId: string, option: string, value: string): void {
     try {
-      this.execute(`tmux set-option -p -t '${paneId}' ${option} ${value}`, { silent: true });
+      const escapedValue = value.replace(/'/g, `'\\''`);
+      this.execute(
+        `tmux set-option -p -t '${paneId}' ${option} '${escapedValue}'`,
+        { silent: true }
+      );
     } catch (error) {
       this.logger.warn(`Failed to set pane option ${option} for ${paneId}`, 'TmuxService');
     }

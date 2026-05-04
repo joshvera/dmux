@@ -564,7 +564,7 @@ function main() {
       initialState={data.initialState ?? {
         includeWorktrees: true,
         includeLocalBranches: true,
-        includeRemoteBranches: false,
+        includeRemoteBranches: true,
         remoteLoaded: false,
         filterQuery: '',
       }}

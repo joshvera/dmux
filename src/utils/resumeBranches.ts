@@ -251,6 +251,14 @@ function listRemoteBranches(repoPath: string, remoteName: string): Set<string> {
   );
 }
 
+function fetchRemoteBranches(repoPath: string, remoteName: string): void {
+  runGit(
+    repoPath,
+    ['fetch', '--prune', remoteName],
+    { silent: true }
+  );
+}
+
 function compareCandidates(
   left: ResumableBranchCandidate,
   right: ResumableBranchCandidate
@@ -294,9 +302,12 @@ export function getResumableBranches(
 
   for (const repoPath of discoverWorkspaceRepos(projectRoot)) {
     const localBranches = listLocalBranches(repoPath);
-    const remoteBranches = includeRemoteBranches
-      ? listRemoteBranches(repoPath, getPreferredRemoteName(repoPath))
-      : new Set<string>();
+    let remoteBranches = new Set<string>();
+    if (includeRemoteBranches) {
+      const remoteName = getPreferredRemoteName(repoPath);
+      fetchRemoteBranches(repoPath, remoteName);
+      remoteBranches = listRemoteBranches(repoPath, remoteName);
+    }
     const branchNames = new Set<string>([
       ...Array.from(localBranches),
       ...Array.from(remoteBranches),

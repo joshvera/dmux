@@ -1,7 +1,6 @@
 import type { AgentName, PermissionMode } from './utils/agentLaunch.js';
 import type { NotificationSoundId } from './utils/notificationSounds.js';
 
-// Agent status with new analyzing state
 export type AgentStatus = 'idle' | 'analyzing' | 'waiting' | 'working';
 
 export interface OptionChoice {
@@ -25,6 +24,8 @@ export interface MergeTargetReference {
 export interface SidebarProject {
   projectRoot: string;
   projectName: string;
+  colorTheme?: DmuxThemeName;
+  colorThemeSource?: 'auto' | 'manual';
 }
 
 export interface DmuxPane {
@@ -37,6 +38,7 @@ export interface DmuxPane {
   hidden?: boolean; // Pane is detached from the active dmux window but still running
   projectRoot?: string; // Main repository root this pane belongs to
   projectName?: string; // Display name for pane's project
+  colorTheme?: DmuxThemeName; // Cached effective project accent for fast focus/theme switches
   type?: 'worktree' | 'shell';  // Type of pane (defaults to 'worktree' for backward compat)
   shellType?: string;  // Shell type for shell panes (bash, zsh, fish, fb, etc)
   worktreePath?: string;
@@ -107,6 +109,8 @@ export interface DmuxSettings {
   enabledNotificationSounds?: NotificationSoundId[];
   // Rotate short dmux tips in the footer
   showFooterTips?: boolean;
+  // Accent color theme used across the TUI and welcome pane
+  colorTheme?: DmuxThemeName;
   // Tmux hooks for event-driven updates (low CPU)
   // true = use hooks, false = use polling, undefined = not yet asked
   useTmuxHooks?: boolean;
@@ -115,6 +119,8 @@ export interface DmuxSettings {
   baseBranch?: string;
   // Prefix for branch names (e.g. 'feat/' produces 'feat/fix-auth')
   branchPrefix?: string;
+  // Whether new pane popup should ask for base/branch overrides
+  promptForGitOptionsOnCreate?: boolean;
   // Preferred minimum content pane width in characters
   minPaneWidth?: number;
   // Preferred maximum content pane width in characters
@@ -123,13 +129,19 @@ export interface DmuxSettings {
   presentationMode?: PresentationMode;
 }
 
+export interface NewPaneInput {
+  prompt: string;
+  baseBranch?: string;
+  branchName?: string;
+}
 export type SettingsScope = 'global' | 'project';
-
+export type EffectiveSettingsScope = SettingsScope | 'team';
 export interface SettingDefinition {
   key: keyof DmuxSettings | string;
   label: string;
   description: string;
   type: 'boolean' | 'select' | 'text' | 'number' | 'action';
+  scopeBehavior?: 'choose' | 'session' | 'global' | 'project';
   options?: Array<{ value: string; label: string }>;
   min?: number;
   max?: number;
@@ -170,3 +182,13 @@ export type {
   LogLevel,
   LogEntry,
 } from './services/LogService.js';
+
+export type DmuxThemeName =
+  | 'red'
+  | 'blue'
+  | 'yellow'
+  | 'orange'
+  | 'green'
+  | 'purple'
+  | 'cyan'
+  | 'magenta';

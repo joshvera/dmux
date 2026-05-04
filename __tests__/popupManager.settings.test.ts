@@ -221,7 +221,11 @@ describe("PopupManager launchSettingsPopup", () => {
       [],
       expect.any(Object),
       expect.objectContaining({
-        settings: { showFooterTips: false },
+        settings: expect.objectContaining({
+          showFooterTips: false,
+          defaultColorTheme: "orange",
+          projectColorTheme: "",
+        }),
         globalSettings: { showFooterTips: true },
         projectSettings: { presentationMode: "focus" },
         projectRoot: "/repo-b",

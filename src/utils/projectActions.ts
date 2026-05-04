@@ -22,6 +22,12 @@ export interface ProjectActionLayout {
   multiProjectMode: boolean;
 }
 
+export interface PostCloseSelection {
+  selectedIndex: number;
+  pane?: DmuxPane;
+  action?: ProjectActionItem;
+}
+
 function sameRoot(a: string, b: string): boolean {
   return path.resolve(a) === path.resolve(b);
 }
@@ -109,6 +115,89 @@ export function getProjectActionByIndex(
   index: number
 ): ProjectActionItem | undefined {
   return actionItems.find((item) => item.index === index);
+}
+
+export function resolveSelectionAfterPaneClose(
+  panes: DmuxPane[],
+  closingPaneId: string,
+  sidebarProjects: SidebarProject[],
+  fallbackProjectRoot: string,
+  fallbackProjectName: string
+): PostCloseSelection | null {
+  const currentLayout = buildProjectActionLayout(
+    panes,
+    sidebarProjects,
+    fallbackProjectRoot,
+    fallbackProjectName
+  );
+
+  let closingGroup: PaneProjectGroup | undefined;
+  let closingGroupPaneIndex = -1;
+  let closingPane: DmuxPane | undefined;
+
+  for (const group of currentLayout.groups) {
+    const groupIndex = group.panes.findIndex(
+      (entry) =>
+        entry.pane.id === closingPaneId ||
+        entry.pane.paneId === closingPaneId
+    );
+    if (groupIndex !== -1) {
+      closingGroup = group;
+      closingGroupPaneIndex = groupIndex;
+      closingPane = group.panes[groupIndex].pane;
+      break;
+    }
+  }
+
+  if (!closingGroup || !closingPane) {
+    return null;
+  }
+
+  const closingProjectRoot = closingGroup.projectRoot;
+  const updatedPanes = panes.filter((pane) => pane.id !== closingPane.id);
+  const nextLayout = buildProjectActionLayout(
+    updatedPanes,
+    sidebarProjects,
+    fallbackProjectRoot,
+    fallbackProjectName
+  );
+  const nextGroup = nextLayout.groups.find((group) =>
+    sameRoot(group.projectRoot, closingProjectRoot)
+  );
+  const nextPane = nextGroup?.panes[closingGroupPaneIndex];
+
+  if (nextPane) {
+    return {
+      selectedIndex: nextPane.index,
+      pane: nextPane.pane,
+    };
+  }
+
+  const newAgentAction = nextLayout.actionItems.find(
+    (action) =>
+      action.kind === 'new-agent' &&
+      sameRoot(action.projectRoot, closingProjectRoot)
+  );
+
+  if (newAgentAction) {
+    return {
+      selectedIndex: newAgentAction.index,
+      action: newAgentAction,
+    };
+  }
+
+  const fallbackAction = nextLayout.actionItems.find(
+    (action) => action.kind === 'new-agent'
+  );
+
+  if (fallbackAction) {
+    return {
+      selectedIndex: fallbackAction.index,
+      action: fallbackAction,
+    };
+  }
+
+  return null;
 }
 
 /**

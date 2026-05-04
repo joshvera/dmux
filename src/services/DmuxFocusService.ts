@@ -480,18 +480,24 @@ async function ensureHelperBundle(
       })
     );
 
-    const result = spawnSync('swiftc', [
-      '-O',
-      paths.sourcePath,
-      '-o',
-      tempExecutablePath,
-      '-framework',
-      'AppKit',
-      '-framework',
-      'ApplicationServices',
-    ], {
-      stdio: 'pipe',
-      encoding: 'utf-8',
+    const result = await new Promise<{ status: number | null; stderr: string }>((resolve) => {
+      const child = spawn('swiftc', [
+        '-O',
+        paths.sourcePath,
+        '-o',
+        tempExecutablePath,
+        '-framework',
+        'AppKit',
+        '-framework',
+        'ApplicationServices',
+      ], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+
+      let stderr = '';
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8'); });
+      child.on('close', (code) => { resolve({ status: code, stderr }); });
+      child.on('error', () => { resolve({ status: 1, stderr }); });
     });
 
     if (result.status !== 0) {
@@ -839,7 +845,7 @@ export class DmuxFocusService extends EventEmitter {
 
     try {
       const [currentPaneId, currentWindowId, paneWindowId] = await Promise.all([
-        this.tmuxService.getCurrentPaneId(),
+        this.tmuxService.getActivePaneId(),
         this.tmuxService.getCurrentWindowId(),
         this.tmuxService.getPaneWindowId(tmuxPaneId),
       ]);
@@ -972,7 +978,7 @@ export class DmuxFocusService extends EventEmitter {
     }
 
     try {
-      const currentPaneId = await this.tmuxService.getCurrentPaneId();
+      const currentPaneId = await this.tmuxService.getActivePaneId();
       if (!currentPaneId) {
         this.setFullyFocusedPaneId(null);
         return;

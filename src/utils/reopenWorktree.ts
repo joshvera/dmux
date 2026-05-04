@@ -22,6 +22,13 @@ import { filterEnabledAgents, getInstalledAgents } from './agentDetection.js';
 import { getCurrentBranch } from './git.js';
 import { readWorktreeMetadata } from './worktreeMetadata.js';
 import { getPreferredSplitTargetPaneId } from './panePlacement.js';
+import type { SidebarProject } from '../types.js';
+
+import {
+  buildCodexHookedCommand,
+  installCodexPaneHooks,
+} from './codexHooks.js';
+import { resolveProjectColorTheme } from './paneColors.js';
 
 export interface ReopenWorktreeOptions {
   agent?: AgentName;
@@ -66,11 +73,13 @@ export async function reopenWorktree(
   const configPath = optionsSessionConfigPath
     || path.join(sessionProjectRoot, '.dmux', 'dmux.config.json');
   let controlPaneId: string | undefined;
+  let configSidebarProjects: SidebarProject[] = [];
 
   try {
     const configContent = fs.readFileSync(configPath, 'utf-8');
     const config: DmuxConfig = JSON.parse(configContent);
     controlPaneId = config.controlPaneId;
+    configSidebarProjects = Array.isArray(config.sidebarProjects) ? config.sidebarProjects : [];
 
     // Verify the control pane ID from config still exists
     if (controlPaneId) {
@@ -168,6 +177,7 @@ export async function reopenWorktree(
       ? configuredAgent
       : preferredOrder.find((candidate) => candidateAgents.includes(candidate)));
   const permissionMode = metadata?.permissionMode ?? settings.permissionMode;
+  const dmuxPaneId = `dmux-${Date.now()}`;
 
   // Resume the agent session (or start interactive mode when no resume command is available).
   if (agent) {
@@ -175,7 +185,26 @@ export async function reopenWorktree(
       ensureGeminiFolderTrusted(worktreePath);
     }
 
-    const resumeCommand = buildAgentResumeOrLaunchCommand(agent, permissionMode);
+    let resumeCommand = buildAgentResumeOrLaunchCommand(agent, permissionMode);
+    if (agent === 'codex') {
+      let codexHookEventFile: string | undefined;
+      try {
+        codexHookEventFile = installCodexPaneHooks({
+          worktreePath,
+          dmuxPaneId,
+          tmuxPaneId: paneInfo,
+        }).eventFile;
+      } catch {
+        // Hook installation is best effort; Codex can still resume normally.
+      }
+
+      resumeCommand = buildCodexHookedCommand(resumeCommand, {
+        dmuxPaneId,
+        tmuxPaneId: paneInfo,
+        eventFile: codexHookEventFile,
+      });
+    }
+
     await tmuxService.sendShellCommand(paneInfo, resumeCommand);
     await tmuxService.sendTmuxKeys(paneInfo, 'Enter');
   }
@@ -187,7 +216,7 @@ export async function reopenWorktree(
   const currentBranch = getCurrentBranch(worktreePath);
 
   const newPane: DmuxPane = {
-    id: `dmux-${Date.now()}`,
+    id: dmuxPaneId,
     slug,
     displayName: metadata?.displayName,
     branchName: (metadata?.branchName || currentBranch) !== slug
@@ -197,6 +226,7 @@ export async function reopenWorktree(
     paneId: paneInfo,
     projectRoot,
     projectName: paneProjectName,
+    colorTheme: resolveProjectColorTheme(projectRoot, configSidebarProjects),
     worktreePath,
     agent,
     permissionMode,
@@ -204,7 +234,8 @@ export async function reopenWorktree(
     mergeTargetChain: metadata?.mergeTargetChain,
   };
 
-  // Handle welcome pane destruction if first content pane
+  // Pre-save pane to config before destroying welcome pane (first content pane only),
+  // so loadPanes sees a pane in config and doesn't recreate the welcome pane.
   if (isFirstContentPane) {
     try {
       const configContent = fs.readFileSync(configPath, 'utf-8');
@@ -213,12 +244,18 @@ export async function reopenWorktree(
       config.panes = [...existingPanes, newPane];
       config.lastUpdated = new Date().toISOString();
       atomicWriteJsonSync(configPath, config);
-
-      const { destroyWelcomePaneCoordinated } = await import('./welcomePaneManager.js');
-      destroyWelcomePaneCoordinated(sessionProjectRoot);
     } catch {
       // Log but don't fail
     }
+  }
+
+  // Always destroy welcome pane if one exists — shell panes can make isFirstContentPane
+  // false even when no real content pane exists yet.
+  try {
+    const { destroyWelcomePaneCoordinated } = await import('./welcomePaneManager.js');
+    destroyWelcomePaneCoordinated(sessionProjectRoot);
+  } catch {
+    // Ignore - welcome pane cleanup is not critical
   }
 
   // Switch back to the original pane

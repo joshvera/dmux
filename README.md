@@ -15,6 +15,12 @@
   <a href="https://github.com/formkit/dmux/issues"><strong>Issues</strong></a>
 </p>
 
+<p align="center">
+  <strong>Language:</strong>
+  <a href="./README.md">English</a> |
+  <a href="./README.ja.md">日本語</a>
+</p>
+
 ---
 
 <img src="./dmux.webp" alt="dmux demo" width="100%" />
@@ -36,7 +42,7 @@ Press `n` to create a new pane, type a prompt, pick one or more agents (or none 
 
 ## What it does
 
-dmux creates a tmux pane for each task. Every pane gets its own git worktree and branch so agents work in complete isolation. When a task is done, open the pane menu with `m` and choose Merge to bring it back into your main branch.
+dmux creates a tmux pane for each task. Every pane gets its own git worktree and branch so agents work in complete isolation. When a task is done, open the pane menu with `m` and choose Merge to bring it back into your main branch, or Create GitHub PR to push the branch and file a pull request.
 
 - **Worktree isolation** &mdash; each pane is a full working copy, no conflicts between agents
 - **Agent support** &mdash; Claude Code, Codex, OpenCode, Cline CLI, Gemini CLI, Qwen CLI, Amp CLI, pi CLI, Cursor CLI, Copilot CLI, and Crush CLI
@@ -48,6 +54,15 @@ dmux creates a tmux pane for each task. Every pane gets its own git worktree and
 - **Pane visibility controls** &mdash; hide individual panes, isolate one project, or restore everything later without stopping work
 - **Multi-project** &mdash; add multiple repos to the same session
 - **Lifecycle hooks** &mdash; run scripts on worktree create, pre-merge, post-merge, and more
+
+## Git Branch Controls
+
+dmux can use default branch behavior or let you override branch details when creating a pane.
+
+- Keep the default flow for fast creation, where dmux automatically picks the worktree and git branch names.
+- Optionally choose a different base branch per pane.
+- Optionally provide an explicit branch/worktree name (useful for issue-tracker ticket naming).
+- Multi-agent launches still use shared naming with agent-specific suffixes.
 
 ## Keyboard Shortcuts
 

@@ -1,13 +1,41 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DmuxPane } from '../src/types.js';
 import { buildPaneRestoreCommands } from '../src/utils/paneRestore.js';
 import { shellQuote } from '../src/utils/shellQuote.js';
 
-describe('pane restoration', () => {
-  it('builds quoted restore commands with a normalized prompt preview and resume command', () => {
-    const prompt = `Let's debug
+const tmuxServiceMock = vi.hoisted(() => ({
+  setPaneTitle: vi.fn(async () => {}),
+  sendKeys: vi.fn(async () => {}),
+  sendShellCommand: vi.fn(async () => {}),
+  sendTmuxKeys: vi.fn(async () => {}),
+  selectLayout: vi.fn(async () => {}),
+  refreshClient: vi.fn(async () => {}),
+}));
 
-quoted restore behavior after reopen`;
+const splitPaneMock = vi.hoisted(() => vi.fn(() => '%9'));
+
+vi.mock('../src/services/TmuxService.js', () => ({
+  TmuxService: {
+    getInstance: vi.fn(() => tmuxServiceMock),
+  },
+}));
+
+vi.mock('../src/utils/tmux.js', () => ({
+  splitPane: splitPaneMock,
+}));
+
+vi.mock('../src/utils/geminiTrust.js', () => ({
+  ensureGeminiFolderTrusted: vi.fn(),
+}));
+
+describe('pane restoration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    splitPaneMock.mockReturnValue('%9');
+  });
+
+  it('builds quoted restore commands with a normalized prompt preview and resume command', () => {
+    const prompt = `Let's debug\n\nquoted restore behavior after reopen`;
     const expectedPreview = prompt.replace(/\s+/g, ' ').trim().substring(0, 50);
     const worktreePath = `/repo/o'clock/.dmux/worktrees/feature-codex`;
     const pane: DmuxPane = {
@@ -63,5 +91,30 @@ quoted restore behavior after reopen`;
       `printf '%s\\n' ${shellQuote('# Original prompt: review restore behavior...')}`,
       `cd ${shellQuote('/fallback')}`,
     ]);
+  });
+
+  it('resumes restored worktree panes with their original agent command', async () => {
+    const { recreateMissingPanes } = await import('../src/hooks/usePaneLoading.js');
+
+    const pane: DmuxPane = {
+      id: 'dmux-1',
+      slug: 'feature-codex',
+      prompt: 'fix the failing tests',
+      paneId: '%2',
+      worktreePath: '/repo/.dmux/worktrees/feature-codex',
+      projectRoot: '/repo',
+      agent: 'codex',
+      permissionMode: 'bypassPermissions',
+    };
+
+    await recreateMissingPanes([pane], '/repo/.dmux/dmux.config.json');
+
+    expect(tmuxServiceMock.sendShellCommand).toHaveBeenCalledWith(
+      '%9',
+      expect.stringContaining(
+        "export DMUX_PANE_ID='dmux-1'; export DMUX_TMUX_PANE_ID='%9'; codex --enable codex_hooks resume --last --dangerously-bypass-approvals-and-sandbox"
+      )
+    );
+    expect(tmuxServiceMock.sendTmuxKeys).toHaveBeenCalledWith('%9', 'Enter');
   });
 });
