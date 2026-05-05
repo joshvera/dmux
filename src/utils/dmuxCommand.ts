@@ -18,6 +18,11 @@ export function buildDmuxCommand(args: string[] = [], projectRoot?: string): str
     ...args,
   ].join(' ');
 }
+
+export function buildDmuxRespawnCommand(args: string[] = [], projectRoot?: string): string {
+  const pathValue = sanitizePathForInstalledDmux(process.env.PATH || '', projectRoot);
+  return `${buildDmuxCommand(args, projectRoot)}; export PATH=${shellQuote(pathValue)}; exec "\${SHELL:-/bin/zsh}" -l`;
+}
 export function buildFilesOnlyCommand(projectRoot?: string): string {
   return buildDmuxCommand(['--files-only'], projectRoot);
 }

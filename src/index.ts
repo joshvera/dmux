@@ -21,7 +21,7 @@ import { validateSystemRequirements, printValidationResults } from './utils/syst
 import { getUntrackedPanes } from './utils/shellPaneDetection.js';
 import { runFirstRunOnboardingIfNeeded } from './utils/onboarding.js';
 import { atomicWriteJson } from './utils/atomicWrite.js';
-import { buildDevWatchCommand, buildDevWatchRespawnCommand } from './utils/devWatchCommand.js';
+import { buildDevWatchRespawnCommand } from './utils/devWatchCommand.js';
 import { shouldUseQuietDevWatchExit } from './utils/devWatchExit.js';
 import { ensureTmuxRuntimeCompatibility } from './utils/tmuxRuntimeCompatibility.js';
 import { claimProcessShutdown } from './utils/processShutdown.js';
@@ -69,8 +69,7 @@ import {
 import { TMUX_PANE_TITLE_DISPLAY_FORMAT } from './utils/paneTitle.js';
 import type { DmuxConfig, DmuxPane } from './types.js';
 
-import { sendTmuxShellCommand } from './utils/tmuxSendKeys.js';
-import { buildDmuxCommand } from './utils/dmuxCommand.js';
+import { buildDmuxRespawnCommand } from './utils/dmuxCommand.js';
 import { sanitizePathForInstalledDmux } from './utils/pathEnvironment.js';
 import { SettingsManager } from './utils/settingsManager.js';
 import {
@@ -343,16 +342,20 @@ class Dmux {
         // This reduces 5 process spawns to 1, significantly improving startup time
         this.applySessionPaneBorderOptions(this.sessionName, 'inherit');
         execSync(`tmux select-pane -t ${this.sessionName} -T "dmux"`, { stdio: 'inherit' });
-        // Send dmux command to the new session (use dev command if in dev mode)
-        // Determine the dmux command to use
-        let dmuxCommand: string;
-        if (isDev) {
-          dmuxCommand = buildDevWatchCommand(devDirectory);
-        } else {
-          dmuxCommand = buildDmuxCommand([], this.projectRoot);
-        }
-
-        sendTmuxShellCommand(this.sessionName, dmuxCommand, 'inherit');
+        // Launch dmux directly via respawn-pane rather than typing the command into a shell.
+        // tmux send-keys would route through the PTY in canonical mode (the new shell hasn't
+        // finished sourcing rc files yet), and macOS caps cooked-mode lines at MAX_CANON (1024
+        // bytes), silently truncating long PATH-prefixed commands and stranding the pane at a
+        // "quote>" PS2 prompt. The respawn command appends `exec $SHELL` so quitting dmux still
+        // leaves an interactive shell behind in the pane.
+        const dmuxCommand = isDev
+          ? buildDevWatchRespawnCommand(devDirectory)
+          : buildDmuxRespawnCommand([], this.projectRoot);
+        const escapedDmuxCommand = dmuxCommand.replace(/'/g, "'\\''");
+        execSync(
+          `tmux respawn-pane -k -t '${this.sessionName}' '${escapedDmuxCommand}'`,
+          { stdio: 'pipe' }
+        );
       }
       execSync(`tmux attach-session -t ${this.sessionName}`, { stdio: 'inherit' });
       return;
