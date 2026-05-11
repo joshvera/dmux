@@ -1,6 +1,10 @@
 import { execSync } from 'child_process';
 import { LogService } from './LogService.js';
 import { execAsync } from '../utils/execAsync.js';
+import {
+  DMUX_DETACH_CONFIRM_TABLE,
+} from '../utils/remotePaneActions.js';
+import { shellQuote } from '../utils/shellQuote.js';
 import type { PanePosition, WindowDimensions } from '../types.js';
 
 export type PaneListScope = 'window' | 'session';
@@ -318,6 +322,60 @@ export class TmuxService {
   }
 
   /**
+   * Get the tty for the tmux client currently associated with this process context.
+   */
+  async getCurrentClientTty(): Promise<string | null> {
+    return this.executeWithRetry(
+      () => {
+        const clientsOutput = this.execute(
+          'tmux list-clients -F "#{client_activity}\t#{client_tty}"'
+        ).trim();
+
+        const mostRecentClientTty = clientsOutput
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => {
+            const [activity = '', clientTty = ''] = line.split('\t');
+            return {
+              activity: Number.parseInt(activity, 10) || 0,
+              clientTty: clientTty.trim(),
+            };
+          })
+          .filter((entry) => entry.clientTty.length > 0)
+          .sort((left, right) => right.activity - left.activity)[0]?.clientTty;
+
+        if (mostRecentClientTty) {
+          return mostRecentClientTty;
+        }
+
+        const value = this.execute('tmux display-message -p "#{client_tty}"').trim();
+        return value || null;
+      },
+      RetryStrategy.IDEMPOTENT,
+      'getCurrentClientTty'
+    );
+  }
+
+  /**
+   * Get the pane currently selected in the active dmux window.
+   *
+   * This uses pane_active from list-panes instead of display-message so it
+   * reflects tmux focus changes after this process was launched.
+   */
+  async getActivePaneId(scope: PaneListScope = 'window'): Promise<string | null> {
+    return this.executeWithRetry(
+      () => {
+        const lines = this.listPanesLines('#{pane_id} #{pane_active}', scope);
+        const activeLine = lines.find((line) => line.endsWith(' 1'));
+        return activeLine ? activeLine.split(' ')[0] : null;
+      },
+      RetryStrategy.IDEMPOTENT,
+      `getActivePaneId(${scope})`
+    );
+  }
+
+  /**
    * Get current window ID
    */
   async getCurrentWindowId(): Promise<string> {
@@ -521,10 +579,14 @@ export class TmuxService {
     targetPane?: string;
     cwd?: string;
     command?: string;
+    preserveZoom?: boolean;
   } = {}): Promise<string> {
     return this.executeWithRetry(
       () => {
         let cmd = 'tmux split-window -h -P -F \'#{pane_id}\'';
+        if (options.preserveZoom) {
+          cmd += ' -Z';
+        }
 
         if (options.targetPane) {
           cmd += ` -t '${options.targetPane}'`;
@@ -679,6 +741,20 @@ export class TmuxService {
   }
 
   /**
+   * Send a shell command to a pane and press Enter in a single tmux invocation.
+   */
+  async sendShellCommandAndEnter(paneId: string, command: string): Promise<void> {
+    const quotedCommand = shellQuote(command);
+    await this.executeWithRetry(
+      () => {
+        this.execute(`tmux send-keys -t '${paneId}' ${quotedCommand} Enter`);
+      },
+      RetryStrategy.FAST,
+      `sendShellCommandAndEnter(${paneId})`
+    );
+  }
+
+  /**
    * Send tmux key sequences to a pane (no quoting)
    *
    * Use this for tmux keys like: Enter, C-l, Escape, Tab, C-c, etc.
@@ -703,6 +779,81 @@ export class TmuxService {
       RetryStrategy.FAST,
       `sendTmuxKeys(${paneId})`
     );
+  }
+
+  /**
+   * Detach the current tmux client from the session.
+   */
+  async detachCurrentClient(): Promise<void> {
+    const targetClientTty = await this.getCurrentClientTty();
+    if (!targetClientTty) {
+      throw new Error('No active tmux client could be resolved for detach');
+    }
+
+    await this.detachClient(targetClientTty);
+  }
+
+  /**
+   * Detach a specific tmux client from the session.
+   */
+  async detachClient(targetClientTty: string): Promise<void> {
+    await this.executeWithRetry(
+      () => {
+        this.execute(`tmux detach-client -t '${targetClientTty}'`);
+      },
+      RetryStrategy.FAST,
+      `detachClient(${targetClientTty})`
+    );
+  }
+
+  /**
+   * Enter the client-local detach confirmation key table and show guidance.
+   */
+  async enterDetachConfirmMode(): Promise<void> {
+    await this.executeWithRetry(
+      () => {
+        this.execute(`tmux switch-client -T '${DMUX_DETACH_CONFIRM_TABLE}'`);
+        this.execute(
+          `tmux display-message -d 3000 'Press q or Ctrl+C again to detach. Esc cancels.'`
+        );
+      },
+      RetryStrategy.FAST,
+      'enterDetachConfirmMode'
+    );
+  }
+
+  async togglePaneZoom(targetPaneId?: string): Promise<void> {
+    await this.executeWithRetry(
+      () => {
+        const target = targetPaneId ? ` -t '${targetPaneId}'` : '';
+        this.execute(`tmux resize-pane${target} -Z`);
+      },
+      RetryStrategy.FAST,
+      `togglePaneZoom(${targetPaneId || 'current'})`
+    );
+  }
+
+  async isWindowZoomed(targetPaneId?: string): Promise<boolean> {
+    return this.executeWithRetry(
+      () => {
+        const target = targetPaneId ? ` -t '${targetPaneId}'` : '';
+        const result = this.execute(
+          `tmux display-message${target} -p '#{window_zoomed_flag}'`
+        ).trim();
+        return result === '1';
+      },
+      RetryStrategy.IDEMPOTENT,
+      `isWindowZoomed(${targetPaneId || 'current'})`
+    );
+  }
+
+  async setPaneZoom(targetPaneId: string | undefined, zoomed: boolean): Promise<void> {
+    const currentlyZoomed = await this.isWindowZoomed(targetPaneId);
+    if (currentlyZoomed === zoomed) {
+      return;
+    }
+
+    await this.togglePaneZoom(targetPaneId);
   }
 
   /**
@@ -1118,8 +1269,12 @@ export class TmuxService {
     targetPane?: string;
     cwd?: string;
     command?: string;
+    preserveZoom?: boolean;
   } = {}): string {
     let cmd = 'tmux split-window -h -P -F \'#{pane_id}\'';
+    if (options.preserveZoom) {
+      cmd += ' -Z';
+    }
 
     if (options.targetPane) {
       cmd += ` -t '${options.targetPane}'`;
@@ -1255,7 +1410,11 @@ export class TmuxService {
    */
   setPaneOptionSync(paneId: string, option: string, value: string): void {
     try {
-      this.execute(`tmux set-option -p -t '${paneId}' ${option} ${value}`, { silent: true });
+      const escapedValue = value.replace(/'/g, `'\\''`);
+      this.execute(
+        `tmux set-option -p -t '${paneId}' ${option} '${escapedValue}'`,
+        { silent: true }
+      );
     } catch (error) {
       this.logger.warn(`Failed to set pane option ${option} for ${paneId}`, 'TmuxService');
     }

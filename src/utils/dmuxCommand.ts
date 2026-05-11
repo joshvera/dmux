@@ -1,29 +1,35 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import type { RemotePaneActionShortcut } from './remotePaneActions.js';
+import { shellQuote } from './shellQuote.js';
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+import {
+  resolveInstalledDmuxExecutable,
+  sanitizePathForInstalledDmux,
+} from './pathEnvironment.js';
+
+export function resolveDmuxExecutable(projectRoot?: string): string {
+  return resolveInstalledDmuxExecutable({ projectRoot });
 }
 
-export function resolveDmuxExecutable(): string {
-  const currentDir = path.dirname(fileURLToPath(import.meta.url));
-  const localDmuxPath = path.resolve(currentDir, '..', '..', 'dmux');
-
-  if (fs.existsSync(localDmuxPath)) {
-    return localDmuxPath;
-  }
-
-  return 'dmux';
+export function buildDmuxCommand(args: string[] = [], projectRoot?: string): string {
+  const pathValue = sanitizePathForInstalledDmux(process.env.PATH || '', projectRoot);
+  return [
+    `PATH=${shellQuote(pathValue)}`,
+    shellQuote(resolveDmuxExecutable(projectRoot)),
+    ...args,
+  ].join(' ');
 }
 
-export function buildFilesOnlyCommand(): string {
-  return `${shellQuote(resolveDmuxExecutable())} --files-only`;
+export function buildDmuxRespawnCommand(args: string[] = [], projectRoot?: string): string {
+  const pathValue = sanitizePathForInstalledDmux(process.env.PATH || '', projectRoot);
+  return `${buildDmuxCommand(args, projectRoot)}; export PATH=${shellQuote(pathValue)}; exec "\${SHELL:-/bin/zsh}" -l`;
+}
+export function buildFilesOnlyCommand(projectRoot?: string): string {
+  return buildDmuxCommand(['--files-only'], projectRoot);
 }
 
 export function buildRemotePaneActionCommand(
-  shortcut: RemotePaneActionShortcut
+  shortcut: RemotePaneActionShortcut,
+  projectRoot?: string
 ): string {
-  return `${shellQuote(resolveDmuxExecutable())} --remote-pane-action ${shortcut}`;
+  return buildDmuxCommand(['--remote-pane-action', shortcut], projectRoot);
 }

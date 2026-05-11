@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -8,6 +9,7 @@ import {
   clearRemotePaneActions,
   drainRemotePaneActions,
   enqueueRemotePaneAction,
+  getControlPaneRemoteActionGuardMessage,
   getRemotePaneActionQueuePath,
 } from '../src/utils/remotePaneActions.js';
 
@@ -23,6 +25,16 @@ afterEach(async () => {
 async function createTempHomeDir(): Promise<string> {
   tempHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dmux-remote-pane-actions-'));
   return tempHomeDir;
+}
+
+function extractRunShellPayload(command: string): string {
+  const prefix = 'run-shell "';
+  const start = command.indexOf(prefix);
+  expect(start).toBeGreaterThan(-1);
+  expect(command.endsWith('"')).toBe(true);
+  return command
+    .slice(start + prefix.length, -1)
+    .replace(/\\([\\$"`])/g, '$1');
 }
 
 describe('remotePaneActions', () => {
@@ -86,11 +98,69 @@ describe('remotePaneActions', () => {
     const setupCommands = buildRemotePaneActionBindingCommands();
     const cleanupCommands = buildRemotePaneActionCleanupCommands();
 
-    expect(setupCommands).toHaveLength(1);
+    expect(setupCommands.length).toBeGreaterThan(5);
     expect(setupCommands[0]).toContain('bind-key -n M-M');
     expect(setupCommands[0]).toContain('--remote-pane-action m');
+    expect(setupCommands[0]).toContain('remote-pane-action-errors.log');
+    expect(setupCommands[0]).toContain('dmux remote pane action failed');
+    expect(setupCommands[0]).toContain('>\\"\\$tmp_file\\" 2>&1');
+    expect(setupCommands[0]).not.toContain('--remote-pane-action m >/dev/null 2>&1 || true');
+    expect(
+      setupCommands.some((command) =>
+        command.includes('bind-key -T dmux-detach-confirm q detach-client')
+      )
+    ).toBe(true);
+    expect(
+      setupCommands.some((command) =>
+        command.includes('bind-key -T dmux-detach-confirm C-c detach-client')
+      )
+    ).toBe(true);
+    expect(
+      setupCommands.some((command) => command.includes('#{client_tty}'))
+    ).toBe(false);
+    expect(
+      setupCommands.some((command) =>
+        command.includes('bind-key -T dmux-detach-confirm Escape switch-client -T root')
+      )
+    ).toBe(true);
+    expect(
+      setupCommands.some((command) =>
+        command.includes(`bind-key -T dmux-detach-confirm '?' switch-client -T root \\; send-keys -K '?'`)
+      )
+    ).toBe(true);
+    expect(
+      setupCommands.some((command) =>
+        command.includes('bind-key -T dmux-detach-confirm Any switch-client -T root \\; send-keys -K')
+      )
+    ).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -n M-M'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -n M-D'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-pane-action x'))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm q'))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm C-c'))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm Escape'))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes(`unbind-key -T dmux-detach-confirm '?'`))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm Any'))).toBe(true);
+  });
+
+  it('builds a shell-valid focused-pane menu wrapper', () => {
+    const setupCommands = buildRemotePaneActionBindingCommands();
+    const payload = extractRunShellPayload(setupCommands[0]);
+    const result = spawnSync('sh', ['-n'], {
+      input: payload,
+      encoding: 'utf-8',
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+  });
+
+  it('allows the remote menu shortcut from the control pane while keeping other shortcuts blocked', () => {
+    expect(
+      getControlPaneRemoteActionGuardMessage('%0', '%0', 'm')
+    ).toBeNull();
+    expect(
+      getControlPaneRemoteActionGuardMessage('%0', '%0', 'x')
+    ).toBe('Focused pane is already the dmux control pane');
   });
 });

@@ -28,6 +28,11 @@ function createDeferred<T>() {
 function createPopupManager(
   trackProjectActivity: PopupManagerConfig['trackProjectActivity']
 ): PopupManager {
+  const settingsManager = {
+    getSettings: () => ({}),
+    getGlobalSettings: () => ({}),
+    getProjectSettings: () => ({}),
+  };
   const config: PopupManagerConfig = {
     sidebarWidth: 40,
     projectRoot: '/tmp/project',
@@ -36,11 +41,8 @@ function createPopupManager(
     terminalWidth: 120,
     terminalHeight: 40,
     availableAgents: ['claude', 'codex'] as AgentName[],
-    settingsManager: {
-      getSettings: () => ({}),
-      getGlobalSettings: () => ({}),
-      getProjectSettings: () => ({}),
-    },
+    settingsManager,
+    getSettingsManagerForProjectRoot: () => settingsManager,
     projectSettings: {},
     trackProjectActivity,
   };

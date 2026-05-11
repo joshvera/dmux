@@ -3,27 +3,16 @@ import { execSync } from 'child_process';
 import fsp from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import fs from 'fs';
-import { createHash } from 'crypto';
 import { wrapText } from '../src/utils/input.js';
+import {
+  detectDmuxRunner,
+  hasCommand,
+  sleep,
+} from './helpers/dmuxRuntimeHarness.js';
 
-function hasCmd(cmd: string): boolean {
-  try { execSync(`command -v ${cmd}`, { stdio: 'pipe' }); return true; } catch { return false; }
-}
-
-function detectRunner(): { cmd: string; label: string } | null {
-  const distPath = path.join(process.cwd(), 'dist', 'index.js');
-  if (fs.existsSync(distPath)) return { cmd: `node "${distPath}"`, label: 'node-dist' };
-  if (hasCmd('pnpm')) return { cmd: 'pnpm dev', label: 'pnpm-dev' };
-  if (hasCmd('tsx')) return { cmd: `tsx "${path.join(process.cwd(), 'src', 'index.ts')}"`, label: 'tsx-src' };
-  return null;
-}
-
-const runner = detectRunner();
+const runner = detectDmuxRunner();
 const runE2E = process.env.DMUX_E2E === '1';
-const canRun = runE2E && hasCmd('tmux') && !!runner;
-
-async function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+const canRun = runE2E && hasCommand('tmux') && !!runner;
 
 function capturePane(server: string, session: string): string {
   return execSync(`tmux -L ${server} capture-pane -p -t ${session}:0.0`, { encoding: 'utf-8', stdio: 'pipe' });

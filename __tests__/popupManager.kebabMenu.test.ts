@@ -3,6 +3,11 @@ import { PopupManager, type PopupManagerConfig } from '../src/services/PopupMana
 import type { DmuxPane } from '../src/types.js';
 
 function createPopupManager(): PopupManager {
+  const settingsManager = {
+    getSettings: () => ({}),
+    getGlobalSettings: () => ({}),
+    getProjectSettings: () => ({}),
+  };
   const config: PopupManagerConfig = {
     sidebarWidth: 40,
     projectRoot: '/tmp/project',
@@ -11,11 +16,8 @@ function createPopupManager(): PopupManager {
     terminalWidth: 120,
     terminalHeight: 40,
     availableAgents: ['claude', 'codex'],
-    settingsManager: {
-      getSettings: () => ({}),
-      getGlobalSettings: () => ({}),
-      getProjectSettings: () => ({}),
-    },
+    settingsManager,
+    getSettingsManagerForProjectRoot: () => settingsManager,
     projectSettings: {},
     trackProjectActivity: async (work) => await work(),
   };

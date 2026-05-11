@@ -280,6 +280,17 @@ describe('layout calculation', () => {
       expect(layout.actualPaneWidth).toBeLessThanOrEqual(DEFAULT_LAYOUT_CONFIG.MAX_COMFORTABLE_WIDTH);
     });
 
+    it('lets a single visible pane use the full terminal width', () => {
+      const wideTerminal = 240;
+      const layout = calculateOptimalLayout(1, wideTerminal, 60, DEFAULT_LAYOUT_CONFIG);
+
+      expect(layout.cols).toBe(1);
+      expect(layout.rows).toBe(1);
+      expect(layout.windowWidth).toBe(wideTerminal);
+      expect(layout.paneDistribution).toEqual([1]);
+      expect(layout.actualPaneWidth).toBeGreaterThan(DEFAULT_LAYOUT_CONFIG.MAX_COMFORTABLE_WIDTH);
+    });
+
     it('distributes panes evenly across columns', () => {
       const layout = calculateOptimalLayout(5, 200, 60, DEFAULT_LAYOUT_CONFIG);
 

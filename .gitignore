@@ -7,6 +7,7 @@ settings.local.json
 .dmux/test-output/
 .dmux/
 .cache
+.omx/
 # Note: .dmux-hooks/ is version controlled (not ignored)
 frontend/dist
 frontend/node_modules

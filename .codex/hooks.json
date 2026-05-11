@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node '/Users/justinschroeder/Projects/dmux/.dmux/worktrees/hidden-panes/.codex/hooks/dmux-stop-hook.cjs'",
+            "timeout": 5,
+            "statusMessage": "Notifying dmux"
+          }
+        ]
+      }
+    ]
+  }
+}

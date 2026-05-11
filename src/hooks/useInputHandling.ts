@@ -1,7 +1,7 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import path from "path"
 import { useInput } from "ink"
-import type { DmuxPane, SidebarProject } from "../types.js"
+import type { DmuxPane, NewPaneInput, SidebarProject } from "../types.js"
 import type { TrackProjectActivity } from "../types/activity.js"
 import { StateManager } from "../shared/StateManager.js"
 import { TmuxService } from "../services/TmuxService.js"
@@ -27,6 +27,11 @@ import type { PopupManager } from "../services/PopupManager.js"
 import { getPaneProjectName, getPaneProjectRoot } from "../utils/paneProject.js"
 import { getPaneDisplayName } from "../utils/paneTitle.js"
 import {
+  getFallbackPaneAfterHide,
+  getPresentationTargetPane,
+  resolvePresentationMode,
+} from "../utils/presentationMode.js"
+import {
   buildProjectActionLayout,
   getProjectActionByIndex,
   type ProjectActionItem,
@@ -41,15 +46,29 @@ import {
 import { buildFilesOnlyCommand } from "../utils/dmuxCommand.js"
 import {
   addSidebarProject,
+  getAutoSidebarProjectColorTheme,
+  getSidebarProjectColorTheme,
   hasSidebarProject,
   removeSidebarProject,
+  setSidebarProjectColorThemeSettingValue,
   sameSidebarProjectRoot,
+  SIDEBAR_PROJECT_COLOR_THEME_SETTING_KEY,
 } from "../utils/sidebarProjects.js"
 import {
   drainRemotePaneActions,
   getCurrentTmuxSessionName,
   type RemotePaneActionShortcut,
 } from "../utils/remotePaneActions.js"
+import {
+  DEFAULT_COLOR_THEME_SETTING_KEY,
+  SETTING_DEFINITIONS,
+} from "../utils/settingsManager.js"
+import {
+  resolveProjectColorTheme,
+  syncPaneColorThemes,
+} from "../utils/paneColors.js"
+import { syncWelcomePaneVisibility } from "../utils/welcomePaneManager.js"
+import type { SettingsPopupUpdate } from "../services/PopupManager.js"
 
 // Type for the action system returned by useActionSystem hook
 interface ActionSystem {
@@ -85,11 +104,28 @@ interface UseInputHandlingParams {
   setShowFileCopyPrompt: (value: boolean) => void
   currentCommandType: "test" | "dev" | null
   setCurrentCommandType: (value: "test" | "dev" | null) => void
+  showInlineSettings: boolean
+  setShowInlineSettings: (value: boolean) => void
+  inlineSettingsIndex: number
+  setInlineSettingsIndex: (value: number) => void
+  inlineSettingsMode: "list" | "edit" | "scope"
+  setInlineSettingsMode: (value: "list" | "edit" | "scope") => void
+  inlineSettingsEditingKey: keyof import("../types.js").DmuxSettings | undefined
+  setInlineSettingsEditingKey: (value: keyof import("../types.js").DmuxSettings | undefined) => void
+  inlineSettingsEditingValueIndex: number
+  setInlineSettingsEditingValueIndex: (value: number) => void
+  inlineSettingsScopeIndex: number
+  setInlineSettingsScopeIndex: (value: number) => void
+  inlineSettingsProjectRoot: string | undefined
+  setInlineSettingsProjectRoot: (value: string | undefined) => void
+  resetInlineSettings: () => void
 
   // Settings
   projectSettings: any
   saveSettings: (settings: any) => Promise<void>
   settingsManager: any
+  getSettingsManagerForProjectRoot: (projectRoot: string) => any
+  refreshDmuxSettings?: (projectRoot?: string) => void
 
   // Services
   popupManager: PopupManager
@@ -101,7 +137,7 @@ interface UseInputHandlingParams {
   setStatusMessage: (message: string) => void
   copyNonGitFiles: (worktreePath: string, sourceProjectRoot?: string) => Promise<void>
   runCommandInternal: (type: "test" | "dev", pane: DmuxPane) => Promise<void>
-  handlePaneCreationWithAgent: (prompt: string, targetProjectRoot?: string) => Promise<void>
+  handlePaneCreationWithAgent: (paneInput: NewPaneInput, targetProjectRoot?: string) => Promise<any>
   handleCreateChildWorktree: (pane: DmuxPane) => Promise<void>
   handleReopenWorktree: (
     candidate: ResumableBranchCandidate,
@@ -115,12 +151,14 @@ interface UseInputHandlingParams {
   cleanExit: () => void
 
   // Agent info
-  availableAgents: AgentName[]
+  getAvailableAgentsForProject: (projectRoot?: string) => AgentName[]
   panesFile: string
 
   // Project info
   projectRoot: string
+  activeProjectRoot?: string
   projectActionItems: ProjectActionItem[]
+  presentationMode: "grid" | "focus"
 
   // Navigation
   findCardInDirection: (currentIndex: number, direction: "up" | "down" | "left" | "right") => number | null
@@ -152,9 +190,26 @@ export function useInputHandling(params: UseInputHandlingParams) {
     setShowFileCopyPrompt,
     currentCommandType,
     setCurrentCommandType,
+    showInlineSettings,
+    setShowInlineSettings,
+    inlineSettingsIndex,
+    setInlineSettingsIndex,
+    inlineSettingsMode,
+    setInlineSettingsMode,
+    inlineSettingsEditingKey,
+    setInlineSettingsEditingKey,
+    inlineSettingsEditingValueIndex,
+    setInlineSettingsEditingValueIndex,
+    inlineSettingsScopeIndex,
+    setInlineSettingsScopeIndex,
+    inlineSettingsProjectRoot,
+    setInlineSettingsProjectRoot,
+    resetInlineSettings,
     projectSettings,
     saveSettings,
     settingsManager,
+    getSettingsManagerForProjectRoot,
+    refreshDmuxSettings = () => {},
     popupManager,
     actionSystem,
     controlPaneId,
@@ -171,14 +226,33 @@ export function useInputHandling(params: UseInputHandlingParams) {
     saveSidebarProjects,
     loadPanes,
     cleanExit,
-    availableAgents,
+    getAvailableAgentsForProject,
     panesFile,
     projectRoot,
+    activeProjectRoot,
     projectActionItems,
+    presentationMode,
     findCardInDirection,
   } = params
 
+  const effectivePresentationMode = resolvePresentationMode(presentationMode)
+  const selectedPane = selectedIndex < panes.length ? panes[selectedIndex] : undefined
+  const selectedProjectRoot = selectedPane
+    ? getPaneProjectRoot(selectedPane, projectRoot)
+    : getProjectActionByIndex(projectActionItems, selectedIndex)?.projectRoot || projectRoot
+  const effectiveActiveProjectRoot = activeProjectRoot || selectedProjectRoot
+
   const layoutRefreshDebounceRef = useRef<NodeJS.Timeout | null>(null)
+  const presentationSyncKeyRef = useRef("")
+  const pendingPaneActivationRef = useRef<{
+    dmuxPaneId?: string
+    paneId?: string
+    expectedIndex?: number
+  } | null>(null)
+  const paneVisibilitySignature = useMemo(
+    () => panes.map((pane) => `${pane.paneId}:${pane.hidden ? "1" : "0"}`).join("|"),
+    [panes]
+  )
 
   useEffect(() => {
     return () => {
@@ -210,9 +284,28 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }
 
   const handleCreateAgentPane = async (targetProjectRoot: string) => {
-    const promptValue = await popupManager.launchNewPanePopup(targetProjectRoot)
-    if (promptValue) {
-      await handlePaneCreationWithAgent(promptValue, targetProjectRoot)
+    const paneInput = await popupManager.launchNewPanePopup(targetProjectRoot)
+    if (paneInput) {
+      const created = await handlePaneCreationWithAgent(paneInput, targetProjectRoot)
+      if (Array.isArray(created) && created.length > 0) {
+        const createdPane = created[created.length - 1]
+        pendingPaneActivationRef.current = {
+          dmuxPaneId: createdPane?.id,
+          paneId: createdPane?.paneId,
+          expectedIndex: panes.length + created.length - 1,
+        }
+      } else if (typeof created === "number" && created > 0) {
+        pendingPaneActivationRef.current = {
+          expectedIndex: panes.length + created - 1,
+        }
+      } else if (created && typeof created === "object") {
+        const createdPane = Array.isArray(created) ? created[created.length - 1] : created
+        pendingPaneActivationRef.current = {
+          dmuxPaneId: createdPane?.id,
+          paneId: createdPane?.paneId,
+          expectedIndex: panes.length,
+        }
+      }
     }
   }
 
@@ -233,6 +326,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
         getNextDmuxId(panes)
       )
       shellPane.projectRoot = targetProjectRoot
+      shellPane.projectName = path.basename(targetProjectRoot)
+      shellPane.colorTheme = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
       await savePanes([...panes, shellPane])
 
       setIsCreatingPane(false)
@@ -292,6 +387,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
         getNextDmuxId(panes)
       )
       shellPane.projectRoot = targetProjectRoot
+      shellPane.projectName = path.basename(targetProjectRoot)
+      shellPane.colorTheme = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
       await savePanes([...panes, shellPane])
 
       setStatusMessage(`Opened terminal in ${getPaneDisplayName(selectedPane)}`)
@@ -340,7 +437,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       const tmuxService = TmuxService.getInstance()
       const newPaneId = await tmuxService.splitPane({
         cwd: selectedPane.worktreePath,
-        command: buildFilesOnlyCommand(),
+        command: buildFilesOnlyCommand(projectRoot),
       })
 
       await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAY))
@@ -360,6 +457,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         paneId: newPaneId,
         projectRoot: targetProjectRoot,
         projectName: targetProjectName,
+        colorTheme: resolveProjectColorTheme(targetProjectRoot, sidebarProjects),
         type: "shell",
         shellType: "fb",
         browserPath: selectedPane.worktreePath,
@@ -395,10 +493,22 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
+    const resolveProjectTheme = (targetProjectRoot: string) =>
+      getSidebarProjectColorTheme(sidebarProjects, targetProjectRoot)
+      || getSettingsManagerForProjectRoot(targetProjectRoot).getSettings().colorTheme
+
     try {
       const { resolveProjectRootFromPath } = await import("../utils/projectRoot.js")
       const resolved = resolveProjectRootFromPath(requestedProjectPath, projectRoot)
-      const nextProjects = addSidebarProject(sidebarProjects, resolved)
+      const nextProjects = addSidebarProject(sidebarProjects, {
+        ...resolved,
+        colorTheme: getAutoSidebarProjectColorTheme(
+          sidebarProjects,
+          resolved,
+          resolveProjectTheme
+        ),
+        colorThemeSource: 'auto',
+      })
 
       if (nextProjects === sidebarProjects) {
         selectProjectAction(resolved.projectRoot)
@@ -445,7 +555,15 @@ export function useInputHandling(params: UseInputHandlingParams) {
       try {
         setStatusMessage(`Creating ${path.basename(target.absolutePath) || "project"}...`)
         const createdProject = createEmptyGitProject(requestedProjectPath, projectRoot)
-        const nextProjects = addSidebarProject(sidebarProjects, createdProject)
+        const nextProjects = addSidebarProject(sidebarProjects, {
+          ...createdProject,
+          colorTheme: getAutoSidebarProjectColorTheme(
+            sidebarProjects,
+            createdProject,
+            resolveProjectTheme
+          ),
+          colorThemeSource: 'auto',
+        })
 
         if (nextProjects === sidebarProjects) {
           selectProjectAction(createdProject.projectRoot)
@@ -495,13 +613,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }
 
   const getActiveProjectRoot = (): string => {
-    const selectedPane = selectedIndex < panes.length ? panes[selectedIndex] : undefined
-    if (selectedPane) {
-      return getPaneProjectRoot(selectedPane, projectRoot)
-    }
-
-    const selectedAction = getProjectActionByIndex(projectActionItems, selectedIndex)
-    return selectedAction?.projectRoot || projectRoot
+    return effectiveActiveProjectRoot
   }
 
   const launchHooksAuthoringSession = async (targetProjectRoot?: string) => {
@@ -511,7 +623,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     const prompt =
       "I would like to create or edit my dmux hooks in .dmux-hooks. Please read AGENTS.md or CLAUDE.md first, then ask me what I want to create or modify."
-    await handlePaneCreationWithAgent(prompt, hooksProjectRoot)
+    await handlePaneCreationWithAgent({ prompt }, hooksProjectRoot)
   }
 
   const refreshPaneLayout = async () => {
@@ -523,6 +635,25 @@ export function useInputHandling(params: UseInputHandlingParams) {
       forceLayout: true,
       suppressLayoutLogs: true,
     })
+  }
+
+  const syncWelcomePaneForPanes = async (
+    nextPanes: DmuxPane[],
+    targetProjectRoot: string = getActiveProjectRoot()
+  ) => {
+    if (!controlPaneId) {
+      return
+    }
+
+    const hasVisiblePanes = nextPanes.some((pane) => !pane.hidden)
+    const themeName = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
+
+    await syncWelcomePaneVisibility(
+      projectRoot,
+      controlPaneId,
+      !hasVisiblePanes,
+      themeName
+    )
   }
 
   const getPaneShowTarget = async (excludedPaneId?: string): Promise<string | null> => {
@@ -543,6 +674,473 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return null
     }
   }
+
+  const getSettingsUpdateManager = (
+    targetProjectRoot: string,
+    scope: "global" | "project" | "session"
+  ) => {
+    if (scope === "global") {
+      return settingsManager
+    }
+
+    return getSettingsManagerForProjectRoot(targetProjectRoot)
+  }
+
+  const openInlineSettingsForProject = (targetProjectRoot: string) => {
+    setInlineSettingsProjectRoot(targetProjectRoot)
+    setShowInlineSettings(true)
+  }
+
+  const getPresentationPane = (preferredPane?: DmuxPane) => {
+    return preferredPane || getPresentationTargetPane(panes, selectedIndex)
+  }
+
+  const revealAllHiddenPanes = async () => {
+    const hiddenPanes = panes.filter((pane) => pane.hidden)
+    if (hiddenPanes.length === 0) {
+      return
+    }
+
+    const tmuxService = TmuxService.getInstance()
+    for (const pane of hiddenPanes) {
+      const targetPaneId = await getPaneShowTarget(pane.paneId)
+      if (!targetPaneId) {
+        throw new Error("No target pane is available to show hidden panes")
+      }
+      await tmuxService.joinPaneToTarget(pane.paneId, targetPaneId)
+    }
+
+    await savePanes(panes.map((pane) => ({ ...pane, hidden: false })))
+    await refreshPaneLayout()
+    await loadPanes()
+  }
+
+  const isolatePane = async (
+    targetPane: DmuxPane,
+    options: {
+      activatePane?: boolean
+      suppressStatus?: boolean
+    } = {}
+  ) => {
+    const tmuxService = TmuxService.getInstance()
+    const resolvedTargetPane = panes.find((pane) => pane.id === targetPane.id) || targetPane
+    let changed = false
+
+    if (resolvedTargetPane.hidden) {
+      const targetPaneId = await getPaneShowTarget(resolvedTargetPane.paneId)
+      if (!targetPaneId) {
+        throw new Error("No target pane is available to show this pane")
+      }
+      await tmuxService.joinPaneToTarget(resolvedTargetPane.paneId, targetPaneId)
+      changed = true
+    }
+
+    const otherVisiblePanes = panes.filter(
+      (pane) => pane.id !== resolvedTargetPane.id && !pane.hidden
+    )
+    for (const pane of otherVisiblePanes) {
+      await tmuxService.breakPaneToWindow(pane.paneId, `dmux-hidden-${pane.id}`)
+      changed = true
+    }
+
+    if (changed) {
+      await savePanes(
+        panes.map((pane) => {
+          if (pane.id === resolvedTargetPane.id) {
+            return { ...pane, hidden: false }
+          }
+          if (!pane.hidden) {
+            return { ...pane, hidden: true }
+          }
+          return pane
+        })
+      )
+      await refreshPaneLayout()
+      await loadPanes()
+    }
+
+    const targetIndex = panes.findIndex((pane) => pane.id === resolvedTargetPane.id)
+    if (targetIndex >= 0) {
+      setSelectedIndex(targetIndex)
+    }
+
+    if (options.activatePane) {
+      await tmuxService.selectPane(resolvedTargetPane.paneId)
+    }
+
+    if (!options.suppressStatus) {
+      setStatusMessage(`Viewing ${getPaneDisplayName(resolvedTargetPane)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    }
+  }
+
+  const applyPresentationModeChange = async (
+    nextMode: "grid" | "focus",
+    options: {
+      persist?: boolean
+      scope?: "global" | "project"
+      preferredPane?: DmuxPane
+      activateTargetPane?: boolean
+      targetProjectRoot?: string
+    } = {}
+  ): Promise<boolean> => {
+    const resolvedNextMode = resolvePresentationMode(nextMode)
+    const tmuxService = TmuxService.getInstance()
+    const targetPane = getPresentationPane(options.preferredPane)
+    const scope = options.scope || "global"
+    const targetProjectRoot = options.targetProjectRoot || getActiveProjectRoot()
+    const persistenceManager = getSettingsUpdateManager(targetProjectRoot, scope)
+    const shouldApplyLiveMode =
+      scope === "global" || sameSidebarProjectRoot(targetProjectRoot, projectRoot)
+    const previousMode = resolvePresentationMode(presentationMode)
+    const previousPaneSnapshot = panes.map((pane) => ({ ...pane }))
+
+    const applyPresentationModeLayout = async (mode: "grid" | "focus") => {
+      if (mode === "grid") {
+        await revealAllHiddenPanes()
+        if (controlPaneId) {
+          await tmuxService.selectPane(controlPaneId)
+        }
+        presentationSyncKeyRef.current = ""
+        return
+      }
+
+      if (!targetPane) {
+        if (controlPaneId) {
+          await tmuxService.selectPane(controlPaneId)
+        }
+        presentationSyncKeyRef.current = ""
+        return
+      }
+
+      await isolatePane(targetPane, {
+        activatePane: options.activateTargetPane === true,
+        suppressStatus: options.activateTargetPane !== true,
+      })
+
+      if (options.activateTargetPane !== true && controlPaneId) {
+        await tmuxService.selectPane(controlPaneId)
+      }
+
+      presentationSyncKeyRef.current = ""
+    }
+
+    const rollbackLivePresentationModeChange = async () => {
+      if (!shouldApplyLiveMode || resolvedNextMode === previousMode) {
+        return
+      }
+
+      if (resolvedNextMode === "grid") {
+        const panesToHide = previousPaneSnapshot.filter((pane) => pane.hidden)
+        for (const pane of panesToHide) {
+          await tmuxService.breakPaneToWindow(pane.paneId, `dmux-hidden-${pane.id}`)
+        }
+      } else {
+        const joinTargetPaneId =
+          targetPane?.paneId
+          || previousPaneSnapshot.find((pane) => !pane.hidden)?.paneId
+          || controlPaneId
+          || null
+        const panesToReveal = previousPaneSnapshot.filter(
+          (pane) => !pane.hidden && pane.id !== targetPane?.id
+        )
+
+        for (const pane of panesToReveal) {
+          if (!joinTargetPaneId) {
+            throw new Error("No target pane is available to restore the previous layout")
+          }
+          await tmuxService.joinPaneToTarget(pane.paneId, joinTargetPaneId)
+        }
+
+        if (targetPane) {
+          const snapshotTargetPane = previousPaneSnapshot.find((pane) => pane.id === targetPane.id)
+          if (snapshotTargetPane?.hidden) {
+            await tmuxService.breakPaneToWindow(targetPane.paneId, `dmux-hidden-${targetPane.id}`)
+          }
+        }
+      }
+
+      await savePanes(previousPaneSnapshot)
+      await refreshPaneLayout()
+      await loadPanes()
+
+      if (controlPaneId) {
+        await tmuxService.selectPane(controlPaneId)
+      }
+
+      presentationSyncKeyRef.current = ""
+    }
+
+    if (shouldApplyLiveMode) {
+      await applyPresentationModeLayout(resolvedNextMode)
+    }
+
+    if (!options.persist) {
+      return true
+    }
+
+    try {
+      persistenceManager.updateSetting("presentationMode", resolvedNextMode, scope)
+    } catch (error) {
+      try {
+        await rollbackLivePresentationModeChange()
+      } catch {
+        // best effort rollback only
+      }
+      throw error
+    }
+
+    return true
+  }
+
+  const applySettingsPopupUpdates = async (
+    updates: SettingsPopupUpdate[],
+    targetProjectRoot: string
+  ) => {
+    let savedCount = 0
+    let layoutBoundsUpdated = false
+    let lastScope: "global" | "project" | "session" | null = null
+    let themeSettingsChanged = false
+    let effectiveSidebarProjects = sidebarProjects
+    const resolveSavedProjectTheme = (projectRoot: string) =>
+      getSettingsManagerForProjectRoot(projectRoot).getSettings().colorTheme
+
+    for (const update of updates) {
+      if (update.scope === "session") {
+        if (update.key !== SIDEBAR_PROJECT_COLOR_THEME_SETTING_KEY) {
+          continue
+        }
+
+        const updatedProjects = setSidebarProjectColorThemeSettingValue(
+          effectiveSidebarProjects,
+          targetProjectRoot,
+          update.value,
+          resolveSavedProjectTheme
+        )
+        await saveSidebarProjects(updatedProjects)
+        effectiveSidebarProjects = updatedProjects
+        refreshDmuxSettings(targetProjectRoot)
+        savedCount += 1
+        lastScope = update.scope
+        themeSettingsChanged = true
+        continue
+      }
+
+      if (update.scope !== "global" && update.scope !== "project") {
+        continue
+      }
+
+      if (update.key === "presentationMode") {
+        await applyPresentationModeChange(
+          resolvePresentationMode(update.value),
+          {
+            persist: true,
+            scope: update.scope,
+            activateTargetPane: false,
+            targetProjectRoot,
+          }
+        )
+        refreshDmuxSettings(targetProjectRoot)
+        savedCount += 1
+        lastScope = update.scope
+        continue
+      }
+
+      const updateManager = getSettingsUpdateManager(targetProjectRoot, update.scope)
+      const resolvedUpdateKey = update.key === DEFAULT_COLOR_THEME_SETTING_KEY
+        ? "colorTheme"
+        : update.key
+
+      updateManager.updateSetting(
+        resolvedUpdateKey as keyof import("../types.js").DmuxSettings,
+        update.value,
+        update.scope
+      )
+      refreshDmuxSettings(targetProjectRoot)
+      savedCount += 1
+      lastScope = update.scope
+      if (resolvedUpdateKey === "colorTheme") {
+        themeSettingsChanged = true
+      }
+
+      if (resolvedUpdateKey === "minPaneWidth" || resolvedUpdateKey === "maxPaneWidth") {
+        layoutBoundsUpdated = true
+      }
+    }
+
+    if (themeSettingsChanged) {
+      const syncedPanes = syncPaneColorThemes(
+        panes,
+        effectiveSidebarProjects,
+        projectRoot
+      )
+      if (syncedPanes !== panes) {
+        await savePanes(syncedPanes)
+      }
+    }
+
+    if (layoutBoundsUpdated) {
+      queueLayoutRefresh()
+    }
+
+    if (savedCount > 0) {
+      const statusMessage =
+        savedCount === 1
+          ? `Setting saved (${lastScope})`
+          : `${savedCount} settings saved`
+      setStatusMessage(statusMessage)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    }
+  }
+
+  const handleSettingsPopupResult = async (
+    result: { kind: "completed"; updates: SettingsPopupUpdate[] } | { kind: "cancelled" } | { kind: "unavailable"; reason: "unsupported" | "error" },
+    targetProjectRoot: string
+  ) => {
+    if (result.kind === "cancelled") {
+      return
+    }
+
+    if (result.kind === "unavailable") {
+      openInlineSettingsForProject(targetProjectRoot)
+      return
+    }
+
+    try {
+      await applySettingsPopupUpdates(result.updates, targetProjectRoot)
+    } catch (error: any) {
+      setStatusMessage(`Failed to save setting: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    }
+  }
+
+  const closeInlineSettings = () => {
+    setShowInlineSettings(false)
+    setInlineSettingsMode("list")
+    setInlineSettingsIndex(0)
+    setInlineSettingsEditingKey(undefined)
+    setInlineSettingsEditingValueIndex(0)
+    setInlineSettingsScopeIndex(0)
+    setInlineSettingsProjectRoot(undefined)
+  }
+
+  const openSettingsPopupForProjectRoot = async (targetProjectRoot: string) => {
+    const result = await popupManager.launchSettingsPopup(async () => {
+      await popupManager.launchHooksPopup(async () => {
+        await launchHooksAuthoringSession(targetProjectRoot)
+      }, targetProjectRoot)
+    }, targetProjectRoot)
+
+    await handleSettingsPopupResult(result, targetProjectRoot)
+  }
+
+  const handleInlineSettingsSubmit = async () => {
+    const targetProjectRoot = inlineSettingsProjectRoot || getActiveProjectRoot()
+    const definition = inlineSettingsEditingKey
+      ? SETTING_DEFINITIONS.find((entry) => entry.key === inlineSettingsEditingKey)
+      : undefined
+
+    if (!definition) {
+      resetInlineSettings()
+      return
+    }
+
+    if (definition.type === "action") {
+      closeInlineSettings()
+      return
+    }
+
+    let resolvedValue: unknown
+    if (definition.type === "boolean") {
+      resolvedValue = inlineSettingsEditingValueIndex !== 0
+    } else if (definition.type === "select") {
+      const options = definition.options || []
+      if (options.length === 0) {
+        setStatusMessage(`${definition.label} has no available options`)
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+        closeInlineSettings()
+        return
+      }
+
+      const selectedOption = options[inlineSettingsEditingValueIndex] || options[0]
+      resolvedValue = selectedOption.value
+    } else if (definition.type === "number") {
+      resolvedValue = inlineSettingsEditingValueIndex
+    } else {
+      resolvedValue = ""
+    }
+
+    const scope = inlineSettingsScopeIndex === 1 ? "project" : "global"
+    const updateManager = getSettingsUpdateManager(targetProjectRoot, scope)
+
+    updateManager.updateSetting(
+      inlineSettingsEditingKey,
+      resolvedValue as any,
+      scope
+    )
+
+    refreshDmuxSettings(targetProjectRoot)
+    setStatusMessage(`Setting saved (${scope})`)
+    setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    closeInlineSettings()
+  }
+
+  useEffect(() => {
+    if (isLoading) {
+      return
+    }
+
+    const pendingActivation = pendingPaneActivationRef.current
+    if (pendingActivation) {
+      const targetPane =
+        panes.find((pane) => pane.id === pendingActivation.dmuxPaneId)
+        || panes.find((pane) => pane.paneId === pendingActivation.paneId)
+        || (pendingActivation.expectedIndex !== undefined
+          ? panes[pendingActivation.expectedIndex]
+          : undefined)
+
+      if (targetPane) {
+        pendingPaneActivationRef.current = null
+        presentationSyncKeyRef.current = ""
+
+        void isolatePane(targetPane, {
+          activatePane: true,
+          suppressStatus: true,
+        }).catch((error: any) => {
+          setStatusMessage(`Failed to activate created pane: ${error?.message || String(error)}`)
+          setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+        })
+        return
+      }
+    }
+
+    const targetPane = getPresentationPane()
+    const syncKey = `${effectivePresentationMode}:${targetPane?.id || "none"}:${paneVisibilitySignature}`
+    if (presentationSyncKeyRef.current === syncKey) {
+      return
+    }
+    presentationSyncKeyRef.current = syncKey
+
+    if (effectivePresentationMode === "focus") {
+      const visiblePaneCount = panes.filter((pane) => !pane.hidden).length
+      if (visiblePaneCount === 0) {
+        return
+      }
+
+      const selectedPane = panes[selectedIndex]
+      if (visiblePaneCount > 1 || targetPane?.hidden || selectedPane?.hidden) {
+        if (targetPane) {
+          void isolatePane(targetPane, { suppressStatus: true })
+        }
+      }
+    }
+  }, [
+    effectivePresentationMode,
+    isLoading,
+    paneVisibilitySignature,
+    panes,
+    selectedIndex,
+  ])
 
   const togglePaneVisibility = async (selectedPane: DmuxPane) => {
     const tmuxService = TmuxService.getInstance()
@@ -568,15 +1166,27 @@ export function useInputHandling(params: UseInputHandlingParams) {
         )
       }
 
-      await savePanes(
-        panes.map((pane) =>
-          pane.id === selectedPane.id
-            ? { ...pane, hidden: !selectedPane.hidden }
-            : pane
-        )
+      const updatedPanes = panes.map((pane) =>
+        pane.id === selectedPane.id
+          ? { ...pane, hidden: !selectedPane.hidden }
+          : pane
+      )
+
+      await savePanes(updatedPanes)
+      await syncWelcomePaneForPanes(
+        updatedPanes,
+        getPaneProjectRoot(selectedPane, projectRoot)
       )
       await refreshPaneLayout()
       await loadPanes()
+
+      if (
+        effectivePresentationMode === "focus"
+        && !updatedPanes.some((pane) => !pane.hidden)
+        && controlPaneId
+      ) {
+        await tmuxService.selectPane(controlPaneId)
+      }
 
       setStatusMessage(
         selectedPane.hidden
@@ -635,10 +1245,14 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
 
       const targetPaneIds = new Set(targetPanes.map((pane) => pane.id))
-      await savePanes(
-        panes.map((pane) =>
-          targetPaneIds.has(pane.id) ? { ...pane, hidden } : pane
-        )
+      const updatedPanes = panes.map((pane) =>
+        targetPaneIds.has(pane.id) ? { ...pane, hidden } : pane
+      )
+
+      await savePanes(updatedPanes)
+      await syncWelcomePaneForPanes(
+        updatedPanes,
+        getPaneProjectRoot(selectedPane, projectRoot)
       )
       await refreshPaneLayout()
       await loadPanes()
@@ -719,17 +1333,18 @@ export function useInputHandling(params: UseInputHandlingParams) {
       const shownPaneIds = new Set(panesToShow.map((pane) => pane.id))
       const hiddenPaneIds = new Set(panesToHide.map((pane) => pane.id))
 
-      await savePanes(
-        panes.map((pane) => {
-          if (shownPaneIds.has(pane.id)) {
-            return { ...pane, hidden: false }
-          }
-          if (hiddenPaneIds.has(pane.id)) {
-            return { ...pane, hidden: true }
-          }
-          return pane
-        })
-      )
+      const updatedPanes = panes.map((pane) => {
+        if (shownPaneIds.has(pane.id)) {
+          return { ...pane, hidden: false }
+        }
+        if (hiddenPaneIds.has(pane.id)) {
+          return { ...pane, hidden: true }
+        }
+        return pane
+      })
+
+      await savePanes(updatedPanes)
+      await syncWelcomePaneForPanes(updatedPanes, targetProjectRoot)
       await refreshPaneLayout()
       await loadPanes()
 
@@ -753,7 +1368,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
     pane: DmuxPane,
     options: { anchorToPane?: boolean } = {}
   ) => {
-    const actionId = await popupManager.launchKebabMenuPopup(
+    const launchKebabMenuPopup = (popupManager as any).launchKebabMenuPopup
+    if (typeof launchKebabMenuPopup !== "function") {
+      return
+    }
+
+    const actionId = await launchKebabMenuPopup(
       pane,
       panes,
       options
@@ -835,12 +1455,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     let selectedAgents: AgentName[] = []
-    if (availableAgents.length === 0) {
+    const targetAvailableAgents = getAvailableAgentsForProject(targetProjectRoot)
+    if (targetAvailableAgents.length === 0) {
       setStatusMessage("No agents available")
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       return
-    } else if (availableAgents.length === 1) {
-      selectedAgents = [availableAgents[0]]
+    } else if (targetAvailableAgents.length === 1) {
+      selectedAgents = [targetAvailableAgents[0]]
     } else {
       const agents = await popupManager.launchAgentChoicePopup(targetProjectRoot)
       if (agents === null) {
@@ -855,8 +1476,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     // Prompt input
-    const promptValue = await popupManager.launchNewPanePopup(targetProjectRoot)
-    if (!promptValue) return
+    const promptInput = await popupManager.launchNewPanePopup(
+      targetProjectRoot,
+      { allowGitOptions: false }
+    )
+    if (!promptInput) return
 
     try {
       setIsCreatingPane(true)
@@ -872,12 +1496,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
       for (const agent of selectedAgents) {
         try {
-          const result = await attachAgentToWorktree({
-            targetPane: selectedPane,
-            prompt: promptValue,
-            agent,
-            existingPanes: [...panes, ...createdPanes],
-            sessionProjectRoot: projectRoot,
+            const result = await attachAgentToWorktree({
+              targetPane: selectedPane,
+              prompt: promptInput.prompt,
+              agent,
+              existingPanes: [...panes, ...createdPanes],
+              sessionProjectRoot: projectRoot,
             sessionConfigPath: panesFile,
           })
           createdPanes.push(result.pane)
@@ -924,6 +1548,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     || isLoading
     || showFileCopyPrompt
     || showCommandPrompt !== null
+    || showInlineSettings
 
   const reopenClosedWorktreesInProject = async (targetProjectRoot: string) => {
     const activeSlugs = panes
@@ -932,7 +1557,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const popupState = {
       includeWorktrees: true,
       includeLocalBranches: true,
-      includeRemoteBranches: false,
+      includeRemoteBranches: true,
       remoteLoaded: false,
       filterQuery: "",
     }
@@ -1016,6 +1641,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
           `Jumping to pane: ${getPaneDisplayName(selectedPane)}`
         )
         setTimeout(() => StateManager.getInstance().setDebugMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+        if (effectivePresentationMode === "focus") {
+          await TmuxService.getInstance().selectPane(selectedPane.paneId)
+          return
+        }
         await actionSystem.executeAction(PaneAction.VIEW, selectedPane)
         return
       case "x":
@@ -1051,6 +1680,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
         const paneIndex = panes.findIndex((pane) => pane.paneId === action.targetPaneId)
         if (paneIndex === -1) {
+          if (action.shortcut === "m") {
+            await openSettingsPopupForProjectRoot(getActiveProjectRoot())
+            continue
+          }
+
           setStatusMessage(`Focused pane is not managed by dmux: ${action.targetPaneId}`)
           setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
           continue
@@ -1224,6 +1858,20 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
+    if (showInlineSettings) {
+      if (key.escape) {
+        closeInlineSettings()
+        return
+      }
+
+      if (key.return) {
+        await handleInlineSettingsSubmit()
+        return
+      }
+
+      return
+    }
+
     // Handle directional navigation with spatial awareness based on card grid layout
     if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
       let targetIndex: number | null = null
@@ -1251,62 +1899,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await executePaneShortcut(input as RemotePaneActionShortcut, panes[selectedIndex])
       return
     } else if (input === "s") {
-      // Open settings popup
-      const result = await popupManager.launchSettingsPopup(async () => {
-        // Launch hooks popup
-        await popupManager.launchHooksPopup(async () => {
-          await launchHooksAuthoringSession()
-        }, getActiveProjectRoot())
-      }, getActiveProjectRoot())
-      if (result) {
-        try {
-          const updates = Array.isArray((result as any).updates)
-            ? (result as any).updates
-            : [result]
-
-          let savedCount = 0
-          let layoutBoundsUpdated = false
-          let lastScope: "global" | "project" | null = null
-
-          for (const update of updates) {
-            if (
-              !update
-              || typeof update.key !== "string"
-              || (update.scope !== "global" && update.scope !== "project")
-            ) {
-              continue
-            }
-
-            settingsManager.updateSetting(
-              update.key as keyof import("../types.js").DmuxSettings,
-              update.value,
-              update.scope
-            )
-            savedCount += 1
-            lastScope = update.scope
-
-            if (update.key === "minPaneWidth" || update.key === "maxPaneWidth") {
-              layoutBoundsUpdated = true
-            }
-          }
-
-          if (layoutBoundsUpdated) {
-            queueLayoutRefresh()
-          }
-
-          if (savedCount > 0) {
-            const statusMessage =
-              savedCount === 1
-                ? `Setting saved (${lastScope})`
-                : `${savedCount} settings saved`
-            setStatusMessage(statusMessage)
-            setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
-          }
-        } catch (error: any) {
-          setStatusMessage(`Failed to save setting: ${error?.message || String(error)}`)
-          setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
-        }
-      }
+      await openSettingsPopupForProjectRoot(getActiveProjectRoot())
     } else if (input === "l") {
       // Open logs popup
       await popupManager.launchLogsPopup(getActiveProjectRoot())

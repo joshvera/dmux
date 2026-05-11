@@ -8,6 +8,7 @@ import type { DmuxPane } from '../types.js';
 import { LogService } from '../services/LogService.js';
 import { TmuxService } from '../services/TmuxService.js';
 import { resolveProjectRootFromPath } from './projectRoot.js';
+import { DMUX_BOOTSTRAP_PANE_TITLE_PREFIX } from './paneBootstrapConfig.js';
 
 /**
  * Detects the shell type running in a tmux pane
@@ -120,6 +121,9 @@ export async function getUntrackedPanes(
 
       // CRITICAL: Skip internal dmux panes by title
       if (title === 'dmux-spacer') {
+        continue;
+      }
+      if (title && title.startsWith(DMUX_BOOTSTRAP_PANE_TITLE_PREFIX)) {
         continue;
       }
       if (title && title.startsWith('dmux v')) {

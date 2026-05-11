@@ -98,7 +98,10 @@ describe('resumeBranches', () => {
     fs.rmSync(rootRepo, { recursive: true, force: true });
   });
 
-  it('dedupes orphaned worktrees with local and remote branches across child repos', async () => {
+  it('fetches remotes before deduping orphaned worktrees with local and remote branches', async () => {
+    let rootRemoteFetched = false;
+    let childRemoteFetched = false;
+
     installGitCommandMock((command: string, options?: { cwd?: string; encoding?: string }) => {
       const cwd = options?.cwd;
       const encoding = options?.encoding;
@@ -144,11 +147,21 @@ describe('resumeBranches', () => {
         return output('child/local-only');
       }
 
+      if (command.includes("'fetch' '--prune' 'origin'")) {
+        if (cwd === rootRepo) {
+          rootRemoteFetched = true;
+        }
+        if (cwd === childRepo) {
+          childRemoteFetched = true;
+        }
+        return output('');
+      }
+
       if (cwd === rootRepo && command.includes("'for-each-ref' '--format=%(refname:short)' 'refs/remotes/origin'")) {
-        return output('origin/feature/reopen-me\norigin/feature/remote-only');
+        return output(rootRemoteFetched ? 'origin/feature/reopen-me\norigin/feature/remote-only' : '');
       }
       if (cwd === childRepo && command.includes("'for-each-ref' '--format=%(refname:short)' 'refs/remotes/origin'")) {
-        return output('origin/feature/remote-only\norigin/child/remote-child-only');
+        return output(childRemoteFetched ? 'origin/feature/remote-only\norigin/child/remote-child-only' : '');
       }
 
       return output('');
@@ -193,6 +206,14 @@ describe('resumeBranches', () => {
         }),
       ])
     );
+    expect(execSyncMock).toHaveBeenCalledWith(
+      expect.stringContaining("'fetch' '--prune' 'origin'"),
+      expect.objectContaining({ cwd: rootRepo, stdio: 'pipe' })
+    );
+    expect(execSyncMock).toHaveBeenCalledWith(
+      expect.stringContaining("'fetch' '--prune' 'origin'"),
+      expect.objectContaining({ cwd: childRepo, stdio: 'pipe' })
+    );
   });
 
   it('skips remote branch scans until remote sources are requested', async () => {
@@ -229,6 +250,9 @@ describe('resumeBranches', () => {
 
       if (command.includes("'for-each-ref' '--format=%(refname:short)' 'refs/remotes/origin'")) {
         throw new Error('remote branches should not be queried');
+      }
+      if (command.includes("'fetch' '--prune' 'origin'")) {
+        throw new Error('remote branches should not be fetched');
       }
 
       return output('');

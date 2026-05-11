@@ -1,51 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { execSync } from 'child_process';
-import fs from 'fs';
 import fsp from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { createHash } from 'crypto';
-
-function hasCmd(cmd: string): boolean {
-  try {
-    execSync(`command -v ${cmd}`, { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function hasTmux(): boolean {
-  return hasCmd('tmux');
-}
-
-function detectRunner(): { cmd: string; label: string } | null {
-  // Prefer built dist if available
-  const distPath = path.join(process.cwd(), 'dist', 'index.js');
-  if (fs.existsSync(distPath)) {
-    return { cmd: `node "${distPath}"`, label: 'node-dist' };
-  }
-  // Fallback to pnpm dev
-  if (hasCmd('pnpm')) {
-    return { cmd: 'pnpm dev', label: 'pnpm-dev' };
-  }
-  // Fallback to tsx if available globally
-  if (hasCmd('tsx')) {
-    const srcPath = path.join(process.cwd(), 'src', 'index.ts');
-    return { cmd: `tsx "${srcPath}"`, label: 'tsx-src' };
-  }
-  return null;
-}
-
-function computePanesFilePath(homeDir: string): string {
-  // Mirror logic in src/index.ts
-  const gitRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf-8', stdio: 'pipe' }).trim();
-  const projectName = path.basename(gitRoot);
-  const projectHash = createHash('md5').update(gitRoot).digest('hex').substring(0, 8);
-  const projectIdentifier = `${projectName}-${projectHash}`;
-  const dmuxDir = path.join(homeDir, '.dmux');
-  return path.join(dmuxDir, `${projectIdentifier}-panes.json`);
-}
+import {
+  computeLegacyPanesFilePath,
+  detectDmuxRunner,
+  hasCommand,
+} from './helpers/dmuxRuntimeHarness.js';
 
 async function poll<T>(fn: () => T | Promise<T>, predicate: (v: T) => boolean, timeoutMs = 15000, intervalMs = 200): Promise<T> {
   const start = Date.now();
@@ -58,9 +20,9 @@ async function poll<T>(fn: () => T | Promise<T>, predicate: (v: T) => boolean, t
 }
 
 // Only run if tmux and a runner are available
-const runner = detectRunner();
+const runner = detectDmuxRunner();
 const runE2E = process.env.DMUX_E2E === '1';
-const canRun = runE2E && hasTmux() && !!runner;
+const canRun = runE2E && hasCommand('tmux') && !!runner;
 
 describe.sequential('dmux e2e: create pane', () => {
   it.runIf(canRun)('starts dmux in tmux and initializes panes file', async () => {
@@ -70,7 +32,8 @@ describe.sequential('dmux e2e: create pane', () => {
 
     // Temp HOME to sandbox ~/.dmux writes
     const tmpHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'dmux-e2e-home-'));
-    const panesFile = computePanesFilePath(tmpHome);
+    const gitRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf-8', stdio: 'pipe' }).trim();
+    const panesFile = computeLegacyPanesFilePath(gitRoot, tmpHome);
 
     try {
       // Ensure clean start
