@@ -765,6 +765,152 @@ describe("useInputHandling focus mode", () => {
     unmount()
   })
 
+  it("preserves panes that appear after focus isolation starts", async () => {
+    const basePanes = [pane("1"), pane("2")]
+    const concurrentPane = pane("3", { prompt: "concurrent work" })
+    let latestPanes = basePanes
+    let savedPanes: DmuxPane[] = []
+    const popupManager = {
+      launchSettingsPopup: vi.fn(async () => ({
+        kind: "completed" as const,
+        updates: [{
+          key: "presentationMode",
+          value: "focus",
+          scope: "global" as const,
+        }],
+      })),
+    }
+    const settingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => "global"),
+      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+    }
+    tmuxServiceMock.breakPaneToWindow.mockImplementationOnce(async (paneId, windowName) => {
+      tmuxState.hiddenWindows.set(paneId, windowName)
+      latestPanes = [...basePanes, concurrentPane]
+    })
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={basePanes}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={settingsManager}
+        savePanes={async (nextPanes) => {
+          savedPanes = nextPanes
+        }}
+        getPanes={() => latestPanes}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("s")
+    await sleep(100)
+
+    expect(tmuxState.hiddenWindows).toEqual(new Map([
+      ["%2", "dmux-hidden-2"],
+    ]))
+    expect(savedPanes.map((entry) => entry.id)).toEqual(["1", "2", "3"])
+    expect(savedPanes.find((entry) => entry.id === "1")?.hidden).toBe(false)
+    expect(savedPanes.find((entry) => entry.id === "2")?.hidden).toBe(true)
+    expect(savedPanes.find((entry) => entry.id === "3")?.hidden).not.toBe(true)
+    expect(savedPanes.find((entry) => entry.id === "3")?.prompt).toBe("concurrent work")
+
+    unmount()
+  })
+
+  it("preserves latest panes when revealing a hidden grid pane", async () => {
+    const hiddenPane = pane("1", { hidden: true })
+    const visiblePane = pane("2")
+    const concurrentPane = pane("3", {
+      hidden: true,
+      prompt: "concurrent hidden pane",
+    })
+    const latestPanes = [hiddenPane, visiblePane, concurrentPane]
+    let savedPanes: DmuxPane[] = []
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[hiddenPane, visiblePane]}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={{}}
+        settingsManager={quietSettingsManager()}
+        savePanes={async (nextPanes) => {
+          savedPanes = nextPanes
+        }}
+        getPanes={() => latestPanes}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("\r")
+    await sleep(80)
+
+    expect(tmuxState.joins).toEqual([{ paneId: "%1", targetPaneId: "%2" }])
+    expect(savedPanes.map((entry) => entry.id)).toEqual(["1", "2", "3"])
+    expect(savedPanes.find((entry) => entry.id === "1")?.hidden).toBe(false)
+    expect(savedPanes.find((entry) => entry.id === "2")?.hidden).not.toBe(true)
+    expect(savedPanes.find((entry) => entry.id === "3")?.hidden).toBe(true)
+    expect(savedPanes.find((entry) => entry.id === "3")?.prompt).toBe("concurrent hidden pane")
+
+    unmount()
+  })
+
+  it("preserves latest panes when revealing all hidden panes", async () => {
+    const hiddenPane = pane("1", { hidden: true })
+    const visiblePane = pane("2")
+    const concurrentPane = pane("3", {
+      prompt: "concurrent visible pane",
+      type: "shell",
+      shellType: "fb",
+    })
+    const latestPanes = [hiddenPane, visiblePane, concurrentPane]
+    let savedPanes: DmuxPane[] = []
+    const popupManager = {
+      launchSettingsPopup: vi.fn(async () => ({
+        kind: "completed" as const,
+        updates: [{
+          key: "presentationMode",
+          value: "grid",
+          scope: "global" as const,
+        }],
+      })),
+    }
+    const settingsManager = {
+      updateSetting: vi.fn(),
+      getEffectiveScope: vi.fn(() => "global"),
+      getSettings: vi.fn(() => ({ presentationMode: "focus" })),
+    }
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[hiddenPane, visiblePane]}
+        presentationMode="focus"
+        popupManager={popupManager}
+        settingsManager={settingsManager}
+        savePanes={async (nextPanes) => {
+          savedPanes = nextPanes
+        }}
+        getPanes={() => latestPanes}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("s")
+    await sleep(100)
+
+    expect(tmuxState.joins).toEqual([{ paneId: "%1", targetPaneId: "%2" }])
+    expect(savedPanes.map((entry) => entry.id)).toEqual(["1", "2", "3"])
+    expect(savedPanes.find((entry) => entry.id === "1")?.hidden).toBe(false)
+    expect(savedPanes.find((entry) => entry.id === "2")?.hidden).not.toBe(true)
+    expect(savedPanes.find((entry) => entry.id === "3")?.hidden).not.toBe(true)
+    expect(savedPanes.find((entry) => entry.id === "3")?.prompt).toBe("concurrent visible pane")
+    expect(savedPanes.find((entry) => entry.id === "3")?.shellType).toBe("fb")
+
+    unmount()
+  })
+
   it("activates the selected pane in focus mode without zoom semantics", async () => {
     const { stdin, unmount } = render(
       <Harness

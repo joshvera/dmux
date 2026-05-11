@@ -247,8 +247,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
   } = params
 
   const effectivePresentationMode = resolvePresentationMode(presentationMode)
+  const getLatestPanes = (): DmuxPane[] => {
+    const latestPanes = getPanes()
+    return latestPanes.length > 0 ? latestPanes : panes
+  }
   const resolveLatestPane = (targetPane: DmuxPane): DmuxPane => {
-    return getPanes().find((pane) => pane.id === targetPane.id)
+    return getLatestPanes().find((pane) => pane.id === targetPane.id)
       || panes.find((pane) => pane.id === targetPane.id)
       || targetPane
   }
@@ -728,10 +732,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }
 
   const revealAllHiddenPanes = async () => {
-    const hiddenPanes = panes.filter((pane) => pane.hidden)
+    const hiddenPanes = getLatestPanes().filter((pane) => pane.hidden)
     if (hiddenPanes.length === 0) {
       return
     }
+    const revealedPaneIds = new Set(hiddenPanes.map((pane) => pane.id))
 
     const tmuxService = TmuxService.getInstance()
     for (const pane of hiddenPanes) {
@@ -742,7 +747,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await tmuxService.joinPaneToTarget(pane.paneId, targetPaneId)
     }
 
-    await savePanes(panes.map((pane) => ({ ...pane, hidden: false })))
+    await savePanes(
+      getLatestPanes().map((pane) =>
+        revealedPaneIds.has(pane.id)
+          ? { ...pane, hidden: false }
+          : pane
+      )
+    )
     await refreshPaneLayout()
     await loadPanes()
   }
@@ -767,21 +778,23 @@ export function useInputHandling(params: UseInputHandlingParams) {
       changed = true
     }
 
-    const otherVisiblePanes = panes.filter(
+    const otherVisiblePanes = getLatestPanes().filter(
       (pane) => pane.id !== resolvedTargetPane.id && !pane.hidden
     )
+    const hiddenPaneIds = new Set<string>()
     for (const pane of otherVisiblePanes) {
       await tmuxService.breakPaneToWindow(pane.paneId, `dmux-hidden-${pane.id}`)
+      hiddenPaneIds.add(pane.id)
       changed = true
     }
 
     if (changed) {
       await savePanes(
-        panes.map((pane) => {
+        getLatestPanes().map((pane) => {
           if (pane.id === resolvedTargetPane.id) {
             return { ...pane, hidden: false }
           }
-          if (!pane.hidden) {
+          if (hiddenPaneIds.has(pane.id)) {
             return { ...pane, hidden: true }
           }
           return pane
@@ -838,7 +851,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         targetPaneId
       )
 
-      const updatedPanes = panes.map((pane) =>
+      const updatedPanes = getLatestPanes().map((pane) =>
         pane.id === resolvedTargetPane.id
           ? { ...pane, hidden: false }
           : pane
