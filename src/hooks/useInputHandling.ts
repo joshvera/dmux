@@ -153,6 +153,7 @@ interface UseInputHandlingParams {
   sidebarProjects: SidebarProject[]
   saveSidebarProjects: (projects: SidebarProject[]) => Promise<SidebarProject[]>
   loadPanes: () => Promise<void>
+  getPanes?: () => DmuxPane[]
   cleanExit: () => void
 
   // Agent info
@@ -232,6 +233,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     sidebarProjects,
     saveSidebarProjects,
     loadPanes,
+    getPanes = () => panes,
     cleanExit,
     getAvailableAgentsForProject,
     panesFile,
@@ -243,6 +245,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
   } = params
 
   const effectivePresentationMode = resolvePresentationMode(presentationMode)
+  const resolveLatestPane = (targetPane: DmuxPane): DmuxPane => {
+    return getPanes().find((pane) => pane.id === targetPane.id)
+      || panes.find((pane) => pane.id === targetPane.id)
+      || targetPane
+  }
   const selectedPane = selectedIndex < panes.length ? panes[selectedIndex] : undefined
   const selectedProjectRoot = selectedPane
     ? getPaneProjectRoot(selectedPane, projectRoot)
@@ -746,7 +753,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } = {}
   ) => {
     const tmuxService = TmuxService.getInstance()
-    const resolvedTargetPane = panes.find((pane) => pane.id === targetPane.id) || targetPane
+    let resolvedTargetPane = resolveLatestPane(targetPane)
     let changed = false
 
     if (resolvedTargetPane.hidden) {
@@ -780,9 +787,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
       )
       await refreshPaneLayout()
       await loadPanes()
+      resolvedTargetPane = resolveLatestPane(resolvedTargetPane)
     }
 
-    const targetIndex = panes.findIndex((pane) => pane.id === resolvedTargetPane.id)
+    const latestPanes = getPanes()
+    const targetIndex = latestPanes.findIndex((pane) => pane.id === resolvedTargetPane.id)
     if (targetIndex >= 0) {
       setSelectedIndex(targetIndex)
     }
@@ -804,7 +813,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } = {}
   ) => {
     const tmuxService = TmuxService.getInstance()
-    const resolvedTargetPane = panes.find((pane) => pane.id === targetPane.id) || targetPane
+    let resolvedTargetPane = resolveLatestPane(targetPane)
 
     if (effectivePresentationMode === "focus") {
       await isolatePane(resolvedTargetPane, {
@@ -833,9 +842,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await savePanes(updatedPanes)
       await refreshPaneLayout()
       await loadPanes()
+      resolvedTargetPane = resolveLatestPane(resolvedTargetPane)
     }
 
-    const targetIndex = panes.findIndex((pane) => pane.id === resolvedTargetPane.id)
+    const latestPanes = getPanes()
+    const targetIndex = latestPanes.findIndex((pane) => pane.id === resolvedTargetPane.id)
     if (targetIndex >= 0) {
       setSelectedIndex(targetIndex)
     }

@@ -42,6 +42,34 @@ interface PaneLoadResult {
   hiddenStateChangedFromConfig: boolean;
 }
 
+interface PaneRuntimeSyncInput {
+  allPaneIds: string[];
+  titleToId: Map<string, string>;
+  currentWindowPaneIds: string[];
+}
+
+export function syncLoadedPaneStateFromTmux(
+  loadedPanes: DmuxPane[],
+  tmuxState: PaneRuntimeSyncInput,
+  projectRoot?: string
+): Pick<PaneLoadResult, 'panes' | 'hiddenStateChangedFromConfig'> {
+  const reboundBeforeHiddenSync = loadedPanes.map((pane) =>
+    rebindPaneByTitle(pane, tmuxState.titleToId, tmuxState.allPaneIds, projectRoot)
+  );
+  const panes = syncHiddenStateFromCurrentWindow(
+    reboundBeforeHiddenSync,
+    tmuxState.currentWindowPaneIds
+  );
+
+  return {
+    panes,
+    hiddenStateChangedFromConfig: havePaneHiddenStatesChanged(
+      reboundBeforeHiddenSync,
+      panes
+    ),
+  };
+}
+
 async function restoreAgentSessionForPane(
   tmuxService: TmuxService,
   pane: DmuxPane,
@@ -361,19 +389,15 @@ export async function loadAndProcessPanes(
 ): Promise<PaneLoadResult> {
   const loadedPanes = await loadPanesFromFile(panesFile);
   let { allPaneIds, titleToId, currentWindowPaneIds } = await fetchTmuxPaneIds();
-  let hiddenStateChangedFromConfig = false;
+  const projectRoot = path.dirname(path.dirname(panesFile));
 
-  // Attempt to rebind panes whose IDs changed by matching on their stable tmux title.
-  const reboundBeforeHiddenSync = loadedPanes.map((pane) =>
-    rebindPaneByTitle(pane, titleToId, allPaneIds)
-  );
-  let reboundPanes = syncHiddenStateFromCurrentWindow(
-    reboundBeforeHiddenSync,
-    currentWindowPaneIds
-  );
-  hiddenStateChangedFromConfig = havePaneHiddenStatesChanged(
-    reboundBeforeHiddenSync,
-    reboundPanes
+  let {
+    panes: reboundPanes,
+    hiddenStateChangedFromConfig,
+  } = syncLoadedPaneStateFromTmux(
+    loadedPanes,
+    { allPaneIds, titleToId, currentWindowPaneIds },
+    projectRoot
   );
 
   // CRITICAL FIX: On initial load, immediately filter out shell panes with stale IDs
@@ -438,21 +462,14 @@ export async function loadAndProcessPanes(
     titleToId = freshData.titleToId;
     currentWindowPaneIds = freshData.currentWindowPaneIds;
 
-    // Re-rebind after recreation
-    const reboundBeforePostRecreationHiddenSync = reboundPanes.map(p =>
-      rebindPaneByTitle(p, titleToId, allPaneIds)
-    );
-    const syncedPostRecreationPanes = syncHiddenStateFromCurrentWindow(
-      reboundBeforePostRecreationHiddenSync,
-      currentWindowPaneIds
+    const postRecreationSync = syncLoadedPaneStateFromTmux(
+      reboundPanes,
+      { allPaneIds, titleToId, currentWindowPaneIds },
+      projectRoot
     );
     hiddenStateChangedFromConfig =
-      hiddenStateChangedFromConfig ||
-      havePaneHiddenStatesChanged(
-        reboundBeforePostRecreationHiddenSync,
-        syncedPostRecreationPanes
-      );
-    reboundPanes = syncedPostRecreationPanes;
+      hiddenStateChangedFromConfig || postRecreationSync.hiddenStateChangedFromConfig;
+    reboundPanes = postRecreationSync.panes;
   }
 
   return { panes: reboundPanes, allPaneIds, titleToId, hiddenStateChangedFromConfig };

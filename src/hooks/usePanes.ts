@@ -318,6 +318,8 @@ export default function usePanes(
     });
   };
 
+  const getPanes = () => panesRef.current;
+
   // Initialize PaneEventService when session info is available
   useEffect(() => {
     if (!sessionName) return;
@@ -409,6 +411,7 @@ export default function usePanes(
     sidebarProjects,
     isLoading,
     loadPanes,
+    getPanes,
     savePanes,
     saveSidebarProjects,
     eventMode,
