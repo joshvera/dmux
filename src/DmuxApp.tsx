@@ -1311,7 +1311,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         const targetPane = panes.find(p => p.id === result.targetPaneId)
         if (targetPane) {
           try {
-            TmuxService.getInstance().selectPane(targetPane.paneId)
+            await TmuxService.getInstance().selectPane(targetPane.paneId)
           } catch {}
         }
       }

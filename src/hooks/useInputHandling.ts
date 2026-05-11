@@ -328,6 +328,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
       shellPane.projectRoot = targetProjectRoot
       shellPane.projectName = path.basename(targetProjectRoot)
       shellPane.colorTheme = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
+      pendingPaneActivationRef.current = {
+        dmuxPaneId: shellPane.id,
+        paneId: shellPane.paneId,
+      }
       await savePanes([...panes, shellPane])
 
       setIsCreatingPane(false)
@@ -389,6 +393,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
       shellPane.projectRoot = targetProjectRoot
       shellPane.projectName = path.basename(targetProjectRoot)
       shellPane.colorTheme = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
+      pendingPaneActivationRef.current = {
+        dmuxPaneId: shellPane.id,
+        paneId: shellPane.paneId,
+      }
       await savePanes([...panes, shellPane])
 
       setStatusMessage(`Opened terminal in ${getPaneDisplayName(selectedPane)}`)
@@ -412,12 +420,16 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     const existingBrowserPane = panes.find((pane) =>
-      pane.browserPath === selectedPane.worktreePath && !pane.hidden
+      pane.type === "shell" &&
+      pane.shellType === "fb" &&
+      pane.browserPath === selectedPane.worktreePath
     )
 
     if (existingBrowserPane) {
       try {
-        await TmuxService.getInstance().selectPane(existingBrowserPane.paneId)
+        await activatePaneForCurrentPresentation(existingBrowserPane, {
+          suppressStatus: true,
+        })
         setStatusMessage(`File browser already open for ${getPaneDisplayName(selectedPane)}`)
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       } catch (error: any) {
@@ -464,6 +476,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
 
       await tmuxService.setPaneTitle(newPaneId, slug)
+      pendingPaneActivationRef.current = {
+        dmuxPaneId: browserPane.id,
+        paneId: browserPane.paneId,
+      }
       await savePanes([...panes, browserPane])
       await loadPanes()
 
@@ -767,6 +783,57 @@ export function useInputHandling(params: UseInputHandlingParams) {
     if (options.activatePane) {
       await tmuxService.selectPane(resolvedTargetPane.paneId)
     }
+
+    if (!options.suppressStatus) {
+      setStatusMessage(`Viewing ${getPaneDisplayName(resolvedTargetPane)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    }
+  }
+
+  const activatePaneForCurrentPresentation = async (
+    targetPane: DmuxPane,
+    options: {
+      suppressStatus?: boolean
+    } = {}
+  ) => {
+    const tmuxService = TmuxService.getInstance()
+    const resolvedTargetPane = panes.find((pane) => pane.id === targetPane.id) || targetPane
+
+    if (effectivePresentationMode === "focus") {
+      await isolatePane(resolvedTargetPane, {
+        activatePane: true,
+        suppressStatus: options.suppressStatus,
+      })
+      return
+    }
+
+    if (resolvedTargetPane.hidden) {
+      const targetPaneId = await getPaneShowTarget(resolvedTargetPane.paneId)
+      if (!targetPaneId) {
+        throw new Error("No target pane is available to show this pane")
+      }
+
+      await tmuxService.joinPaneToTarget(
+        resolvedTargetPane.paneId,
+        targetPaneId
+      )
+
+      const updatedPanes = panes.map((pane) =>
+        pane.id === resolvedTargetPane.id
+          ? { ...pane, hidden: false }
+          : pane
+      )
+      await savePanes(updatedPanes)
+      await refreshPaneLayout()
+      await loadPanes()
+    }
+
+    const targetIndex = panes.findIndex((pane) => pane.id === resolvedTargetPane.id)
+    if (targetIndex >= 0) {
+      setSelectedIndex(targetIndex)
+    }
+
+    await tmuxService.selectPane(resolvedTargetPane.paneId)
 
     if (!options.suppressStatus) {
       setStatusMessage(`Viewing ${getPaneDisplayName(resolvedTargetPane)}`)
@@ -1103,8 +1170,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         pendingPaneActivationRef.current = null
         presentationSyncKeyRef.current = ""
 
-        void isolatePane(targetPane, {
-          activatePane: true,
+        void activatePaneForCurrentPresentation(targetPane, {
           suppressStatus: true,
         }).catch((error: any) => {
           setStatusMessage(`Failed to activate created pane: ${error?.message || String(error)}`)

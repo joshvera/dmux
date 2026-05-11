@@ -13,6 +13,51 @@ export function getVisiblePanes(panes: DmuxPane[]): DmuxPane[] {
   return panes.filter((pane) => !pane.hidden);
 }
 
+type PaneRuntimeSignatureField = "paneId" | "hidden";
+
+function getPaneRuntimeSignature(
+  panes: DmuxPane[],
+  fields: PaneRuntimeSignatureField[]
+): string {
+  return panes
+    .map((pane) => {
+      const parts = [pane.id];
+      if (fields.includes("paneId")) {
+        parts.push(pane.paneId);
+      }
+      if (fields.includes("hidden")) {
+        parts.push(pane.hidden === true ? "hidden" : "visible");
+      }
+      return parts.join("\u0000");
+    })
+    .sort()
+    .join("\n");
+}
+
+export function havePaneRuntimeStatesChanged(
+  previousPanes: DmuxPane[],
+  nextPanes: DmuxPane[]
+): boolean {
+  return getPaneRuntimeSignature(previousPanes, ["paneId", "hidden"])
+    !== getPaneRuntimeSignature(nextPanes, ["paneId", "hidden"]);
+}
+
+export function havePaneIdsChanged(
+  previousPanes: DmuxPane[],
+  nextPanes: DmuxPane[]
+): boolean {
+  return getPaneRuntimeSignature(previousPanes, ["paneId"])
+    !== getPaneRuntimeSignature(nextPanes, ["paneId"]);
+}
+
+export function havePaneHiddenStatesChanged(
+  previousPanes: DmuxPane[],
+  nextPanes: DmuxPane[]
+): boolean {
+  return getPaneRuntimeSignature(previousPanes, ["hidden"])
+    !== getPaneRuntimeSignature(nextPanes, ["hidden"]);
+}
+
 export function syncHiddenStateFromCurrentWindow(
   panes: DmuxPane[],
   currentWindowPaneIds: string[]

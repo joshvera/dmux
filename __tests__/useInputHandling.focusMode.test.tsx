@@ -158,6 +158,7 @@ describe("useInputHandling focus mode", () => {
     joinPaneToTarget: vi.fn(async () => {}),
     breakPaneToWindow: vi.fn(async () => {}),
     splitPane: vi.fn(async () => "%2"),
+    setPaneTitle: vi.fn(async () => {}),
   }
 
   beforeEach(() => {
@@ -703,6 +704,180 @@ describe("useInputHandling focus mode", () => {
     await sleep(40)
 
     expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%2")
+
+    unmount()
+  })
+
+  it("activates a newly created terminal in focus mode by isolating it", async () => {
+    let currentPanes = [pane("1"), pane("2")]
+    let rerender: ReturnType<typeof render>["rerender"]
+    const savePanes = vi.fn(async (nextPanes: DmuxPane[]) => {
+      currentPanes = nextPanes
+      rerender(
+        <Harness
+          panes={currentPanes}
+          presentationMode="focus"
+          popupManager={{}}
+          settingsManager={{
+            updateSetting: vi.fn(),
+            getEffectiveScope: vi.fn(() => "global"),
+          }}
+          savePanes={savePanes}
+        />
+      )
+    })
+
+    tmuxServiceMock.splitPane.mockResolvedValueOnce("%9")
+
+    const rendered = render(
+      <Harness
+        panes={currentPanes}
+        presentationMode="focus"
+        popupManager={{}}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => "global"),
+        }}
+        savePanes={savePanes}
+      />
+    )
+    rerender = rendered.rerender
+
+    await sleep(20)
+    rendered.stdin.write("t")
+    await sleep(500)
+
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%9")
+    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%1", "dmux-hidden-1")
+    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%2", "dmux-hidden-2")
+
+    rendered.unmount()
+  })
+
+  it("activates a newly created terminal in grid mode without hiding visible panes", async () => {
+    let currentPanes = [pane("1"), pane("2")]
+    let rerender: ReturnType<typeof render>["rerender"]
+    const savePanes = vi.fn(async (nextPanes: DmuxPane[]) => {
+      currentPanes = nextPanes
+      rerender(
+        <Harness
+          panes={currentPanes}
+          presentationMode="grid"
+          popupManager={{}}
+          settingsManager={{
+            updateSetting: vi.fn(),
+            getEffectiveScope: vi.fn(() => "global"),
+          }}
+          savePanes={savePanes}
+        />
+      )
+    })
+
+    tmuxServiceMock.splitPane.mockResolvedValueOnce("%9")
+
+    const rendered = render(
+      <Harness
+        panes={currentPanes}
+        presentationMode="grid"
+        popupManager={{}}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => "global"),
+        }}
+        savePanes={savePanes}
+      />
+    )
+    rerender = rendered.rerender
+
+    await sleep(20)
+    rendered.stdin.write("t")
+    await sleep(500)
+
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%9")
+    expect(tmuxServiceMock.breakPaneToWindow).not.toHaveBeenCalled()
+
+    rendered.unmount()
+  })
+
+  it("reuses a hidden file browser in focus mode instead of creating a duplicate", async () => {
+    const workPane = pane("1")
+    const browserPane = pane("3", {
+      hidden: true,
+      paneId: "%3",
+      type: "shell",
+      shellType: "fb",
+      browserPath: workPane.worktreePath,
+    })
+    const savePanes = vi.fn(async () => {})
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[workPane, browserPane]}
+        selectedIndex={0}
+        presentationMode="focus"
+        popupManager={{}}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => "global"),
+        }}
+        savePanes={savePanes}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("f")
+    await sleep(80)
+
+    expect(tmuxServiceMock.splitPane).not.toHaveBeenCalled()
+    expect(tmuxServiceMock.joinPaneToTarget).toHaveBeenCalledWith("%3", "%1")
+    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%1", "dmux-hidden-1")
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%3")
+    expect(savePanes).toHaveBeenCalledWith([
+      expect.objectContaining({ id: "1", hidden: true }),
+      expect.objectContaining({ id: "3", hidden: false }),
+    ])
+
+    unmount()
+  })
+
+  it("reuses a hidden file browser in grid mode without hiding visible panes", async () => {
+    const workPane = pane("1")
+    const otherPane = pane("2")
+    const browserPane = pane("3", {
+      hidden: true,
+      paneId: "%3",
+      type: "shell",
+      shellType: "fb",
+      browserPath: workPane.worktreePath,
+    })
+    const savePanes = vi.fn(async () => {})
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[workPane, otherPane, browserPane]}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={{}}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => "global"),
+        }}
+        savePanes={savePanes}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("f")
+    await sleep(80)
+
+    expect(tmuxServiceMock.splitPane).not.toHaveBeenCalled()
+    expect(tmuxServiceMock.joinPaneToTarget).toHaveBeenCalledWith("%3", "%1")
+    expect(tmuxServiceMock.breakPaneToWindow).not.toHaveBeenCalled()
+    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%3")
+    const savedPanes = savePanes.mock.calls[0]?.[0] as DmuxPane[]
+    expect(savedPanes.find((pane) => pane.id === "1")?.hidden).not.toBe(true)
+    expect(savedPanes.find((pane) => pane.id === "2")?.hidden).not.toBe(true)
+    expect(savedPanes.find((pane) => pane.id === "3")?.hidden).toBe(false)
 
     unmount()
   })

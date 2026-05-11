@@ -17,6 +17,7 @@ import {
 } from '../utils/codexHooks.js';
 import { getPaneTmuxTitle } from '../utils/paneTitle.js';
 import {
+  havePaneHiddenStatesChanged,
   getVisiblePanes,
   syncHiddenStateFromCurrentWindow,
 } from '../utils/paneVisibility.js';
@@ -38,6 +39,7 @@ interface PaneLoadResult {
   panes: DmuxPane[];
   allPaneIds: string[];
   titleToId: Map<string, string>;
+  hiddenStateChangedFromConfig: boolean;
 }
 
 async function restoreAgentSessionForPane(
@@ -359,11 +361,19 @@ export async function loadAndProcessPanes(
 ): Promise<PaneLoadResult> {
   const loadedPanes = await loadPanesFromFile(panesFile);
   let { allPaneIds, titleToId, currentWindowPaneIds } = await fetchTmuxPaneIds();
+  let hiddenStateChangedFromConfig = false;
 
   // Attempt to rebind panes whose IDs changed by matching on their stable tmux title.
+  const reboundBeforeHiddenSync = loadedPanes.map((pane) =>
+    rebindPaneByTitle(pane, titleToId, allPaneIds)
+  );
   let reboundPanes = syncHiddenStateFromCurrentWindow(
-    loadedPanes.map(p => rebindPaneByTitle(p, titleToId, allPaneIds)),
+    reboundBeforeHiddenSync,
     currentWindowPaneIds
+  );
+  hiddenStateChangedFromConfig = havePaneHiddenStatesChanged(
+    reboundBeforeHiddenSync,
+    reboundPanes
   );
 
   // CRITICAL FIX: On initial load, immediately filter out shell panes with stale IDs
@@ -429,11 +439,21 @@ export async function loadAndProcessPanes(
     currentWindowPaneIds = freshData.currentWindowPaneIds;
 
     // Re-rebind after recreation
-    reboundPanes = syncHiddenStateFromCurrentWindow(
-      reboundPanes.map(p => rebindPaneByTitle(p, titleToId, allPaneIds)),
+    const reboundBeforePostRecreationHiddenSync = reboundPanes.map(p =>
+      rebindPaneByTitle(p, titleToId, allPaneIds)
+    );
+    const syncedPostRecreationPanes = syncHiddenStateFromCurrentWindow(
+      reboundBeforePostRecreationHiddenSync,
       currentWindowPaneIds
     );
+    hiddenStateChangedFromConfig =
+      hiddenStateChangedFromConfig ||
+      havePaneHiddenStatesChanged(
+        reboundBeforePostRecreationHiddenSync,
+        syncedPostRecreationPanes
+      );
+    reboundPanes = syncedPostRecreationPanes;
   }
 
-  return { panes: reboundPanes, allPaneIds, titleToId };
+  return { panes: reboundPanes, allPaneIds, titleToId, hiddenStateChangedFromConfig };
 }
