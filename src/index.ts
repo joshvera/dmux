@@ -76,6 +76,7 @@ import {
   TMUX_PANE_TITLE_LABEL_FORMAT,
   TMUX_PANE_TITLE_PREFIX_FORMAT,
 } from './utils/paneTitlePrefix.js';
+import { scheduleStartupKeyTableNormalization } from './utils/startupKeyTableNormalization.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
@@ -674,10 +675,6 @@ class Dmux {
     // Ensure cursor is truly at home position and scrollback is clear
     process.stdout.write('\x1b[1;1H');  // Force cursor to row 1, column 1
 
-    if (process.env.TMUX) {
-      await TmuxService.getInstance().normalizeClientKeyTableToRoot();
-    }
-
     // Launch the Ink app
     const appProps = {
       panesFile: this.panesFile,
@@ -692,6 +689,7 @@ class Dmux {
     const app = render(React.createElement(DmuxApp, appProps), {
       exitOnCtrlC: false  // Disable automatic exit on Ctrl+C
     });
+    scheduleStartupKeyTableNormalization();
 
     // Clean shutdown on app exit
     app.waitUntilExit().then(async () => {
