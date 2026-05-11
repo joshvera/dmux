@@ -241,6 +241,17 @@ describe("useInputHandling focus mode", () => {
     )
   })
 
+  const clearFocusMocks = () => {
+    tmuxServiceMock.selectPane.mockClear()
+    tmuxServiceMock.normalizeClientKeyTableToRoot.mockClear()
+  }
+
+  const expectSidebarFocusRestored = () => {
+    expect(tmuxServiceMock.selectPane).toHaveBeenLastCalledWith("%0")
+    expect(tmuxState.selectedPaneId).toBe("%0")
+    expect(tmuxServiceMock.normalizeClientKeyTableToRoot).toHaveBeenCalled()
+  }
+
   it("enters focus mode by isolating the selected pane and returning focus to the sidebar", async () => {
     const popupManager = {
       launchSettingsPopup: vi.fn(async () => ({
@@ -779,6 +790,138 @@ describe("useInputHandling focus mode", () => {
     unmount()
   })
 
+  it("shows a visible grid pane on Enter without leaving the sidebar", async () => {
+    const popupManager = {
+      launchKebabMenuPopup: vi.fn(),
+    }
+    const setSelectedIndex = vi.fn()
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane("1"), pane("2")]}
+        selectedIndex={1}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={quietSettingsManager()}
+        setSelectedIndex={setSelectedIndex}
+      />
+    )
+
+    await sleep(20)
+    clearFocusMocks()
+
+    stdin.write("\r")
+    await sleep(80)
+
+    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
+    expect(setSelectedIndex).toHaveBeenCalledWith(1)
+    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith("%2")
+    expectSidebarFocusRestored()
+
+    unmount()
+  })
+
+  it("reveals a hidden grid pane on Enter while keeping sidebar focus", async () => {
+    let currentPanes = [pane("1", { hidden: true }), pane("2")]
+    const popupManager = {
+      launchKebabMenuPopup: vi.fn(),
+    }
+    const setSelectedIndex = vi.fn()
+    const savePanes = vi.fn(async (updatedPanes: DmuxPane[]) => {
+      currentPanes = updatedPanes.map((updatedPane) => ({ ...updatedPane }))
+    })
+    const loadPanes = vi.fn(async () => {})
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={currentPanes}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={quietSettingsManager()}
+        setSelectedIndex={setSelectedIndex}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+        getPanes={() => currentPanes}
+      />
+    )
+
+    await sleep(20)
+    clearFocusMocks()
+
+    stdin.write("\r")
+    await sleep(80)
+
+    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
+    expect(tmuxServiceMock.joinPaneToTarget).toHaveBeenCalledWith("%1", "%2")
+    expect(savePanes).toHaveBeenCalledWith([
+      expect.objectContaining({ id: "1", hidden: false }),
+      expect.objectContaining({ id: "2" }),
+    ])
+    expect(loadPanes).toHaveBeenCalled()
+    expect(setSelectedIndex).toHaveBeenCalledWith(0)
+    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith("%1")
+    expectSidebarFocusRestored()
+
+    unmount()
+  })
+
+  it("does not steal focus when Enter presents a pane in focus mode", async () => {
+    const popupManager = {
+      launchKebabMenuPopup: vi.fn(),
+    }
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane("1", { hidden: true }), pane("2")]}
+        selectedIndex={1}
+        presentationMode="focus"
+        popupManager={popupManager}
+        settingsManager={quietSettingsManager()}
+      />
+    )
+
+    await sleep(40)
+    clearFocusMocks()
+
+    stdin.write("\r")
+    await sleep(80)
+
+    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
+    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith("%2")
+    expectSidebarFocusRestored()
+
+    unmount()
+  })
+
+  it("keeps m as the explicit pane menu shortcut", async () => {
+    const popupManager = {
+      launchKebabMenuPopup: vi.fn(async () => null),
+    }
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane("1")]}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={quietSettingsManager()}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("m")
+    await sleep(80)
+
+    expect(popupManager.launchKebabMenuPopup).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "1" }),
+      [expect.objectContaining({ id: "1" })],
+      {}
+    )
+
+    unmount()
+  })
+
   it("activates a newly created terminal in focus mode by isolating it", async () => {
     let currentPanes = [pane("1"), pane("2")]
     let rerender: ReturnType<typeof render>["rerender"]
@@ -1108,6 +1251,7 @@ describe("useInputHandling focus mode", () => {
 
     expect(setSelectedIndex).not.toHaveBeenCalled()
     expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%0")
+    expect(tmuxServiceMock.normalizeClientKeyTableToRoot).toHaveBeenCalled()
     expect(tmuxServiceMock.joinPaneToTarget).not.toHaveBeenCalled()
     expect(currentPanes).toEqual([
       expect.objectContaining({ id: "1", hidden: true }),
@@ -1115,6 +1259,72 @@ describe("useInputHandling focus mode", () => {
     ])
 
     renderResult.unmount()
+  })
+
+  it("keeps sidebar focus after hiding other panes from the sidebar", async () => {
+    const savePanes = vi.fn(async () => {})
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane("1"), pane("2")]}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={{}}
+        settingsManager={quietSettingsManager()}
+        savePanes={savePanes}
+      />
+    )
+
+    await sleep(20)
+    clearFocusMocks()
+
+    stdin.write("H")
+    await sleep(80)
+
+    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%2", "dmux-hidden-2")
+    expect(savePanes).toHaveBeenCalledWith([
+      expect.objectContaining({ id: "1" }),
+      expect.objectContaining({ id: "2", hidden: true }),
+    ])
+    expectSidebarFocusRestored()
+
+    unmount()
+  })
+
+  it("keeps sidebar focus after focusing a project from the sidebar", async () => {
+    const savePanes = vi.fn(async () => {})
+    const repoPane = pane("1", { projectRoot: "/repo", projectName: "repo" })
+    const otherPane = pane("2", {
+      projectRoot: "/repo-b",
+      projectName: "repo-b",
+      worktreePath: "/repo-b/.dmux/worktrees/pane-2",
+    })
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[repoPane, otherPane]}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={{}}
+        settingsManager={quietSettingsManager()}
+        savePanes={savePanes}
+      />
+    )
+
+    await sleep(20)
+    clearFocusMocks()
+
+    stdin.write("P")
+    await sleep(80)
+
+    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%2", "dmux-hidden-2")
+    expect(savePanes).toHaveBeenCalledWith([
+      expect.objectContaining({ id: "1" }),
+      expect.objectContaining({ id: "2", hidden: true }),
+    ])
+    expectSidebarFocusRestored()
+
+    unmount()
   })
 
   it("keeps a newly created pane active after the panes list reloads in focus mode", async () => {
@@ -1369,13 +1579,10 @@ describe("useInputHandling focus mode", () => {
     renderResult.stdin.write("\r")
     await sleep(80)
 
-    expect(popupManager.launchKebabMenuPopup).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "1" }),
-      [expect.objectContaining({ id: "1" })],
-      {}
-    )
+    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
     expect(popupManager.launchNewPanePopup).not.toHaveBeenCalled()
     expect(handlePaneCreationWithAgent).not.toHaveBeenCalled()
+    expectSidebarFocusRestored()
 
     renderResult.unmount()
   })

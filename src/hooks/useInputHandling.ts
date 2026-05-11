@@ -811,15 +811,17 @@ export function useInputHandling(params: UseInputHandlingParams) {
   const activatePaneForCurrentPresentation = async (
     targetPane: DmuxPane,
     options: {
+      activatePane?: boolean
       suppressStatus?: boolean
     } = {}
   ) => {
     const tmuxService = TmuxService.getInstance()
     let resolvedTargetPane = resolveLatestPane(targetPane)
+    const activatePane = options.activatePane !== false
 
     if (effectivePresentationMode === "focus") {
       await isolatePane(resolvedTargetPane, {
-        activatePane: true,
+        activatePane,
         suppressStatus: options.suppressStatus,
       })
       return
@@ -853,7 +855,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setSelectedIndex(targetIndex)
     }
 
-    await tmuxService.selectPane(resolvedTargetPane.paneId)
+    if (activatePane) {
+      await tmuxService.selectPane(resolvedTargetPane.paneId)
+    }
 
     if (!options.suppressStatus) {
       setStatusMessage(`Viewing ${getPaneDisplayName(resolvedTargetPane)}`)
@@ -870,6 +874,32 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     await tmuxService.selectPane(controlPaneId)
     await tmuxService.normalizeClientKeyTableToRoot()
+  }
+
+  const restoreSidebarFocusAfterCommand = async (
+    tmuxService: TmuxService = TmuxService.getInstance()
+  ) => {
+    try {
+      await returnFocusToControlPane(tmuxService)
+    } catch (error: any) {
+      setStatusMessage(`Failed to return to sidebar: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    }
+  }
+
+  const presentPaneFromSidebar = async (targetPane: DmuxPane) => {
+    const tmuxService = TmuxService.getInstance()
+
+    try {
+      await activatePaneForCurrentPresentation(targetPane, {
+        activatePane: false,
+      })
+    } catch (error: any) {
+      setStatusMessage(`Failed to view pane: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    } finally {
+      await restoreSidebarFocusAfterCommand(tmuxService)
+    }
   }
 
   const handleQuitShortcut = async () => {
@@ -1307,7 +1337,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
     selectedIndex,
   ])
 
-  const togglePaneVisibility = async (selectedPane: DmuxPane) => {
+  const togglePaneVisibility = async (
+    selectedPane: DmuxPane,
+    options: { preserveControlFocus?: boolean } = {}
+  ) => {
     const tmuxService = TmuxService.getInstance()
 
     try {
@@ -1363,11 +1396,17 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setStatusMessage(`Failed to toggle pane visibility: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
+      if (options.preserveControlFocus) {
+        await restoreSidebarFocusAfterCommand(tmuxService)
+      }
       setIsCreatingPane(false)
     }
   }
 
-  const toggleOtherPanesVisibility = async (selectedPane: DmuxPane) => {
+  const toggleOtherPanesVisibility = async (
+    selectedPane: DmuxPane,
+    options: { preserveControlFocus?: boolean } = {}
+  ) => {
     const action = getBulkVisibilityAction(panes, selectedPane)
     if (!action) {
       setStatusMessage("No other panes to toggle")
@@ -1432,12 +1471,16 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setStatusMessage(`Failed to toggle other panes: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
+      if (options.preserveControlFocus) {
+        await restoreSidebarFocusAfterCommand(tmuxService)
+      }
       setIsCreatingPane(false)
     }
   }
 
   const toggleProjectPanesVisibility = async (
-    targetProjectRoot: string = getActiveProjectRoot()
+    targetProjectRoot: string = getActiveProjectRoot(),
+    options: { preserveControlFocus?: boolean } = {}
   ) => {
     const action = getProjectVisibilityAction(panes, targetProjectRoot, projectRoot)
 
@@ -1469,6 +1512,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const panesToHide = action === "focus-project"
       ? otherPanes.filter((pane) => !pane.hidden)
       : []
+    const tmuxService = TmuxService.getInstance()
 
     try {
       setIsCreatingPane(true)
@@ -1485,11 +1529,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
         if (!targetPaneId) {
           throw new Error("No target pane is available to show hidden panes")
         }
-        await TmuxService.getInstance().joinPaneToTarget(pane.paneId, targetPaneId)
+        await tmuxService.joinPaneToTarget(pane.paneId, targetPaneId)
       }
 
       for (const pane of panesToHide) {
-        await TmuxService.getInstance().breakPaneToWindow(
+        await tmuxService.breakPaneToWindow(
           pane.paneId,
           `dmux-hidden-${pane.id}`
         )
@@ -1525,6 +1569,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setStatusMessage(`Failed to toggle project panes: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
+      if (options.preserveControlFocus) {
+        await restoreSidebarFocusAfterCommand(tmuxService)
+      }
       setIsCreatingPane(false)
     }
   }
@@ -1538,7 +1585,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    const actionId = await launchKebabMenuPopup(
+    const actionId = await launchKebabMenuPopup.call(
+      popupManager,
       pane,
       panes,
       options
@@ -2061,23 +2109,32 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await popupManager.launchLogsPopup(getActiveProjectRoot())
     } else if (input === "h") {
       if (selectedIndex < panes.length) {
-        await executePaneShortcut("h", panes[selectedIndex])
+        await togglePaneVisibility(panes[selectedIndex], {
+          preserveControlFocus: true,
+        })
       } else {
         setStatusMessage("Select a pane to toggle visibility")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       }
     } else if (input === "H") {
       if (selectedIndex < panes.length) {
-        await executePaneShortcut("H", panes[selectedIndex])
+        await toggleOtherPanesVisibility(panes[selectedIndex], {
+          preserveControlFocus: true,
+        })
       } else {
         setStatusMessage("Select a pane to toggle the others")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       }
     } else if (input === "P") {
       if (selectedIndex < panes.length) {
-        await executePaneShortcut("P", panes[selectedIndex])
+        await toggleProjectPanesVisibility(
+          getPaneProjectRoot(panes[selectedIndex], projectRoot),
+          { preserveControlFocus: true }
+        )
       } else {
-        await toggleProjectPanesVisibility()
+        await toggleProjectPanesVisibility(getActiveProjectRoot(), {
+          preserveControlFocus: true,
+        })
       }
     } else if (input === "?") {
       // Open keyboard shortcuts popup
@@ -2142,7 +2199,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       if (target.kind === "project-action") {
         await executeProjectAction(target.action)
       } else if (target.kind === "pane") {
-        await openPaneMenu(target.pane)
+        await presentPaneFromSidebar(target.pane)
       }
       return
     } else if (
