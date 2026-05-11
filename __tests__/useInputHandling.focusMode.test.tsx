@@ -83,6 +83,8 @@ function Harness({
   projectActionItems = [],
   getActiveSurface,
   isControlPaneSelectionPending,
+  clearControlPaneSelectionPending = vi.fn(),
+  findCardInDirection = vi.fn(() => null),
 }: {
   panes: DmuxPane[]
   selectedIndex?: number
@@ -104,6 +106,11 @@ function Harness({
   projectActionItems?: ProjectActionItem[]
   getActiveSurface?: () => "control" | "work" | "unknown"
   isControlPaneSelectionPending?: () => boolean
+  clearControlPaneSelectionPending?: () => void
+  findCardInDirection?: (
+    currentIndex: number,
+    direction: "up" | "down" | "left" | "right"
+  ) => number | null
 }) {
   useInputHandling({
     panes,
@@ -157,6 +164,7 @@ function Harness({
     controlPaneId,
     getActiveSurface,
     isControlPaneSelectionPending,
+    clearControlPaneSelectionPending,
     trackProjectActivity: vi.fn(async (work: () => unknown) => await work()),
     presentationMode,
     popupsSupported: true,
@@ -177,7 +185,7 @@ function Harness({
     panesFile: "/repo/.dmux/dmux.config.json",
     projectRoot: "/repo",
     projectActionItems,
-    findCardInDirection: vi.fn(() => null),
+    findCardInDirection,
   })
 
   return <Text>dmux</Text>
@@ -1297,5 +1305,78 @@ describe("useInputHandling focus mode", () => {
 
       unmount()
     })
+  })
+
+  it("lets explicit arrow navigation choose the pane while control focus is pending", async () => {
+    let currentSelectedIndex = 1
+    let controlSelectionPending = true
+    const popupManager = {
+      launchNewPanePopup: vi.fn(async () => ({ prompt: "should not launch" })),
+      launchKebabMenuPopup: vi.fn(async () => null),
+    }
+    const handlePaneCreationWithAgent = vi.fn(async () => [])
+    const setSelectedIndex = vi.fn((index: number) => {
+      currentSelectedIndex = index
+    })
+    const clearControlPaneSelectionPending = vi.fn(() => {
+      controlSelectionPending = false
+    })
+    const findCardInDirection = vi.fn((
+      currentIndex: number,
+      direction: "up" | "down" | "left" | "right"
+    ) => (
+      currentIndex === 1 && direction === "up" ? 0 : null
+    ))
+    const projectActionItems: ProjectActionItem[] = [
+      {
+        index: 1,
+        projectRoot: "/repo",
+        projectName: "repo",
+        kind: "new-agent",
+        hotkey: "n",
+      },
+    ]
+
+    const harness = () => (
+      <Harness
+        panes={[pane("1")]}
+        selectedIndex={currentSelectedIndex}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={quietSettingsManager()}
+        setSelectedIndex={setSelectedIndex}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+        getActiveSurface={() => "control"}
+        isControlPaneSelectionPending={() => controlSelectionPending}
+        clearControlPaneSelectionPending={clearControlPaneSelectionPending}
+        projectActionItems={projectActionItems}
+        findCardInDirection={findCardInDirection}
+      />
+    )
+    const renderResult = render(harness())
+
+    await sleep(20)
+    renderResult.stdin.write("\u001B[A")
+    await sleep(40)
+
+    expect(findCardInDirection).toHaveBeenCalledWith(1, "up")
+    expect(clearControlPaneSelectionPending).toHaveBeenCalledTimes(1)
+    expect(setSelectedIndex).toHaveBeenCalledWith(0)
+
+    renderResult.rerender(harness())
+
+    await sleep(20)
+    renderResult.stdin.write("\r")
+    await sleep(80)
+
+    expect(popupManager.launchKebabMenuPopup).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "1" }),
+      [expect.objectContaining({ id: "1" })],
+      {}
+    )
+    expect(popupManager.launchNewPanePopup).not.toHaveBeenCalled()
+    expect(handlePaneCreationWithAgent).not.toHaveBeenCalled()
+
+    renderResult.unmount()
   })
 })

@@ -136,6 +136,7 @@ interface UseInputHandlingParams {
   controlPaneId: string | undefined
   getActiveSurface?: () => ActiveInputSurface
   isControlPaneSelectionPending?: () => boolean
+  clearControlPaneSelectionPending?: () => void
   trackProjectActivity: TrackProjectActivity
 
   // Callbacks
@@ -221,6 +222,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     controlPaneId,
     getActiveSurface = () => "unknown",
     isControlPaneSelectionPending = () => false,
+    clearControlPaneSelectionPending = () => {},
     trackProjectActivity,
     setStatusMessage,
     copyNonGitFiles,
@@ -2040,6 +2042,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
 
       if (targetIndex !== null) {
+        clearControlPaneSelectionPending()
         setSelectedIndex(targetIndex)
       }
       return

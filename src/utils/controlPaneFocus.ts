@@ -39,3 +39,32 @@ export function resolveControlPaneSelection(
 
   return actionItems[0]?.index ?? selectedIndex;
 }
+
+export interface ControlPaneFocusSelection {
+  selectedIndex: number;
+  selectionPending: boolean;
+}
+
+export function resolveControlPaneFocusSelection(
+  selectedIndex: number,
+  panes: DmuxPane[],
+  actionItems: ProjectActionItem[],
+  fallbackProjectRoot: string,
+  wasControlFocused: boolean
+): ControlPaneFocusSelection {
+  if (wasControlFocused) {
+    return { selectedIndex, selectionPending: false };
+  }
+
+  const resolvedIndex = resolveControlPaneSelection(
+    selectedIndex,
+    panes,
+    actionItems,
+    fallbackProjectRoot
+  );
+
+  return {
+    selectedIndex: resolvedIndex,
+    selectionPending: resolvedIndex !== selectedIndex,
+  };
+}

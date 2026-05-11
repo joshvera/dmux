@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { DmuxPane } from '../src/types.js';
 import type { ProjectActionItem } from '../src/utils/projectActions.js';
-import { resolveControlPaneSelection } from '../src/utils/controlPaneFocus.js';
+import {
+  resolveControlPaneFocusSelection,
+  resolveControlPaneSelection,
+} from '../src/utils/controlPaneFocus.js';
 
 function pane(id: string, projectRoot = '/repo'): DmuxPane {
   return {
@@ -57,5 +60,35 @@ describe('resolveControlPaneSelection', () => {
         '/repo'
       )
     ).toBe(2);
+  });
+
+  it('marks work-to-control normalization as pending when it changes selection', () => {
+    expect(
+      resolveControlPaneFocusSelection(
+        0,
+        [pane('1')],
+        actions,
+        '/repo',
+        false
+      )
+    ).toEqual({
+      selectedIndex: 2,
+      selectionPending: true,
+    });
+  });
+
+  it('leaves explicit control-pane navigation alone after control pane is already focused', () => {
+    expect(
+      resolveControlPaneFocusSelection(
+        0,
+        [pane('1')],
+        actions,
+        '/repo',
+        true
+      )
+    ).toEqual({
+      selectedIndex: 0,
+      selectionPending: false,
+    });
   });
 });
