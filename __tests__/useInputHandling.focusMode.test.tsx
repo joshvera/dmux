@@ -27,6 +27,21 @@ vi.mock("../src/utils/remotePaneActions.js", () => ({
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+async function withTmuxEnv(run: () => Promise<void>) {
+  const previousTmux = process.env.TMUX
+  process.env.TMUX = "/tmp/tmux-test/default,123,0"
+
+  try {
+    await run()
+  } finally {
+    if (previousTmux === undefined) {
+      delete process.env.TMUX
+    } else {
+      process.env.TMUX = previousTmux
+    }
+  }
+}
+
 function pane(id: string, options: Partial<DmuxPane> = {}): DmuxPane {
   return {
     id,
@@ -58,6 +73,8 @@ function Harness({
   inlineSettingsProjectRoot,
   setInlineSettingsProjectRoot = vi.fn(),
   projectActionItems = [],
+  getActiveSurface,
+  isControlPaneSelectionPending,
 }: {
   panes: DmuxPane[]
   selectedIndex?: number
@@ -76,6 +93,8 @@ function Harness({
   inlineSettingsProjectRoot?: string
   setInlineSettingsProjectRoot?: ReturnType<typeof vi.fn>
   projectActionItems?: ProjectActionItem[]
+  getActiveSurface?: () => "control" | "work" | "unknown"
+  isControlPaneSelectionPending?: () => boolean
 }) {
   useInputHandling({
     panes,
@@ -127,6 +146,8 @@ function Harness({
       setActionState: vi.fn(),
     },
     controlPaneId,
+    getActiveSurface,
+    isControlPaneSelectionPending,
     trackProjectActivity: vi.fn(async (work: () => unknown) => await work()),
     presentationMode,
     popupsSupported: true,
@@ -155,6 +176,8 @@ function Harness({
 describe("useInputHandling focus mode", () => {
   const tmuxServiceMock = {
     selectPane: vi.fn(async () => {}),
+    normalizeClientKeyTableToRoot: vi.fn(async () => true),
+    getActivePaneId: vi.fn(async () => "%0"),
     joinPaneToTarget: vi.fn(async () => {}),
     breakPaneToWindow: vi.fn(async () => {}),
     splitPane: vi.fn(async () => "%2"),
@@ -1059,5 +1082,131 @@ describe("useInputHandling focus mode", () => {
     ])
 
     renderResult.unmount()
+  })
+
+  it("uses Enter on a selected project action instead of opening a stale pane menu", async () => {
+    const popupManager = {
+      launchNewPanePopup: vi.fn(async () => ({ prompt: "from action" })),
+      launchKebabMenuPopup: vi.fn(),
+    }
+    const handlePaneCreationWithAgent = vi.fn(async () => [])
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane("1")]}
+        selectedIndex={1}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: vi.fn(),
+          getEffectiveScope: vi.fn(() => "global"),
+        }}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+        projectActionItems={[
+          { index: 1, projectRoot: "/repo-b", projectName: "repo-b", kind: "new-agent", hotkey: "n" },
+        ]}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("\r")
+    await sleep(80)
+
+    expect(popupManager.launchNewPanePopup).toHaveBeenCalledWith("/repo-b")
+    expect(handlePaneCreationWithAgent).toHaveBeenCalledWith({ prompt: "from action" }, "/repo-b")
+    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
+
+    unmount()
+  })
+
+  it("re-resolves stale pane selection before Enter acts from the control pane", async () => {
+    const popupManager = {
+      launchNewPanePopup: vi.fn(async () => ({ prompt: "from control focus" })),
+      launchKebabMenuPopup: vi.fn(),
+    }
+    const handlePaneCreationWithAgent = vi.fn(async () => [])
+    const setSelectedIndex = vi.fn()
+
+    await withTmuxEnv(async () => {
+      const { stdin, unmount } = render(
+        <Harness
+          panes={[pane("1")]}
+          selectedIndex={0}
+          presentationMode="grid"
+          popupManager={popupManager}
+          settingsManager={{
+            updateSetting: vi.fn(),
+            getEffectiveScope: vi.fn(() => "global"),
+          }}
+          setSelectedIndex={setSelectedIndex}
+          handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+          getActiveSurface={() => "work"}
+          projectActionItems={[
+            { index: 1, projectRoot: "/repo", projectName: "repo", kind: "new-agent", hotkey: "n" },
+          ]}
+        />
+      )
+
+      await sleep(20)
+      stdin.write("\r")
+      await sleep(80)
+
+      expect(tmuxServiceMock.getActivePaneId).toHaveBeenCalledTimes(1)
+      expect(setSelectedIndex).toHaveBeenCalledWith(1)
+      expect(popupManager.launchNewPanePopup).toHaveBeenCalledWith("/repo")
+      expect(handlePaneCreationWithAgent).toHaveBeenCalledWith(
+        { prompt: "from control focus" },
+        "/repo"
+      )
+      expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
+
+      unmount()
+    })
+  })
+
+  it("keeps re-resolving stale Enter while control focus normalization is pending", async () => {
+    const popupManager = {
+      launchNewPanePopup: vi.fn(async () => ({ prompt: "pending control focus" })),
+      launchKebabMenuPopup: vi.fn(),
+    }
+    const handlePaneCreationWithAgent = vi.fn(async () => [])
+    const setSelectedIndex = vi.fn()
+
+    await withTmuxEnv(async () => {
+      const { stdin, unmount } = render(
+        <Harness
+          panes={[pane("1")]}
+          selectedIndex={0}
+          presentationMode="grid"
+          popupManager={popupManager}
+          settingsManager={{
+            updateSetting: vi.fn(),
+            getEffectiveScope: vi.fn(() => "global"),
+          }}
+          setSelectedIndex={setSelectedIndex}
+          handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+          getActiveSurface={() => "control"}
+          isControlPaneSelectionPending={() => true}
+          projectActionItems={[
+            { index: 1, projectRoot: "/repo", projectName: "repo", kind: "new-agent", hotkey: "n" },
+          ]}
+        />
+      )
+
+      await sleep(20)
+      stdin.write("\r")
+      await sleep(80)
+
+      expect(tmuxServiceMock.getActivePaneId).toHaveBeenCalledTimes(1)
+      expect(setSelectedIndex).toHaveBeenCalledWith(1)
+      expect(popupManager.launchNewPanePopup).toHaveBeenCalledWith("/repo")
+      expect(handlePaneCreationWithAgent).toHaveBeenCalledWith(
+        { prompt: "pending control focus" },
+        "/repo"
+      )
+      expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
+
+      unmount()
+    })
   })
 })

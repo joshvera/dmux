@@ -113,6 +113,7 @@ import {
   PANE_TITLE_BUSY_FRAMES,
 } from "./utils/paneTitlePrefix.js"
 import { getPaneTmuxDisplayTitle } from "./utils/paneTitle.js"
+import { resolveControlPaneSelection } from "./utils/controlPaneFocus.js"
 
 const DmuxApp: React.FC<DmuxAppProps> = ({
   panesFile,
@@ -131,6 +132,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   /* panes state moved to usePanes */
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null)
+  const activeSurfaceRef = useRef<"control" | "work" | "unknown">("unknown")
+  const controlPaneSelectionPendingRef = useRef(false)
   const { statusMessage, setStatusMessage } = useStatusMessages()
   const [isCreatingPane, setIsCreatingPane] = useState(false)
   const {
@@ -837,14 +840,42 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
 
   // findCardInDirection provided by useNavigation
 
-  const syncSelectedIndexToFocusedPane = React.useCallback(async (activePaneId?: string | null) => {
+  const syncSelectedIndexToFocusedPane = React.useCallback(async (
+    activePaneId?: string | null,
+    options: { normalizeControlClient?: boolean } = {}
+  ) => {
     try {
       const focusedPaneId = activePaneId ?? await TmuxService.getInstance().getActivePaneId()
       if (!focusedPaneId || focusedPaneId === controlPaneId) {
+        const wasControlFocused = activeSurfaceRef.current === "control"
+        activeSurfaceRef.current = "control"
         setFocusedPaneId(null)
+        // React has not rendered the corrected action index yet. Keep Enter
+        // from acting on the stale work-pane index during that gap.
+        controlPaneSelectionPendingRef.current =
+          selectedIndex < panes.length && projectActionLayout.actionItems.length > 0
+
+        setSelectedIndex((currentIndex) =>
+          resolveControlPaneSelection(
+            currentIndex,
+            panes,
+            projectActionLayout.actionItems,
+            sessionProjectRoot
+          )
+        )
+
+        if (
+          focusedPaneId === controlPaneId &&
+          options.normalizeControlClient &&
+          !wasControlFocused
+        ) {
+          void TmuxService.getInstance().normalizeClientKeyTableToRoot()
+        }
         return
       }
 
+      activeSurfaceRef.current = "work"
+      controlPaneSelectionPendingRef.current = false
       setFocusedPaneId((currentPaneId) =>
         currentPaneId === focusedPaneId ? currentPaneId : focusedPaneId
       )
@@ -860,12 +891,23 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     } catch {
       // Focus sync is best-effort; pane lifecycle handling will correct stale IDs.
     }
-  }, [controlPaneId, panes])
+  }, [controlPaneId, panes, projectActionLayout.actionItems, selectedIndex, sessionProjectRoot])
+
+  useEffect(() => {
+    if (
+      controlPaneSelectionPendingRef.current &&
+      getProjectActionByIndex(projectActionLayout.actionItems, selectedIndex)
+    ) {
+      controlPaneSelectionPendingRef.current = false
+    }
+  }, [projectActionLayout.actionItems, selectedIndex])
 
   useEffect(() => {
     const paneEventService = PaneEventService.getInstance()
     return paneEventService.onPaneFocusChanged((event) => {
-      void syncSelectedIndexToFocusedPane(event.activePaneId)
+      void syncSelectedIndexToFocusedPane(event.activePaneId, {
+        normalizeControlClient: true,
+      })
     })
   }, [syncSelectedIndexToFocusedPane])
 
@@ -1586,6 +1628,8 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     popupManager,
     actionSystem,
     controlPaneId,
+    getActiveSurface: () => activeSurfaceRef.current,
+    isControlPaneSelectionPending: () => controlPaneSelectionPendingRef.current,
     trackProjectActivity,
     setStatusMessage,
     copyNonGitFiles,

@@ -36,6 +36,7 @@ import {
   getProjectActionByIndex,
   type ProjectActionItem,
 } from "../utils/projectActions.js"
+import { resolveControlPaneSelection } from "../utils/controlPaneFocus.js"
 import { createShellPane, getNextDmuxId } from "../utils/shellPaneDetection.js"
 import type { AgentName } from "../utils/agentLaunch.js"
 import {
@@ -79,6 +80,8 @@ interface ActionSystem {
   clearStatus: () => void
   setActionState: (state: any) => void
 }
+
+type ActiveInputSurface = "control" | "work" | "unknown"
 
 interface UseInputHandlingParams {
   // State
@@ -131,6 +134,8 @@ interface UseInputHandlingParams {
   popupManager: PopupManager
   actionSystem: ActionSystem
   controlPaneId: string | undefined
+  getActiveSurface?: () => ActiveInputSurface
+  isControlPaneSelectionPending?: () => boolean
   trackProjectActivity: TrackProjectActivity
 
   // Callbacks
@@ -213,6 +218,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
     popupManager,
     actionSystem,
     controlPaneId,
+    getActiveSurface = () => "unknown",
+    isControlPaneSelectionPending = () => false,
     trackProjectActivity,
     setStatusMessage,
     copyNonGitFiles,
@@ -841,6 +848,91 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
+  const returnFocusToControlPane = async (
+    tmuxService: TmuxService = TmuxService.getInstance()
+  ) => {
+    if (!controlPaneId) {
+      return
+    }
+
+    await tmuxService.selectPane(controlPaneId)
+    await tmuxService.normalizeClientKeyTableToRoot()
+  }
+
+  const handleQuitShortcut = async () => {
+    if (process.env.TMUX) {
+      try {
+        await TmuxService.getInstance().enterDetachConfirmMode()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setStatusMessage(`Failed to arm detach confirmation: ${message}`)
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+      }
+      return
+    }
+
+    if (quitConfirmMode) {
+      cleanExit()
+      return
+    }
+
+    setQuitConfirmMode(true)
+    setTimeout(() => {
+      setQuitConfirmMode(false)
+    }, 3000)
+  }
+
+  const executeProjectAction = async (selectedAction: ProjectActionItem) => {
+    if (selectedAction.kind === "new-agent") {
+      await handleCreateAgentPane(selectedAction.projectRoot)
+    } else if (selectedAction.kind === "terminal") {
+      await handleCreateTerminalPane(selectedAction.projectRoot)
+    } else if (selectedAction.kind === "remove-project") {
+      await handleRemoveProjectFromSidebar(selectedAction.projectRoot)
+    }
+  }
+
+  const resolveEnterTarget = async (): Promise<
+    | { kind: "project-action"; action: ProjectActionItem }
+    | { kind: "pane"; pane: DmuxPane }
+    | { kind: "none" }
+  > => {
+    const selectedAction = getProjectActionByIndex(projectActionItems, selectedIndex)
+    if (selectedAction) {
+      return { kind: "project-action", action: selectedAction }
+    }
+
+    const shouldVerifyControlFocus =
+      getActiveSurface() !== "control" || isControlPaneSelectionPending()
+
+    if (process.env.TMUX && controlPaneId && shouldVerifyControlFocus) {
+      try {
+        const activePaneId = await TmuxService.getInstance().getActivePaneId()
+        if (activePaneId === controlPaneId) {
+          const resolvedIndex = resolveControlPaneSelection(
+            selectedIndex,
+            panes,
+            projectActionItems,
+            projectRoot
+          )
+          if (resolvedIndex !== selectedIndex) {
+            setSelectedIndex(resolvedIndex)
+          }
+
+          const resolvedAction = getProjectActionByIndex(projectActionItems, resolvedIndex)
+          return resolvedAction
+            ? { kind: "project-action", action: resolvedAction }
+            : { kind: "none" }
+        }
+      } catch {
+        // Best effort. If tmux cannot report focus, keep the existing selection behavior.
+      }
+    }
+
+    const pane = panes[selectedIndex]
+    return pane ? { kind: "pane", pane } : { kind: "none" }
+  }
+
   const applyPresentationModeChange = async (
     nextMode: "grid" | "focus",
     options: {
@@ -865,17 +957,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const applyPresentationModeLayout = async (mode: "grid" | "focus") => {
       if (mode === "grid") {
         await revealAllHiddenPanes()
-        if (controlPaneId) {
-          await tmuxService.selectPane(controlPaneId)
-        }
+        await returnFocusToControlPane(tmuxService)
         presentationSyncKeyRef.current = ""
         return
       }
 
       if (!targetPane) {
-        if (controlPaneId) {
-          await tmuxService.selectPane(controlPaneId)
-        }
+        await returnFocusToControlPane(tmuxService)
         presentationSyncKeyRef.current = ""
         return
       }
@@ -886,7 +974,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       })
 
       if (options.activateTargetPane !== true && controlPaneId) {
-        await tmuxService.selectPane(controlPaneId)
+        await returnFocusToControlPane(tmuxService)
       }
 
       presentationSyncKeyRef.current = ""
@@ -931,9 +1019,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await refreshPaneLayout()
       await loadPanes()
 
-      if (controlPaneId) {
-        await tmuxService.selectPane(controlPaneId)
-      }
+      await returnFocusToControlPane(tmuxService)
 
       presentationSyncKeyRef.current = ""
     }
@@ -1251,7 +1337,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         && !updatedPanes.some((pane) => !pane.hidden)
         && controlPaneId
       ) {
-        await tmuxService.selectPane(controlPaneId)
+        await returnFocusToControlPane(tmuxService)
       }
 
       setStatusMessage(
@@ -1812,17 +1898,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     // Handle Ctrl+C for quit confirmation (must be first, before any other checks)
     if (key.ctrl && input === "c") {
-      if (quitConfirmMode) {
-        // Second Ctrl+C - actually quit
-        cleanExit()
-      } else {
-        // First Ctrl+C - show confirmation
-        setQuitConfirmMode(true)
-        // Reset after 3 seconds if user doesn't press Ctrl+C again
-        setTimeout(() => {
-          setQuitConfirmMode(false)
-        }, 3000)
-      }
+      await handleQuitShortcut()
       return
     }
 
@@ -2020,7 +2096,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
       // Queue all demo toasts
       demos.forEach(demo => stateManager.showToast(demo.msg, demo.severity))
     } else if (input === "q") {
-      cleanExit()
+      await handleQuitShortcut()
+      return
     } else if (isDevMode && input === "S" && selectedIndex < panes.length) {
       await executePaneShortcut("S", panes[selectedIndex])
       return
@@ -2046,18 +2123,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } else if (!isLoading && input === "t") {
       await handleCreateTerminalPane(getActiveProjectRoot())
       return
-    } else if (
-      !isLoading &&
-      key.return &&
-      !!getProjectActionByIndex(projectActionItems, selectedIndex)
-    ) {
-      const selectedAction = getProjectActionByIndex(projectActionItems, selectedIndex)!
-      if (selectedAction.kind === "new-agent") {
-        await handleCreateAgentPane(selectedAction.projectRoot)
-      } else if (selectedAction.kind === "terminal") {
-        await handleCreateTerminalPane(selectedAction.projectRoot)
-      } else if (selectedAction.kind === "remove-project") {
-        await handleRemoveProjectFromSidebar(selectedAction.projectRoot)
+    } else if (!isLoading && key.return) {
+      const target = await resolveEnterTarget()
+      if (target.kind === "project-action") {
+        await executeProjectAction(target.action)
+      } else if (target.kind === "pane") {
+        await openPaneMenu(target.pane)
       }
       return
     } else if (
@@ -2065,10 +2136,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       && (input === "j" || input === "x")
     ) {
       await executePaneShortcut(input as RemotePaneActionShortcut, panes[selectedIndex])
-      return
-    } else if (key.return && selectedIndex < panes.length) {
-      // Open pane menu for selected pane
-      await openPaneMenu(panes[selectedIndex])
       return
     }
   })

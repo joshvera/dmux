@@ -674,6 +674,10 @@ class Dmux {
     // Ensure cursor is truly at home position and scrollback is clear
     process.stdout.write('\x1b[1;1H');  // Force cursor to row 1, column 1
 
+    if (process.env.TMUX) {
+      await TmuxService.getInstance().normalizeClientKeyTableToRoot();
+    }
+
     // Launch the Ink app
     const appProps = {
       panesFile: this.panesFile,

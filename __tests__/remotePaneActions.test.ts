@@ -105,6 +105,8 @@ describe('remotePaneActions', () => {
     expect(setupCommands[0]).toContain('dmux remote pane action failed');
     expect(setupCommands[0]).toContain('>\\"\\$tmp_file\\" 2>&1');
     expect(setupCommands[0]).not.toContain('--remote-pane-action m >/dev/null 2>&1 || true');
+    expect(setupCommands.some((command) => command.includes('bind-key -T root q'))).toBe(false);
+    expect(setupCommands.some((command) => command.includes('bind-key -T root C-c'))).toBe(false);
     expect(
       setupCommands.some((command) =>
         command.includes('bind-key -T dmux-detach-confirm q detach-client')
@@ -136,6 +138,8 @@ describe('remotePaneActions', () => {
     expect(cleanupCommands.some((command) => command.includes('unbind-key -n M-M'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -n M-D'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-pane-action x'))).toBe(true);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T root q'))).toBe(false);
+    expect(cleanupCommands.some((command) => command.includes('unbind-key -T root C-c'))).toBe(false);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm q'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm C-c'))).toBe(true);
     expect(cleanupCommands.some((command) => command.includes('unbind-key -T dmux-detach-confirm Escape'))).toBe(true);

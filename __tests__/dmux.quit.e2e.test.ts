@@ -32,6 +32,38 @@ function getClientKeyTable(clients: RuntimeTmuxClient[], tty: string): string | 
 
 describe.sequential("dmux quit runtime e2e", () => {
   it.runIf(canRunDmuxRuntimeE2E)(
+    "normalizes accidental prefix state during control pane startup",
+    async () => {
+      await withDmuxRuntimeHarness(async (harness) => {
+        const repoA = await harness.createProject("repo-a")
+        const primaryClientTty = harness.getClientTarget()
+
+        await harness.sendClientInput("\u0002")
+        await waitForCondition(
+          async () => {
+            const clients = await harness.listClients()
+            return getClientKeyTable(clients, primaryClientTty) === "prefix"
+          },
+          10000,
+          "primary tmux client to enter prefix key table"
+        )
+
+        await harness.startDmux(repoA)
+
+        await waitForCondition(
+          async () => {
+            const clients = await harness.listClients()
+            return getClientKeyTable(clients, primaryClientTty) === "root"
+          },
+          10000,
+          "dmux startup to restore the primary client to root key table"
+        )
+      })
+    },
+    120000
+  )
+
+  it.runIf(canRunDmuxRuntimeE2E)(
     "arms and confirms detach per tmux client without affecting other attached clients",
     async () => {
       await withDmuxRuntimeHarness(async (harness) => {
