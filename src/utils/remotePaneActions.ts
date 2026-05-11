@@ -89,8 +89,22 @@ function buildQueueDrainPath(queuePath: string): string {
 function buildRunRemotePaneActionCommand(
   shortcut: RemotePaneActionShortcut
 ): string {
-  const remoteActionCommand = `${buildRemotePaneActionCommand(shortcut)} >/dev/null 2>&1`;
-  return `run-shell "${escapeForDoubleQuotes(remoteActionCommand)}"`;
+  const remoteActionCommand = buildRemotePaneActionCommand(shortcut);
+  const handledRemoteActionCommand = [
+    'log_dir="$HOME/.dmux/run"',
+    'log_file="$log_dir/remote-pane-action-errors.log"',
+    'tmp_file="${TMPDIR:-/tmp}/dmux-remote-pane-action.$$"',
+    'mkdir -p "$log_dir" >/dev/null 2>&1 || true',
+    `if ${remoteActionCommand} >"$tmp_file" 2>&1; then rm -f "$tmp_file" >/dev/null 2>&1 || true`,
+    'else status=$?',
+    '( printf "%s remote pane action failed: shortcut=%s exit=%s\\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ' + shellQuote(shortcut) + ' "$status"',
+    'cat "$tmp_file" 2>/dev/null',
+    'printf "\\n" ) >>"$log_file" 2>/dev/null || true',
+    'rm -f "$tmp_file" >/dev/null 2>&1 || true',
+    'tmux display-message -d 4000 "dmux remote pane action failed (exit $status); see ~/.dmux/run/remote-pane-action-errors.log" >/dev/null 2>&1 || true',
+    'fi',
+  ].join('; ');
+  return `run-shell "${escapeForDoubleQuotes(handledRemoteActionCommand)}"`;
 }
 
 function buildSafeTmuxCommand(command: string): string {

@@ -42,16 +42,33 @@ function pane(id: string, options: Partial<DmuxPane> = {}): DmuxPane {
   }
 }
 
+function createBindingSensitivePopupManager(actionId: string) {
+  let popupManager: {
+    launchKebabMenuPopup: ReturnType<typeof vi.fn>
+  }
+
+  popupManager = {
+    launchKebabMenuPopup: vi.fn(async function (this: unknown) {
+      expect(this).toBe(popupManager)
+      return actionId
+    }),
+  }
+
+  return popupManager
+}
+
 function Harness({
   panes,
   popupManager,
   actionSystem,
+  setStatusMessage = vi.fn(),
   savePanes = vi.fn(async () => {}),
   loadPanes = vi.fn(async () => {}),
 }: {
   panes: DmuxPane[]
   popupManager: any
   actionSystem: any
+  setStatusMessage?: ReturnType<typeof vi.fn>
   savePanes?: ReturnType<typeof vi.fn>
   loadPanes?: ReturnType<typeof vi.fn>
 }) {
@@ -106,7 +123,7 @@ function Harness({
     trackProjectActivity: vi.fn(async (work: () => unknown) => await work()),
     presentationMode: "focus",
     popupsSupported: true,
-    setStatusMessage: vi.fn(),
+    setStatusMessage,
     copyNonGitFiles: vi.fn(),
     runCommandInternal: vi.fn(),
     handlePaneCreationWithAgent: vi.fn(async () => []),
@@ -144,9 +161,8 @@ describe("useInputHandling focus pane menu", () => {
   })
 
   async function renderWithRemoteMenuAction(actionId: string) {
-    const popupManager = {
-      launchKebabMenuPopup: vi.fn(async () => actionId),
-    }
+    const popupManager = createBindingSensitivePopupManager(actionId)
+    const setStatusMessage = vi.fn()
     const actionSystem = {
       actionState: {},
       executeAction: vi.fn(async () => {}),
@@ -170,6 +186,7 @@ describe("useInputHandling focus pane menu", () => {
         panes={[pane("1"), pane("2", { hidden: true })]}
         popupManager={popupManager}
         actionSystem={actionSystem}
+        setStatusMessage={setStatusMessage}
       />
     )
 
@@ -179,11 +196,12 @@ describe("useInputHandling focus pane menu", () => {
       ...renderResult,
       popupManager,
       actionSystem,
+      setStatusMessage,
     }
   }
 
   it("uses the standard pane-anchored kebab menu in focus mode", async () => {
-    const { popupManager, actionSystem, unmount } = await renderWithRemoteMenuAction(PaneAction.RENAME)
+    const { popupManager, actionSystem, setStatusMessage, unmount } = await renderWithRemoteMenuAction(PaneAction.RENAME)
 
     expect(popupManager.launchKebabMenuPopup).toHaveBeenCalledWith(
       expect.objectContaining({ id: "1", paneId: "%1" }),
@@ -194,6 +212,9 @@ describe("useInputHandling focus pane menu", () => {
       PaneAction.RENAME,
       expect.objectContaining({ id: "1" }),
       expect.objectContaining({ mainBranch: expect.any(String) })
+    )
+    expect(setStatusMessage).not.toHaveBeenCalledWith(
+      expect.stringContaining("Failed to process remote pane action")
     )
 
     unmount()
