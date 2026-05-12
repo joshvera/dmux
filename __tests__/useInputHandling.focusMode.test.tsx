@@ -194,6 +194,7 @@ function Harness({
 interface FakeTmuxState {
   selectedPaneId: string | undefined
   hiddenWindows: Map<string, string>
+  failedJoinPaneIds: Set<string>
   joins: Array<{ paneId: string; targetPaneId: string }>
   splitPaneIds: string[]
   createdPanes: string[]
@@ -203,6 +204,7 @@ function createFakeTmuxState(): FakeTmuxState {
   return {
     selectedPaneId: undefined,
     hiddenWindows: new Map(),
+    failedJoinPaneIds: new Set(),
     joins: [],
     splitPaneIds: [],
     createdPanes: [],
@@ -218,6 +220,9 @@ describe("useInputHandling focus mode", () => {
     normalizeClientKeyTableToRoot: vi.fn(async () => true),
     getActivePaneId: vi.fn(async () => "%0"),
     joinPaneToTarget: vi.fn(async (paneId: string, targetPaneId: string) => {
+      if (tmuxState.failedJoinPaneIds.has(paneId)) {
+        throw new Error(`missing pane ${paneId}`)
+      }
       tmuxState.joins.push({ paneId, targetPaneId })
     }),
     breakPaneToWindow: vi.fn(async (paneId: string, windowName: string) => {
@@ -1229,6 +1234,56 @@ describe("useInputHandling focus mode", () => {
     expect(savedPanes.find((pane) => pane.id === "1")?.hidden).not.toBe(true)
     expect(savedPanes.find((pane) => pane.id === "2")?.hidden).not.toBe(true)
     expect(savedPanes.find((pane) => pane.id === "3")?.hidden).toBe(false)
+
+    unmount()
+  })
+
+  it("replaces a stale hidden file browser when activation fails", async () => {
+    const workPane = pane("1")
+    const staleBrowserPane = pane("3", {
+      hidden: true,
+      paneId: "%missing",
+      type: "shell",
+      shellType: "fb",
+      browserPath: workPane.worktreePath,
+    })
+    let savedPanes: DmuxPane[] = []
+    const savePanes = async (nextPanes: DmuxPane[]) => {
+      savedPanes = nextPanes
+    }
+    const loadPanes = vi.fn(async () => {})
+    tmuxState.splitPaneIds.push("%9")
+    tmuxState.failedJoinPaneIds.add("%missing")
+
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[workPane, staleBrowserPane]}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={{}}
+        settingsManager={quietSettingsManager()}
+        savePanes={savePanes}
+        loadPanes={loadPanes}
+      />
+    )
+
+    await sleep(20)
+    stdin.write("f")
+    await sleep(500)
+
+    expect(tmuxState.createdPanes).toEqual(["%9"])
+    expect(tmuxState.selectedPaneId).toBeUndefined()
+    expect(savedPanes.some((pane) => pane.id === staleBrowserPane.id)).toBe(false)
+    expect(savedPanes).toEqual([
+      expect.objectContaining({ id: workPane.id }),
+      expect.objectContaining({
+        paneId: "%9",
+        type: "shell",
+        shellType: "fb",
+        browserPath: workPane.worktreePath,
+      }),
+    ])
+    expect(loadPanes).toHaveBeenCalled()
 
     unmount()
   })

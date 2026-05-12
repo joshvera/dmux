@@ -444,6 +444,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       pane.shellType === "fb" &&
       pane.browserPath === selectedPane.worktreePath
     )
+    let staleBrowserPaneId: string | undefined
 
     if (existingBrowserPane) {
       try {
@@ -452,11 +453,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
         })
         setStatusMessage(`File browser already open for ${getPaneDisplayName(selectedPane)}`)
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+        return
       } catch (error: any) {
-        setStatusMessage(`Failed to focus file browser: ${error?.message || String(error)}`)
-        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+        staleBrowserPaneId = existingBrowserPane.id
       }
-      return
     }
 
     const targetProjectRoot = getPaneProjectRoot(selectedPane, projectRoot)
@@ -473,17 +473,20 @@ export function useInputHandling(params: UseInputHandlingParams) {
       })
 
       await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAY))
+      const basePanes = staleBrowserPaneId
+        ? getLatestPanes().filter((pane) => pane.id !== staleBrowserPaneId)
+        : getLatestPanes()
 
       const slugBase = `files-${path.basename(selectedPane.worktreePath)}`
       let slug = slugBase
       let suffix = 2
-      while (panes.some((pane) => pane.slug === slug)) {
+      while (basePanes.some((pane) => pane.slug === slug)) {
         slug = `${slugBase}-${suffix}`
         suffix += 1
       }
 
       const browserPane: DmuxPane = {
-        id: `dmux-${getNextDmuxId(panes)}`,
+        id: `dmux-${getNextDmuxId(basePanes)}`,
         slug,
         prompt: "",
         paneId: newPaneId,
@@ -500,7 +503,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         dmuxPaneId: browserPane.id,
         paneId: browserPane.paneId,
       }
-      await savePanes([...panes, browserPane])
+      await savePanes([...basePanes, browserPane])
       await loadPanes()
 
       setStatusMessage(`Opened file browser for ${getPaneDisplayName(selectedPane)}`)
