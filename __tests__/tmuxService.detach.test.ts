@@ -1,202 +1,197 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { TmuxService } from '../src/services/TmuxService.js';
 
-describe('TmuxService detach helpers', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
+type CommandResponse = string | Error;
+
+function createService(responses: Record<string, CommandResponse>) {
+  const commands: string[] = [];
+  const service = new TmuxService((command: string) => {
+    commands.push(command);
+    if (!Object.prototype.hasOwnProperty.call(responses, command)) {
+      throw new Error(`Unexpected command: ${command}`);
+    }
+
+    const response = responses[command];
+    if (response instanceof Error) {
+      throw response;
+    }
+
+    return response;
   });
 
+  return { commands, service };
+}
+
+const CURRENT_CLIENT_COMMAND = 'tmux display-message -p "#{client_tty}"';
+const CLIENT_ACTIVITY_COMMAND =
+  'tmux list-clients -F "#{client_activity}\t#{client_tty}"';
+const CLIENT_KEY_TABLE_COMMAND =
+  'tmux list-clients -F "#{client_tty}\t#{client_key_table}"';
+const DETACH_GUIDANCE_COMMAND =
+  "tmux display-message -d 3000 'Press q or Ctrl+C again to detach. Esc cancels.'";
+
+describe('TmuxService detach helpers', () => {
   it('returns the contextual client tty when tmux reports one', async () => {
-    const service = TmuxService.getInstance();
-    const executeSpy = vi.spyOn(service as any, 'execute').mockImplementation(
-      (command: string) => {
-        if (command === 'tmux display-message -p "#{client_tty}"') {
-          return '/dev/ttys001';
-        }
-        throw new Error(`Unexpected command: ${command}`);
-      }
-    );
+    const { commands, service } = createService({
+      [CURRENT_CLIENT_COMMAND]: '/dev/ttys001',
+    });
 
     await expect(service.getCurrentClientTty()).resolves.toBe('/dev/ttys001');
-    expect(executeSpy).toHaveBeenCalledWith(
-      'tmux display-message -p "#{client_tty}"'
-    );
+    expect(commands).toEqual([CURRENT_CLIENT_COMMAND]);
   });
 
   it('falls back to the most recently active client tty when contextual lookup is empty', async () => {
-    const service = TmuxService.getInstance();
-    const executeSpy = vi.spyOn(service as any, 'execute').mockImplementation(
-      (command: string) => {
-        if (command === 'tmux display-message -p "#{client_tty}"') {
-          return '   ';
-        }
-        if (command === 'tmux list-clients -F "#{client_activity}\t#{client_tty}"') {
-          return '100\t/dev/ttys001\n250\t/dev/ttys002';
-        }
-        throw new Error(`Unexpected command: ${command}`);
-      }
-    );
+    const { commands, service } = createService({
+      [CURRENT_CLIENT_COMMAND]: '   ',
+      [CLIENT_ACTIVITY_COMMAND]: '100\t/dev/ttys001\n250\t/dev/ttys002',
+    });
 
     await expect(service.getCurrentClientTty()).resolves.toBe('/dev/ttys002');
-    expect(executeSpy).toHaveBeenCalledWith(
-      'tmux list-clients -F "#{client_activity}\t#{client_tty}"'
-    );
+    expect(commands).toEqual([
+      CURRENT_CLIENT_COMMAND,
+      CLIENT_ACTIVITY_COMMAND,
+    ]);
   });
 
   it('returns null when tmux reports no client tty', async () => {
-    const service = TmuxService.getInstance();
-    vi.spyOn(service as any, 'execute').mockImplementation((command: string) => {
-      if (command === 'tmux display-message -p "#{client_tty}"') {
-        return '   ';
-      }
-      if (command === 'tmux list-clients -F "#{client_activity}\t#{client_tty}"') {
-        return '   ';
-      }
-      throw new Error(`Unexpected command: ${command}`);
+    const { commands, service } = createService({
+      [CURRENT_CLIENT_COMMAND]: '   ',
+      [CLIENT_ACTIVITY_COMMAND]: '   ',
     });
 
     await expect(service.getCurrentClientTty()).resolves.toBeNull();
+    expect(commands).toEqual([
+      CURRENT_CLIENT_COMMAND,
+      CLIENT_ACTIVITY_COMMAND,
+    ]);
   });
 
   it('detaches a specific client tty', async () => {
-    const service = TmuxService.getInstance();
-    const executeSpy = vi
-      .spyOn(service as any, 'execute')
-      .mockReturnValue('');
+    const detachCommand = "tmux detach-client -t '/dev/ttys001'";
+    const { commands, service } = createService({
+      [detachCommand]: '',
+    });
 
     await service.detachClient('/dev/ttys001');
 
-    expect(executeSpy).toHaveBeenCalledWith(
-      "tmux detach-client -t '/dev/ttys001'"
-    );
+    expect(commands).toEqual([detachCommand]);
   });
 
   it('normalizes a specific client key table back to root', async () => {
-    const service = TmuxService.getInstance();
-    const executeSpy = vi.spyOn(service as any, 'execute').mockImplementation(
-      (command: string) => {
-        if (command === 'tmux list-clients -F "#{client_tty}\t#{client_key_table}"') {
-          return '/dev/ttys001\tprefix';
-        }
-        if (command === "tmux switch-client -c '/dev/ttys001' -T root") {
-          return '';
-        }
-        throw new Error(`Unexpected command: ${command}`);
-      }
-    );
+    const switchCommand = "tmux switch-client -c '/dev/ttys001' -T root";
+    const { commands, service } = createService({
+      [CLIENT_KEY_TABLE_COMMAND]: '/dev/ttys001\tprefix',
+      [switchCommand]: '',
+    });
 
     await expect(
       service.normalizeClientKeyTableToRoot('/dev/ttys001')
     ).resolves.toBe(true);
 
-    expect(executeSpy).toHaveBeenCalledWith(
-      "tmux switch-client -c '/dev/ttys001' -T root"
-    );
+    expect(commands).toEqual([CLIENT_KEY_TABLE_COMMAND, switchCommand]);
   });
 
   it('leaves intentional non-prefix client key tables alone', async () => {
-    const service = TmuxService.getInstance();
-    const executeSpy = vi.spyOn(service as any, 'execute').mockImplementation(
-      (command: string) => {
-        if (command === 'tmux list-clients -F "#{client_tty}\t#{client_key_table}"') {
-          return '/dev/ttys001\tdmux-detach-confirm';
-        }
-        throw new Error(`Unexpected command: ${command}`);
-      }
-    );
-
-    await expect(
-      service.normalizeClientKeyTableToRoot('/dev/ttys001')
-    ).resolves.toBe(false);
-
-    expect(executeSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('no-ops key table normalization when no client can be resolved', async () => {
-    const service = TmuxService.getInstance();
-    const getCurrentClientTtySpy = vi
-      .spyOn(service, 'getCurrentClientTty')
-      .mockResolvedValue(null);
-    const executeSpy = vi.spyOn(service as any, 'execute').mockReturnValue('');
-
-    await expect(service.normalizeClientKeyTableToRoot()).resolves.toBe(false);
-
-    expect(getCurrentClientTtySpy).toHaveBeenCalledTimes(1);
-    expect(executeSpy).not.toHaveBeenCalled();
-  });
-
-  it('does not throw when key table normalization fails', async () => {
-    const service = TmuxService.getInstance();
-    vi.spyOn(service as any, 'execute').mockImplementation((command: string) => {
-      if (command === 'tmux list-clients -F "#{client_tty}\t#{client_key_table}"') {
-        return '/dev/ttys001\tprefix';
-      }
-      throw new Error('switch failed');
+    const { commands, service } = createService({
+      [CLIENT_KEY_TABLE_COMMAND]: '/dev/ttys001\tdmux-detach-confirm',
     });
 
     await expect(
       service.normalizeClientKeyTableToRoot('/dev/ttys001')
     ).resolves.toBe(false);
+
+    expect(commands).toEqual([CLIENT_KEY_TABLE_COMMAND]);
+  });
+
+  it('no-ops key table normalization when no client can be resolved', async () => {
+    const { commands, service } = createService({
+      [CURRENT_CLIENT_COMMAND]: '   ',
+      [CLIENT_ACTIVITY_COMMAND]: '   ',
+    });
+
+    await expect(service.normalizeClientKeyTableToRoot()).resolves.toBe(false);
+
+    expect(commands).toEqual([
+      CURRENT_CLIENT_COMMAND,
+      CLIENT_ACTIVITY_COMMAND,
+    ]);
+  });
+
+  it('does not throw when key table normalization fails', async () => {
+    const switchCommand = "tmux switch-client -c '/dev/ttys001' -T root";
+    const { commands, service } = createService({
+      [CLIENT_KEY_TABLE_COMMAND]: '/dev/ttys001\tprefix',
+      [switchCommand]: new Error("can't find pane"),
+    });
+
+    await expect(
+      service.normalizeClientKeyTableToRoot('/dev/ttys001')
+    ).resolves.toBe(false);
+
+    expect(commands).toEqual([CLIENT_KEY_TABLE_COMMAND, switchCommand]);
   });
 
   it('detaches the resolved current client tty', async () => {
-    const service = TmuxService.getInstance();
-    const getCurrentClientTtySpy = vi
-      .spyOn(service, 'getCurrentClientTty')
-      .mockResolvedValue('/dev/ttys001');
-    const detachClientSpy = vi
-      .spyOn(service, 'detachClient')
-      .mockResolvedValue();
+    const detachCommand = "tmux detach-client -t '/dev/ttys001'";
+    const { commands, service } = createService({
+      [CURRENT_CLIENT_COMMAND]: '/dev/ttys001',
+      [detachCommand]: '',
+    });
 
     await service.detachCurrentClient();
 
-    expect(getCurrentClientTtySpy).toHaveBeenCalledTimes(1);
-    expect(detachClientSpy).toHaveBeenCalledWith('/dev/ttys001');
+    expect(commands).toEqual([CURRENT_CLIENT_COMMAND, detachCommand]);
   });
 
   it('throws when no current client tty can be resolved', async () => {
-    const service = TmuxService.getInstance();
-    vi.spyOn(service, 'getCurrentClientTty').mockResolvedValue(null);
-    const detachClientSpy = vi
-      .spyOn(service, 'detachClient')
-      .mockResolvedValue();
+    const { commands, service } = createService({
+      [CURRENT_CLIENT_COMMAND]: '   ',
+      [CLIENT_ACTIVITY_COMMAND]: '   ',
+    });
 
     await expect(service.detachCurrentClient()).rejects.toThrow(
       'No active tmux client could be resolved for detach'
     );
-    expect(detachClientSpy).not.toHaveBeenCalled();
+    expect(commands).toEqual([
+      CURRENT_CLIENT_COMMAND,
+      CLIENT_ACTIVITY_COMMAND,
+    ]);
   });
 
   it('enters the tmux detach confirmation key table and shows guidance', async () => {
-    const service = TmuxService.getInstance();
-    const executeSpy = vi.spyOn(service as any, 'execute').mockReturnValue('');
-    const getCurrentClientTtySpy = vi
-      .spyOn(service, 'getCurrentClientTty')
-      .mockResolvedValue('/dev/ttys001');
+    const switchCommand =
+      "tmux switch-client -c '/dev/ttys001' -T 'dmux-detach-confirm'";
+    const { commands, service } = createService({
+      [CURRENT_CLIENT_COMMAND]: '/dev/ttys001',
+      [switchCommand]: '',
+      [DETACH_GUIDANCE_COMMAND]: '',
+    });
 
     await service.enterDetachConfirmMode();
 
-    expect(getCurrentClientTtySpy).toHaveBeenCalledTimes(1);
-    expect(executeSpy).toHaveBeenNthCalledWith(
-      1,
-      "tmux switch-client -c '/dev/ttys001' -T 'dmux-detach-confirm'"
-    );
-    expect(executeSpy).toHaveBeenNthCalledWith(
-      2,
-      "tmux display-message -d 3000 'Press q or Ctrl+C again to detach. Esc cancels.'"
-    );
+    expect(commands).toEqual([
+      CURRENT_CLIENT_COMMAND,
+      switchCommand,
+      DETACH_GUIDANCE_COMMAND,
+    ]);
   });
 
   it('falls back to tmux current-client context for detach confirmation when no client resolves', async () => {
-    const service = TmuxService.getInstance();
-    const executeSpy = vi.spyOn(service as any, 'execute').mockReturnValue('');
-    vi.spyOn(service, 'getCurrentClientTty').mockResolvedValue(null);
+    const switchCommand = "tmux switch-client -T 'dmux-detach-confirm'";
+    const { commands, service } = createService({
+      [CURRENT_CLIENT_COMMAND]: '   ',
+      [CLIENT_ACTIVITY_COMMAND]: '   ',
+      [switchCommand]: '',
+      [DETACH_GUIDANCE_COMMAND]: '',
+    });
 
     await service.enterDetachConfirmMode();
 
-    expect(executeSpy).toHaveBeenNthCalledWith(
-      1,
-      "tmux switch-client -T 'dmux-detach-confirm'"
-    );
+    expect(commands).toEqual([
+      CURRENT_CLIENT_COMMAND,
+      CLIENT_ACTIVITY_COMMAND,
+      switchCommand,
+      DETACH_GUIDANCE_COMMAND,
+    ]);
   });
 });

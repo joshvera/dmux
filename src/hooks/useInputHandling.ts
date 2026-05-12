@@ -696,7 +696,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }
 
   const getPaneShowTarget = async (excludedPaneId?: string): Promise<string | null> => {
-    const visiblePaneId = panes.find(
+    const visiblePaneId = getLatestPanes().find(
       (pane) => !pane.hidden && pane.paneId !== excludedPaneId
     )?.paneId
     if (visiblePaneId) {

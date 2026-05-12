@@ -862,15 +862,20 @@ describe("useInputHandling focus mode", () => {
     unmount()
   })
 
-  it("preserves latest panes when revealing all hidden panes", async () => {
+  it("uses latest pane state when revealing all hidden panes", async () => {
     const hiddenPane = pane("1", { hidden: true })
-    const visiblePane = pane("2")
+    const renderTimeVisiblePane = pane("2", { paneId: "%stale" })
+    const latestHiddenPane = pane("2", {
+      hidden: true,
+      paneId: "%2",
+      prompt: "concurrent hidden pane",
+    })
     const concurrentPane = pane("3", {
       prompt: "concurrent visible pane",
       type: "shell",
       shellType: "fb",
     })
-    const latestPanes = [hiddenPane, visiblePane, concurrentPane]
+    const latestPanes = [hiddenPane, latestHiddenPane, concurrentPane]
     let savedPanes: DmuxPane[] = []
     const popupManager = {
       launchSettingsPopup: vi.fn(async () => ({
@@ -890,7 +895,7 @@ describe("useInputHandling focus mode", () => {
 
     const { stdin, unmount } = render(
       <Harness
-        panes={[hiddenPane, visiblePane]}
+        panes={[hiddenPane, renderTimeVisiblePane]}
         presentationMode="focus"
         popupManager={popupManager}
         settingsManager={settingsManager}
@@ -905,10 +910,15 @@ describe("useInputHandling focus mode", () => {
     stdin.write("s")
     await sleep(100)
 
-    expect(tmuxState.joins).toEqual([{ paneId: "%1", targetPaneId: "%2" }])
+    expect(tmuxState.joins).toEqual(expect.arrayContaining([
+      { paneId: "%1", targetPaneId: "%3" },
+      { paneId: "%2", targetPaneId: "%3" },
+    ]))
+    expect(tmuxState.joins.every((join) => join.targetPaneId === "%3")).toBe(true)
     expect(savedPanes.map((entry) => entry.id)).toEqual(["1", "2", "3"])
     expect(savedPanes.find((entry) => entry.id === "1")?.hidden).toBe(false)
-    expect(savedPanes.find((entry) => entry.id === "2")?.hidden).not.toBe(true)
+    expect(savedPanes.find((entry) => entry.id === "2")?.hidden).toBe(false)
+    expect(savedPanes.find((entry) => entry.id === "2")?.prompt).toBe("concurrent hidden pane")
     expect(savedPanes.find((entry) => entry.id === "3")?.hidden).not.toBe(true)
     expect(savedPanes.find((entry) => entry.id === "3")?.prompt).toBe("concurrent visible pane")
     expect(savedPanes.find((entry) => entry.id === "3")?.shellType).toBe("fb")

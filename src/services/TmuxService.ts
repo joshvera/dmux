@@ -46,6 +46,19 @@ const RETRY_CONFIGS: Record<RetryStrategy, RetryConfig> = {
   [RetryStrategy.IDEMPOTENT]: { strategy: RetryStrategy.IDEMPOTENT, maxRetries: 3, baseDelay: 100, maxDelay: 500 },
 };
 
+type TmuxCommandOptions = {
+  encoding?: BufferEncoding;
+  stdio?: 'pipe' | 'inherit';
+};
+
+type TmuxCommandExecutor = (
+  command: string,
+  options: TmuxCommandOptions
+) => string | Buffer;
+
+const defaultTmuxCommandExecutor: TmuxCommandExecutor = (command, options) =>
+  execSync(command, options);
+
 // Errors that should NEVER be retried
 const PERMANENT_ERRORS = [
   'tmux not found',
@@ -78,7 +91,9 @@ export class TmuxService {
   private static instance: TmuxService;
   private logger = LogService.getInstance();
 
-  private constructor() {}
+  constructor(
+    private readonly commandExecutor: TmuxCommandExecutor = defaultTmuxCommandExecutor
+  ) {}
 
   public static getInstance(): TmuxService {
     if (!TmuxService.instance) {
@@ -148,7 +163,7 @@ export class TmuxService {
     const { encoding = 'utf-8', stdio = 'pipe', silent = false } = options;
 
     try {
-      const result = execSync(command, {
+      const result = this.commandExecutor(command, {
         encoding,
         stdio,
       });
@@ -857,10 +872,10 @@ export class TmuxService {
       );
       return true;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger.debug(
-        'Failed to normalize tmux client key table',
-        'TmuxService',
-        error instanceof Error ? error.message : String(error)
+        `Failed to normalize tmux client key table: ${errorMessage}`,
+        'TmuxService'
       );
       return false;
     }
@@ -874,10 +889,10 @@ export class TmuxService {
     try {
       targetClientTty = await this.getCurrentClientTty();
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger.debug(
-        'Failed to resolve tmux client for detach confirmation',
-        'TmuxService',
-        error instanceof Error ? error.message : String(error)
+        `Failed to resolve tmux client for detach confirmation: ${errorMessage}`,
+        'TmuxService'
       );
     }
 
