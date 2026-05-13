@@ -40,21 +40,6 @@ function expectNoEvents<Args extends unknown[], Result>(fn: EventFn<Args, Result
   expect(fn.events).toEqual([])
 }
 
-async function withTmuxEnv(run: () => Promise<void>) {
-  const previousTmux = process.env.TMUX
-  process.env.TMUX = "/tmp/tmux-test/default,123,0"
-
-  try {
-    await run()
-  } finally {
-    if (previousTmux === undefined) {
-      delete process.env.TMUX
-    } else {
-      process.env.TMUX = previousTmux
-    }
-  }
-}
-
 function pane(id: string, options: Partial<DmuxPane> = {}): DmuxPane {
   return {
     id,
@@ -136,6 +121,7 @@ function Harness({
   getActiveSurface,
   isControlPaneSelectionPending,
   clearControlPaneSelectionPending = () => {},
+  isTmuxSession,
   findCardInDirection = () => null,
 }: {
   panes: DmuxPane[]
@@ -162,6 +148,7 @@ function Harness({
   getActiveSurface?: () => "control" | "work" | "unknown"
   isControlPaneSelectionPending?: () => boolean
   clearControlPaneSelectionPending?: () => void
+  isTmuxSession?: () => boolean
   findCardInDirection?: (
     currentIndex: number,
     direction: "up" | "down" | "left" | "right"
@@ -242,6 +229,7 @@ function Harness({
     getActiveSurface,
     isControlPaneSelectionPending,
     clearControlPaneSelectionPending,
+    isTmuxSession,
     trackProjectActivity: async (work: () => unknown) => await work(),
     presentationMode,
     popupsSupported: true,
@@ -1740,42 +1728,41 @@ describe("useInputHandling focus mode", () => {
     const handlePaneCreationWithAgent = eventFn(async () => [])
     const setSelectedIndex = eventFn(() => undefined)
 
-    await withTmuxEnv(async () => {
-      const { stdin, unmount } = render(
-        <Harness
-          panes={[pane("1")]}
-          selectedIndex={0}
-          presentationMode="grid"
-          popupManager={popupManager}
-          settingsManager={{
-            updateSetting: eventFn(() => undefined),
-            getEffectiveScope: eventFn(() => "global"),
-          }}
-          setSelectedIndex={setSelectedIndex}
-          handlePaneCreationWithAgent={handlePaneCreationWithAgent}
-          getActiveSurface={() => "work"}
-          projectActionItems={[
-            { index: 1, projectRoot: "/repo", projectName: "repo", kind: "new-agent", hotkey: "n" },
-          ]}
-        />
-      )
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane("1")]}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+        getActiveSurface={() => "work"}
+        isTmuxSession={() => true}
+        projectActionItems={[
+          { index: 1, projectRoot: "/repo", projectName: "repo", kind: "new-agent", hotkey: "n" },
+        ]}
+      />
+    )
 
-      await sleep(20)
-      stdin.write("\r")
-      await sleep(80)
+    await sleep(20)
+    stdin.write("\r")
+    await sleep(80)
 
-      expect(tmuxState.activePaneIdLookups).toBe(1)
-      expectEvent(setSelectedIndex, 1)
-      expectEvent(popupManager.launchNewPanePopup, "/repo")
-      expectEvent(
-        handlePaneCreationWithAgent,
-        { prompt: "from control focus" },
-        "/repo"
-      )
-      expectNoEvents(popupManager.launchKebabMenuPopup)
+    expect(tmuxState.activePaneIdLookups).toBe(1)
+    expectEvent(setSelectedIndex, 1)
+    expectEvent(popupManager.launchNewPanePopup, "/repo")
+    expectEvent(
+      handlePaneCreationWithAgent,
+      { prompt: "from control focus" },
+      "/repo"
+    )
+    expectNoEvents(popupManager.launchKebabMenuPopup)
 
-      unmount()
-    })
+    unmount()
   })
 
   it("keeps re-resolving stale Enter while control focus normalization is pending", async () => {
@@ -1786,43 +1773,42 @@ describe("useInputHandling focus mode", () => {
     const handlePaneCreationWithAgent = eventFn(async () => [])
     const setSelectedIndex = eventFn(() => undefined)
 
-    await withTmuxEnv(async () => {
-      const { stdin, unmount } = render(
-        <Harness
-          panes={[pane("1")]}
-          selectedIndex={0}
-          presentationMode="grid"
-          popupManager={popupManager}
-          settingsManager={{
-            updateSetting: eventFn(() => undefined),
-            getEffectiveScope: eventFn(() => "global"),
-          }}
-          setSelectedIndex={setSelectedIndex}
-          handlePaneCreationWithAgent={handlePaneCreationWithAgent}
-          getActiveSurface={() => "control"}
-          isControlPaneSelectionPending={() => true}
-          projectActionItems={[
-            { index: 1, projectRoot: "/repo", projectName: "repo", kind: "new-agent", hotkey: "n" },
-          ]}
-        />
-      )
+    const { stdin, unmount } = render(
+      <Harness
+        panes={[pane("1")]}
+        selectedIndex={0}
+        presentationMode="grid"
+        popupManager={popupManager}
+        settingsManager={{
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
+        }}
+        setSelectedIndex={setSelectedIndex}
+        handlePaneCreationWithAgent={handlePaneCreationWithAgent}
+        getActiveSurface={() => "control"}
+        isControlPaneSelectionPending={() => true}
+        isTmuxSession={() => true}
+        projectActionItems={[
+          { index: 1, projectRoot: "/repo", projectName: "repo", kind: "new-agent", hotkey: "n" },
+        ]}
+      />
+    )
 
-      await sleep(20)
-      stdin.write("\r")
-      await sleep(80)
+    await sleep(20)
+    stdin.write("\r")
+    await sleep(80)
 
-      expect(tmuxState.activePaneIdLookups).toBe(1)
-      expectEvent(setSelectedIndex, 1)
-      expectEvent(popupManager.launchNewPanePopup, "/repo")
-      expectEvent(
-        handlePaneCreationWithAgent,
-        { prompt: "pending control focus" },
-        "/repo"
-      )
-      expectNoEvents(popupManager.launchKebabMenuPopup)
+    expect(tmuxState.activePaneIdLookups).toBe(1)
+    expectEvent(setSelectedIndex, 1)
+    expectEvent(popupManager.launchNewPanePopup, "/repo")
+    expectEvent(
+      handlePaneCreationWithAgent,
+      { prompt: "pending control focus" },
+      "/repo"
+    )
+    expectNoEvents(popupManager.launchKebabMenuPopup)
 
-      unmount()
-    })
+    unmount()
   })
 
   it("lets explicit arrow navigation choose the pane while control focus is pending", async () => {

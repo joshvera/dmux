@@ -156,6 +156,7 @@ interface UseInputHandlingParams {
   getActiveSurface?: () => ActiveInputSurface
   isControlPaneSelectionPending?: () => boolean
   clearControlPaneSelectionPending?: () => void
+  isTmuxSession?: () => boolean
   trackProjectActivity: TrackProjectActivity
 
   // Callbacks
@@ -247,6 +248,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     getActiveSurface = () => "unknown",
     isControlPaneSelectionPending = () => false,
     clearControlPaneSelectionPending = () => {},
+    isTmuxSession = () => Boolean(process.env.TMUX),
     trackProjectActivity,
     setStatusMessage,
     copyNonGitFiles,
@@ -931,7 +933,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }
 
   const handleQuitShortcut = async () => {
-    if (process.env.TMUX) {
+    if (isTmuxSession()) {
       try {
         await tmuxService.enterDetachConfirmMode()
       } catch (error) {
@@ -976,7 +978,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const shouldVerifyControlFocus =
       getActiveSurface() !== "control" || isControlPaneSelectionPending()
 
-    if (process.env.TMUX && controlPaneId && shouldVerifyControlFocus) {
+    if (isTmuxSession() && controlPaneId && shouldVerifyControlFocus) {
       try {
         const activePaneId = await tmuxService.getActivePaneId()
         if (activePaneId === controlPaneId) {
