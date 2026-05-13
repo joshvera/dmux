@@ -5,6 +5,16 @@ import {
   DMUX_DETACH_CONFIRM_TABLE,
 } from '../utils/remotePaneActions.js';
 import { shellQuote } from '../utils/shellQuote.js';
+import {
+  buildDetachClientCommand,
+  buildSwitchClientKeyTableCommand,
+  CLIENT_ACTIVITY_COMMAND,
+  CLIENT_KEY_TABLE_COMMAND,
+  CURRENT_CLIENT_TTY_COMMAND,
+  parseClientKeyTable,
+  parseContextualClientTty,
+  parseMostRecentClientTty,
+} from '../utils/tmuxClient.js';
 import type { PanePosition, WindowDimensions } from '../types.js';
 
 export type PaneListScope = 'window' | 'session';
@@ -46,19 +56,6 @@ const RETRY_CONFIGS: Record<RetryStrategy, RetryConfig> = {
   [RetryStrategy.IDEMPOTENT]: { strategy: RetryStrategy.IDEMPOTENT, maxRetries: 3, baseDelay: 100, maxDelay: 500 },
 };
 
-type TmuxCommandOptions = {
-  encoding?: BufferEncoding;
-  stdio?: 'pipe' | 'inherit';
-};
-
-type TmuxCommandExecutor = (
-  command: string,
-  options: TmuxCommandOptions
-) => string | Buffer;
-
-const defaultTmuxCommandExecutor: TmuxCommandExecutor = (command, options) =>
-  execSync(command, options);
-
 // Errors that should NEVER be retried
 const PERMANENT_ERRORS = [
   'tmux not found',
@@ -91,9 +88,7 @@ export class TmuxService {
   private static instance: TmuxService;
   private logger = LogService.getInstance();
 
-  constructor(
-    private readonly commandExecutor: TmuxCommandExecutor = defaultTmuxCommandExecutor
-  ) {}
+  private constructor() {}
 
   public static getInstance(): TmuxService {
     if (!TmuxService.instance) {
@@ -163,7 +158,7 @@ export class TmuxService {
     const { encoding = 'utf-8', stdio = 'pipe', silent = false } = options;
 
     try {
-      const result = this.commandExecutor(command, {
+      const result = execSync(command, {
         encoding,
         stdio,
       });
@@ -342,32 +337,14 @@ export class TmuxService {
   async getCurrentClientTty(): Promise<string | null> {
     return this.executeWithRetry(
       () => {
-        const contextualClientTty = this.execute(
-          'tmux display-message -p "#{client_tty}"'
-        ).trim();
+        const contextualClientTty = parseContextualClientTty(
+          this.execute(CURRENT_CLIENT_TTY_COMMAND)
+        );
         if (contextualClientTty) {
           return contextualClientTty;
         }
 
-        const clientsOutput = this.execute(
-          'tmux list-clients -F "#{client_activity}\t#{client_tty}"'
-        ).trim();
-
-        const mostRecentClientTty = clientsOutput
-          .split('\n')
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .map((line) => {
-            const [activity = '', clientTty = ''] = line.split('\t');
-            return {
-              activity: Number.parseInt(activity, 10) || 0,
-              clientTty: clientTty.trim(),
-            };
-          })
-          .filter((entry) => entry.clientTty.length > 0)
-          .sort((left, right) => right.activity - left.activity)[0]?.clientTty;
-
-        return mostRecentClientTty || null;
+        return parseMostRecentClientTty(this.execute(CLIENT_ACTIVITY_COMMAND));
       },
       RetryStrategy.IDEMPOTENT,
       'getCurrentClientTty'
@@ -375,24 +352,10 @@ export class TmuxService {
   }
 
   private getClientKeyTable(targetClientTty: string): string | null {
-    const clientsOutput = this.execute(
-      'tmux list-clients -F "#{client_tty}\t#{client_key_table}"'
-    ).trim();
-
-    const matchingClient = clientsOutput
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [clientTty = '', keyTable = ''] = line.split('\t');
-        return {
-          clientTty: clientTty.trim(),
-          keyTable: keyTable.trim(),
-        };
-      })
-      .find((client) => client.clientTty === targetClientTty);
-
-    return matchingClient?.keyTable || null;
+    return parseClientKeyTable(
+      this.execute(CLIENT_KEY_TABLE_COMMAND),
+      targetClientTty
+    );
   }
 
   /**
@@ -837,7 +800,7 @@ export class TmuxService {
   async detachClient(targetClientTty: string): Promise<void> {
     await this.executeWithRetry(
       () => {
-        this.execute(`tmux detach-client -t '${targetClientTty}'`);
+        this.execute(buildDetachClientCommand(targetClientTty));
       },
       RetryStrategy.FAST,
       `detachClient(${targetClientTty})`
@@ -865,7 +828,7 @@ export class TmuxService {
 
       await this.executeWithRetry(
         () => {
-          this.execute(`tmux switch-client -c ${shellQuote(targetClientTty)} -T root`);
+          this.execute(buildSwitchClientKeyTableCommand('root', targetClientTty));
         },
         RetryStrategy.FAST,
         `normalizeClientKeyTableToRoot(${targetClientTty})`
@@ -898,12 +861,10 @@ export class TmuxService {
 
     await this.executeWithRetry(
       () => {
-        const clientTarget = targetClientTty
-          ? ` -c ${shellQuote(targetClientTty)}`
-          : '';
-        this.execute(
-          `tmux switch-client${clientTarget} -T '${DMUX_DETACH_CONFIRM_TABLE}'`
-        );
+        this.execute(buildSwitchClientKeyTableCommand(
+          DMUX_DETACH_CONFIRM_TABLE,
+          targetClientTty || undefined
+        ));
         this.execute(
           `tmux display-message -d 3000 'Press q or Ctrl+C again to detach. Esc cancels.'`
         );

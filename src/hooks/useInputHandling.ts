@@ -83,6 +83,20 @@ interface ActionSystem {
 
 type ActiveInputSurface = "control" | "work" | "unknown"
 
+type InputHandlingTmuxService = Pick<
+  TmuxService,
+  | "breakPaneToWindow"
+  | "enterDetachConfirmMode"
+  | "getActivePaneId"
+  | "getCurrentPaneId"
+  | "getPaneTitle"
+  | "joinPaneToTarget"
+  | "normalizeClientKeyTableToRoot"
+  | "selectPane"
+  | "setPaneTitle"
+  | "splitPane"
+>
+
 interface UseInputHandlingParams {
   // State
   panes: DmuxPane[]
@@ -134,6 +148,11 @@ interface UseInputHandlingParams {
   popupManager: PopupManager
   actionSystem: ActionSystem
   controlPaneId: string | undefined
+  tmuxService?: InputHandlingTmuxService
+  enforceControlPaneSizeFn?: typeof enforceControlPaneSize
+  getCurrentTmuxSessionNameFn?: typeof getCurrentTmuxSessionName
+  drainRemotePaneActionsFn?: typeof drainRemotePaneActions
+  createShellPaneFn?: typeof createShellPane
   getActiveSurface?: () => ActiveInputSurface
   isControlPaneSelectionPending?: () => boolean
   clearControlPaneSelectionPending?: () => void
@@ -220,6 +239,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
     popupManager,
     actionSystem,
     controlPaneId,
+    tmuxService = TmuxService.getInstance(),
+    enforceControlPaneSizeFn = enforceControlPaneSize,
+    getCurrentTmuxSessionNameFn = getCurrentTmuxSessionName,
+    drainRemotePaneActionsFn = drainRemotePaneActions,
+    createShellPaneFn = createShellPane,
     getActiveSurface = () => "unknown",
     isControlPaneSelectionPending = () => false,
     clearControlPaneSelectionPending = () => {},
@@ -295,7 +319,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     layoutRefreshDebounceRef.current = setTimeout(async () => {
       layoutRefreshDebounceRef.current = null
       try {
-        await enforceControlPaneSize(controlPaneId, SIDEBAR_WIDTH, { forceLayout: true })
+        await enforceControlPaneSizeFn(controlPaneId, SIDEBAR_WIDTH, { forceLayout: true })
       } catch (error: any) {
         setStatusMessage(`Setting saved but layout refresh failed: ${error?.message || String(error)}`)
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
@@ -334,14 +358,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setIsCreatingPane(true)
       setStatusMessage("Creating terminal pane...")
 
-      const tmuxService = TmuxService.getInstance()
       const newPaneId = await tmuxService.splitPane({ cwd: targetProjectRoot })
 
       // Wait for pane creation to settle
       await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAY))
 
       // Persist shell pane immediately with project metadata so grouping is stable.
-      const shellPane = await createShellPane(
+      const shellPane = await createShellPaneFn(
         newPaneId,
         getNextDmuxId(panes)
       )
@@ -400,13 +423,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setIsCreatingPane(true)
       setStatusMessage(`Opening terminal in ${getPaneDisplayName(selectedPane)}...`)
 
-      const tmuxService = TmuxService.getInstance()
       const newPaneId = await tmuxService.splitPane({ cwd: selectedPane.worktreePath })
 
       // Wait for pane creation to settle
       await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAY))
 
-      const shellPane = await createShellPane(
+      const shellPane = await createShellPaneFn(
         newPaneId,
         getNextDmuxId(panes)
       )
@@ -466,7 +488,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setIsCreatingPane(true)
       setStatusMessage(`Opening file browser for ${getPaneDisplayName(selectedPane)}...`)
 
-      const tmuxService = TmuxService.getInstance()
       const newPaneId = await tmuxService.splitPane({
         cwd: selectedPane.worktreePath,
         command: buildFilesOnlyCommand(projectRoot),
@@ -670,7 +691,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    await enforceControlPaneSize(controlPaneId, SIDEBAR_WIDTH, {
+    await enforceControlPaneSizeFn(controlPaneId, SIDEBAR_WIDTH, {
       forceLayout: true,
       suppressLayoutLogs: true,
     })
@@ -708,7 +729,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     try {
-      return await TmuxService.getInstance().getCurrentPaneId()
+      return await tmuxService.getCurrentPaneId()
     } catch {
       return null
     }
@@ -741,7 +762,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
     const revealedPaneIds = new Set(hiddenPanes.map((pane) => pane.id))
 
-    const tmuxService = TmuxService.getInstance()
     for (const pane of hiddenPanes) {
       const targetPaneId = await getPaneShowTarget(pane.paneId)
       if (!targetPaneId) {
@@ -768,7 +788,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       suppressStatus?: boolean
     } = {}
   ) => {
-    const tmuxService = TmuxService.getInstance()
     let resolvedTargetPane = resolveLatestPane(targetPane)
     let changed = false
 
@@ -831,7 +850,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       suppressStatus?: boolean
     } = {}
   ) => {
-    const tmuxService = TmuxService.getInstance()
     let resolvedTargetPane = resolveLatestPane(targetPane)
     const activatePane = options.activatePane !== false
 
@@ -881,9 +899,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
-  const returnFocusToControlPane = async (
-    tmuxService: TmuxService = TmuxService.getInstance()
-  ) => {
+  const returnFocusToControlPane = async () => {
     if (!controlPaneId) {
       return
     }
@@ -892,11 +908,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
     await tmuxService.normalizeClientKeyTableToRoot()
   }
 
-  const restoreSidebarFocusAfterCommand = async (
-    tmuxService: TmuxService = TmuxService.getInstance()
-  ) => {
+  const restoreSidebarFocusAfterCommand = async () => {
     try {
-      await returnFocusToControlPane(tmuxService)
+      await returnFocusToControlPane()
     } catch (error: any) {
       setStatusMessage(`Failed to return to sidebar: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
@@ -904,8 +918,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }
 
   const presentPaneFromSidebar = async (targetPane: DmuxPane) => {
-    const tmuxService = TmuxService.getInstance()
-
     try {
       await activatePaneForCurrentPresentation(targetPane, {
         activatePane: false,
@@ -914,14 +926,14 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setStatusMessage(`Failed to view pane: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
-      await restoreSidebarFocusAfterCommand(tmuxService)
+      await restoreSidebarFocusAfterCommand()
     }
   }
 
   const handleQuitShortcut = async () => {
     if (process.env.TMUX) {
       try {
-        await TmuxService.getInstance().enterDetachConfirmMode()
+        await tmuxService.enterDetachConfirmMode()
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         setStatusMessage(`Failed to arm detach confirmation: ${message}`)
@@ -966,7 +978,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     if (process.env.TMUX && controlPaneId && shouldVerifyControlFocus) {
       try {
-        const activePaneId = await TmuxService.getInstance().getActivePaneId()
+        const activePaneId = await tmuxService.getActivePaneId()
         if (activePaneId === controlPaneId) {
           const resolvedIndex = resolveControlPaneSelection(
             selectedIndex,
@@ -1003,7 +1015,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } = {}
   ): Promise<boolean> => {
     const resolvedNextMode = resolvePresentationMode(nextMode)
-    const tmuxService = TmuxService.getInstance()
     const targetPane = getPresentationPane(options.preferredPane)
     const scope = options.scope || "global"
     const targetProjectRoot = options.targetProjectRoot || getActiveProjectRoot()
@@ -1016,13 +1027,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const applyPresentationModeLayout = async (mode: "grid" | "focus") => {
       if (mode === "grid") {
         await revealAllHiddenPanes()
-        await returnFocusToControlPane(tmuxService)
+        await returnFocusToControlPane()
         presentationSyncKeyRef.current = ""
         return
       }
 
       if (!targetPane) {
-        await returnFocusToControlPane(tmuxService)
+        await returnFocusToControlPane()
         presentationSyncKeyRef.current = ""
         return
       }
@@ -1033,7 +1044,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       })
 
       if (options.activateTargetPane !== true && controlPaneId) {
-        await returnFocusToControlPane(tmuxService)
+        await returnFocusToControlPane()
       }
 
       presentationSyncKeyRef.current = ""
@@ -1078,7 +1089,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await refreshPaneLayout()
       await loadPanes()
 
-      await returnFocusToControlPane(tmuxService)
+      await returnFocusToControlPane()
 
       presentationSyncKeyRef.current = ""
     }
@@ -1357,8 +1368,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     selectedPane: DmuxPane,
     options: { preserveControlFocus?: boolean } = {}
   ) => {
-    const tmuxService = TmuxService.getInstance()
-
     try {
       setIsCreatingPane(true)
       setStatusMessage(
@@ -1399,7 +1408,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         && !updatedPanes.some((pane) => !pane.hidden)
         && controlPaneId
       ) {
-        await returnFocusToControlPane(tmuxService)
+        await returnFocusToControlPane()
       }
 
       setStatusMessage(
@@ -1413,7 +1422,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
       if (options.preserveControlFocus) {
-        await restoreSidebarFocusAfterCommand(tmuxService)
+        await restoreSidebarFocusAfterCommand()
       }
       setIsCreatingPane(false)
     }
@@ -1441,7 +1450,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    const tmuxService = TmuxService.getInstance()
     const hidden = action === "hide-others"
 
     try {
@@ -1488,7 +1496,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
       if (options.preserveControlFocus) {
-        await restoreSidebarFocusAfterCommand(tmuxService)
+        await restoreSidebarFocusAfterCommand()
       }
       setIsCreatingPane(false)
     }
@@ -1528,8 +1536,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const panesToHide = action === "focus-project"
       ? otherPanes.filter((pane) => !pane.hidden)
       : []
-    const tmuxService = TmuxService.getInstance()
-
     try {
       setIsCreatingPane(true)
       setStatusMessage(
@@ -1586,7 +1592,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
       if (options.preserveControlFocus) {
-        await restoreSidebarFocusAfterCommand(tmuxService)
+        await restoreSidebarFocusAfterCommand()
       }
       setIsCreatingPane(false)
     }
@@ -1871,7 +1877,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         )
         setTimeout(() => StateManager.getInstance().setDebugMessage(""), STATUS_MESSAGE_DURATION_SHORT)
         if (effectivePresentationMode === "focus") {
-          await TmuxService.getInstance().selectPane(selectedPane.paneId)
+          await tmuxService.selectPane(selectedPane.paneId)
           return
         }
         await actionSystem.executeAction(PaneAction.VIEW, selectedPane)
@@ -1890,12 +1896,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
   useEffect(() => {
     const drainQueuedRemoteActions = async () => {
-      const sessionName = getCurrentTmuxSessionName()
+      const sessionName = getCurrentTmuxSessionNameFn()
       if (!sessionName) {
         return
       }
 
-      const queuedActions = await drainRemotePaneActions(sessionName)
+      const queuedActions = await drainRemotePaneActionsFn(sessionName)
       if (queuedActions.length === 0) {
         return
       }
@@ -2164,7 +2170,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } else if (input === "L" && controlPaneId) {
       // Reset layout to sidebar configuration (Shift+L)
       try {
-        await enforceControlPaneSize(controlPaneId, SIDEBAR_WIDTH, { forceLayout: true })
+        await enforceControlPaneSizeFn(controlPaneId, SIDEBAR_WIDTH, { forceLayout: true })
         setStatusMessage("Layout reset")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       } catch (error: any) {

@@ -1,31 +1,44 @@
 import React from "react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 import { render } from "ink-testing-library"
 import { Text } from "ink"
 import { useInputHandling } from "../src/hooks/useInputHandling.js"
-import { TmuxService } from "../src/services/TmuxService.js"
 import type { DmuxPane, NewPaneInput } from "../src/types.js"
-import { enforceControlPaneSize } from "../src/utils/tmux.js"
 import type { ProjectActionItem } from "../src/utils/projectActions.js"
-import {
-  drainRemotePaneActions,
-  getCurrentTmuxSessionName,
-} from "../src/utils/remotePaneActions.js"
-
-vi.mock("../src/utils/tmux.js", async () => {
-  const actual = await vi.importActual<typeof import("../src/utils/tmux.js")>("../src/utils/tmux.js")
-  return {
-    ...actual,
-    enforceControlPaneSize: vi.fn(async () => {}),
-  }
-})
-
-vi.mock("../src/utils/remotePaneActions.js", () => ({
-  drainRemotePaneActions: vi.fn(async () => []),
-  getCurrentTmuxSessionName: vi.fn(() => null),
-}))
+import type { RemotePaneActionShortcut } from "../src/utils/remotePaneActions.js"
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+type EventFn<Args extends unknown[], Result> = ((...args: Args) => Result) & {
+  events: Args[]
+  clear: () => void
+}
+
+function eventFn<Args extends unknown[], Result>(
+  implementation: (...args: Args) => Result
+): EventFn<Args, Result> {
+  const events: Args[] = []
+  const fn = ((...args: Args) => {
+    events.push(args)
+    return implementation(...args)
+  }) as EventFn<Args, Result>
+  fn.events = events
+  fn.clear = () => {
+    events.length = 0
+  }
+  return fn
+}
+
+function expectEvent<Args extends unknown[], Result>(
+  fn: EventFn<Args, Result>,
+  ...args: Args
+) {
+  expect(fn.events).toContainEqual(args)
+}
+
+function expectNoEvents<Args extends unknown[], Result>(fn: EventFn<Args, Result>) {
+  expect(fn.events).toEqual([])
+}
 
 async function withTmuxEnv(run: () => Promise<void>) {
   const previousTmux = process.env.TMUX
@@ -62,29 +75,68 @@ function quietSettingsManager() {
   }
 }
 
+interface RemoteQueueState {
+  sessionName: string | null
+  queues: RemotePaneActionShortcut[][]
+  drainedSessions: string[]
+}
+
+interface HarnessTmuxService {
+  breakPaneToWindow: (paneId: string, windowName: string) => Promise<void>
+  enterDetachConfirmMode: () => Promise<void>
+  getActivePaneId: () => Promise<string>
+  getCurrentPaneId: () => Promise<string>
+  getPaneTitle: (paneId: string) => Promise<string>
+  joinPaneToTarget: (paneId: string, targetPaneId: string) => Promise<void>
+  normalizeClientKeyTableToRoot: () => Promise<boolean>
+  selectPane: (paneId: string) => Promise<void>
+  setPaneTitle: (paneId: string, title: string) => Promise<void>
+  splitPane: (options?: {
+    targetPane?: string
+    cwd?: string
+    command?: string
+    preserveZoom?: boolean
+  }) => Promise<string>
+}
+
+function createRemoteQueueState(): RemoteQueueState {
+  return {
+    sessionName: null,
+    queues: [],
+    drainedSessions: [],
+  }
+}
+
+let harnessTmuxService: HarnessTmuxService
+let harnessRemoteQueueState: RemoteQueueState
+let harnessLayoutRefreshEvents: Array<{ paneId: string; width: number; options: { forceLayout?: boolean } }>
+
 function Harness({
   panes,
   selectedIndex = 0,
   presentationMode,
   popupManager,
   settingsManager,
-  getSettingsManagerForProjectRoot = vi.fn(() => settingsManager),
+  getSettingsManagerForProjectRoot = () => settingsManager,
   controlPaneId = "%0",
-  setSelectedIndex = vi.fn(),
-  setStatusMessage = vi.fn(),
-  savePanes = vi.fn(async () => {}),
-  loadPanes = vi.fn(async () => {}),
+  tmuxService = harnessTmuxService,
+  remoteQueueState = harnessRemoteQueueState,
+  layoutRefreshEvents = harnessLayoutRefreshEvents,
+  setSelectedIndex = () => {},
+  setStatusMessage = () => {},
+  savePanes = async () => {},
+  loadPanes = async () => {},
   getPanes = () => panes,
-  handlePaneCreationWithAgent = vi.fn(async () => []),
+  handlePaneCreationWithAgent = async () => [],
   showInlineSettings = false,
-  setShowInlineSettings = vi.fn(),
+  setShowInlineSettings = () => {},
   inlineSettingsProjectRoot,
-  setInlineSettingsProjectRoot = vi.fn(),
+  setInlineSettingsProjectRoot = () => {},
   projectActionItems = [],
   getActiveSurface,
   isControlPaneSelectionPending,
-  clearControlPaneSelectionPending = vi.fn(),
-  findCardInDirection = vi.fn(() => null),
+  clearControlPaneSelectionPending = () => {},
+  findCardInDirection = () => null,
 }: {
   panes: DmuxPane[]
   selectedIndex?: number
@@ -93,6 +145,9 @@ function Harness({
   settingsManager: any
   getSettingsManagerForProjectRoot?: (projectRoot: string) => any
   controlPaneId?: string
+  tmuxService?: HarnessTmuxService
+  remoteQueueState?: RemoteQueueState
+  layoutRefreshEvents?: Array<{ paneId: string; width: number; options: { forceLayout?: boolean } }>
   setSelectedIndex?: (index: number) => void
   setStatusMessage?: (message: string) => void
   savePanes?: (panes: DmuxPane[]) => Promise<void>
@@ -117,70 +172,92 @@ function Harness({
     selectedIndex,
     setSelectedIndex,
     isCreatingPane: false,
-    setIsCreatingPane: vi.fn(),
+    setIsCreatingPane: () => {},
     runningCommand: false,
     isUpdating: false,
     isLoading: false,
     ignoreInput: false,
     isDevMode: false,
     quitConfirmMode: false,
-    setQuitConfirmMode: vi.fn(),
+    setQuitConfirmMode: () => {},
     showCommandPrompt: null,
-    setShowCommandPrompt: vi.fn(),
+    setShowCommandPrompt: () => {},
     commandInput: "",
-    setCommandInput: vi.fn(),
+    setCommandInput: () => {},
     showFileCopyPrompt: false,
-    setShowFileCopyPrompt: vi.fn(),
+    setShowFileCopyPrompt: () => {},
     currentCommandType: null,
-    setCurrentCommandType: vi.fn(),
+    setCurrentCommandType: () => {},
     showInlineSettings,
     setShowInlineSettings,
     inlineSettingsIndex: 0,
-    setInlineSettingsIndex: vi.fn(),
+    setInlineSettingsIndex: () => {},
     inlineSettingsMode: "list" as const,
-    setInlineSettingsMode: vi.fn(),
+    setInlineSettingsMode: () => {},
     inlineSettingsEditingKey: undefined,
-    setInlineSettingsEditingKey: vi.fn(),
+    setInlineSettingsEditingKey: () => {},
     inlineSettingsEditingValueIndex: 0,
-    setInlineSettingsEditingValueIndex: vi.fn(),
+    setInlineSettingsEditingValueIndex: () => {},
     inlineSettingsScopeIndex: 0,
-    setInlineSettingsScopeIndex: vi.fn(),
+    setInlineSettingsScopeIndex: () => {},
     inlineSettingsProjectRoot,
     setInlineSettingsProjectRoot,
-    resetInlineSettings: vi.fn(),
+    resetInlineSettings: () => {},
     projectSettings: {},
-    saveSettings: vi.fn(),
+    saveSettings: async () => {},
     settingsManager,
     getSettingsManagerForProjectRoot,
     popupManager,
     actionSystem: {
       actionState: {},
-      executeAction: vi.fn(),
-      executeCallback: vi.fn(),
-      clearDialog: vi.fn(),
-      clearStatus: vi.fn(),
-      setActionState: vi.fn(),
+      executeAction: async () => {},
+      executeCallback: async () => {},
+      clearDialog: () => {},
+      clearStatus: () => {},
+      setActionState: () => {},
     },
     controlPaneId,
+    tmuxService,
+    enforceControlPaneSizeFn: async (paneId, width, options) => {
+      layoutRefreshEvents?.push({ paneId, width, options })
+    },
+    getCurrentTmuxSessionNameFn: () => remoteQueueState?.sessionName ?? null,
+    drainRemotePaneActionsFn: async (sessionName) => {
+      if (!remoteQueueState) {
+        return []
+      }
+      remoteQueueState.drainedSessions.push(sessionName)
+      return remoteQueueState.queues.shift() ?? []
+    },
+    createShellPaneFn: async (paneId, nextId) => ({
+      id: `dmux-${nextId}`,
+      slug: `shell-${nextId}`,
+      prompt: "",
+      paneId,
+      projectRoot: "/repo",
+      projectName: "repo",
+      type: "shell",
+      shellType: "shell",
+    }),
     getActiveSurface,
     isControlPaneSelectionPending,
     clearControlPaneSelectionPending,
-    trackProjectActivity: vi.fn(async (work: () => unknown) => await work()),
+    trackProjectActivity: async (work: () => unknown) => await work(),
     presentationMode,
     popupsSupported: true,
     setStatusMessage,
-    copyNonGitFiles: vi.fn(),
-    runCommandInternal: vi.fn(),
+    copyNonGitFiles: async () => {},
+    runCommandInternal: async () => {},
     handlePaneCreationWithAgent,
-    handleCreateChildWorktree: vi.fn(async () => []),
-    handleReopenWorktree: vi.fn(async () => null),
-    setDevSourceFromPane: vi.fn(),
+    handleCreateChildWorktree: async () => {},
+    handleReopenWorktree: async () => {},
+    setDevSourceFromPane: async () => {},
     savePanes,
     sidebarProjects: [{ projectRoot: "/repo", projectName: "repo" }],
-    saveSidebarProjects: vi.fn(async (projects) => projects),
+    saveSidebarProjects: async (projects) => projects,
     loadPanes,
     getPanes,
-    cleanExit: vi.fn(),
+    cleanExit: () => {},
     availableAgents: ["claude"],
     panesFile: "/repo/.dmux/dmux.config.json",
     projectRoot: "/repo",
@@ -193,73 +270,98 @@ function Harness({
 
 interface FakeTmuxState {
   selectedPaneId: string | undefined
+  selectedPaneIds: string[]
+  normalizeClientKeyTableCount: number
+  activePaneIdLookups: number
   hiddenWindows: Map<string, string>
   failedJoinPaneIds: Set<string>
   joins: Array<{ paneId: string; targetPaneId: string }>
   splitPaneIds: string[]
   createdPanes: string[]
+  nextBreakPaneImplementation?: (paneId: string, windowName: string) => Promise<void>
 }
 
 function createFakeTmuxState(): FakeTmuxState {
   return {
     selectedPaneId: undefined,
+    selectedPaneIds: [],
+    normalizeClientKeyTableCount: 0,
+    activePaneIdLookups: 0,
     hiddenWindows: new Map(),
     failedJoinPaneIds: new Set(),
     joins: [],
     splitPaneIds: [],
     createdPanes: [],
+    nextBreakPaneImplementation: undefined,
   }
 }
 
 describe("useInputHandling focus mode", () => {
   let tmuxState = createFakeTmuxState()
-  const tmuxServiceMock = {
-    selectPane: vi.fn(async (paneId: string) => {
+  let remoteQueueState = createRemoteQueueState()
+  let layoutRefreshEvents: Array<{ paneId: string; width: number; options: { forceLayout?: boolean } }> = []
+  const tmuxServiceFake: HarnessTmuxService = {
+    selectPane: async (paneId: string) => {
       tmuxState.selectedPaneId = paneId
-    }),
-    normalizeClientKeyTableToRoot: vi.fn(async () => true),
-    getActivePaneId: vi.fn(async () => "%0"),
-    joinPaneToTarget: vi.fn(async (paneId: string, targetPaneId: string) => {
+      tmuxState.selectedPaneIds.push(paneId)
+    },
+    normalizeClientKeyTableToRoot: async () => {
+      tmuxState.normalizeClientKeyTableCount += 1
+      return true
+    },
+    getActivePaneId: async () => {
+      tmuxState.activePaneIdLookups += 1
+      return "%0"
+    },
+    getCurrentPaneId: async () => "%0",
+    getPaneTitle: async () => "",
+    joinPaneToTarget: async (paneId: string, targetPaneId: string) => {
       if (tmuxState.failedJoinPaneIds.has(paneId)) {
         throw new Error(`missing pane ${paneId}`)
       }
       tmuxState.joins.push({ paneId, targetPaneId })
-    }),
-    breakPaneToWindow: vi.fn(async (paneId: string, windowName: string) => {
+    },
+    breakPaneToWindow: async (paneId: string, windowName: string) => {
+      if (tmuxState.nextBreakPaneImplementation) {
+        const implementation = tmuxState.nextBreakPaneImplementation
+        tmuxState.nextBreakPaneImplementation = undefined
+        await implementation(paneId, windowName)
+        return
+      }
       tmuxState.hiddenWindows.set(paneId, windowName)
-    }),
-    splitPane: vi.fn(async () => {
+    },
+    splitPane: async () => {
       const paneId = tmuxState.splitPaneIds.shift() || "%2"
       tmuxState.createdPanes.push(paneId)
       return paneId
-    }),
-    setPaneTitle: vi.fn(async () => {}),
+    },
+    setPaneTitle: async () => {},
+    enterDetachConfirmMode: async () => {},
   }
 
   beforeEach(() => {
     tmuxState = createFakeTmuxState()
-    vi.clearAllMocks()
-    vi.mocked(getCurrentTmuxSessionName).mockReturnValue(null)
-    vi.mocked(drainRemotePaneActions).mockResolvedValue([])
-    vi.spyOn(TmuxService, "getInstance").mockReturnValue(
-      tmuxServiceMock as unknown as TmuxService
-    )
+    remoteQueueState = createRemoteQueueState()
+    layoutRefreshEvents = []
+    harnessTmuxService = tmuxServiceFake
+    harnessRemoteQueueState = remoteQueueState
+    harnessLayoutRefreshEvents = layoutRefreshEvents
   })
 
-  const clearFocusMocks = () => {
-    tmuxServiceMock.selectPane.mockClear()
-    tmuxServiceMock.normalizeClientKeyTableToRoot.mockClear()
+  const clearFocusEvents = () => {
+    tmuxState.selectedPaneIds = []
+    tmuxState.normalizeClientKeyTableCount = 0
   }
 
   const expectSidebarFocusRestored = () => {
-    expect(tmuxServiceMock.selectPane).toHaveBeenLastCalledWith("%0")
+    expect(tmuxState.selectedPaneIds.at(-1)).toBe("%0")
     expect(tmuxState.selectedPaneId).toBe("%0")
-    expect(tmuxServiceMock.normalizeClientKeyTableToRoot).toHaveBeenCalled()
+    expect(tmuxState.normalizeClientKeyTableCount).toBeGreaterThan(0)
   }
 
   it("enters focus mode by isolating the selected pane and returning focus to the sidebar", async () => {
     const popupManager = {
-      launchSettingsPopup: vi.fn(async () => ({
+      launchSettingsPopup: eventFn(async () => ({
         kind: "completed" as const,
         updates: [{
           key: "presentationMode",
@@ -269,10 +371,10 @@ describe("useInputHandling focus mode", () => {
       })),
     }
     const settingsManager = {
-      updateSetting: vi.fn(),
-      getEffectiveScope: vi.fn(() => "global"),
+      updateSetting: eventFn(() => undefined),
+      getEffectiveScope: eventFn(() => "global"),
     }
-    const savePanes = vi.fn(async () => {})
+    const savePanes = eventFn(async () => {})
 
     const { stdin, unmount } = render(
       <Harness
@@ -288,28 +390,27 @@ describe("useInputHandling focus mode", () => {
     stdin.write("s")
     await sleep(80)
 
-    expect(settingsManager.updateSetting).toHaveBeenCalledWith(
+    expectEvent(settingsManager.updateSetting,
       "presentationMode",
       "focus",
       "global"
     )
-    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith(
-      "%2",
-      "dmux-hidden-2"
-    )
-    expect(savePanes).toHaveBeenCalledWith([
+    expect(tmuxState.hiddenWindows).toEqual(new Map([
+      ["%2", "dmux-hidden-2"],
+    ]))
+    expectEvent(savePanes, [
       expect.objectContaining({ id: "1", hidden: false }),
       expect.objectContaining({ id: "2", hidden: true }),
     ])
-    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%0")
+    expect(tmuxState.selectedPaneIds).toContain("%0")
 
     unmount()
   })
 
   it("does not open inline settings when the settings popup is cancelled", async () => {
-    const setShowInlineSettings = vi.fn()
+    const setShowInlineSettings = eventFn(() => undefined)
     const popupManager = {
-      launchSettingsPopup: vi.fn(async () => ({
+      launchSettingsPopup: eventFn(async () => ({
         kind: "cancelled" as const,
       })),
     }
@@ -320,8 +421,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="grid"
         popupManager={popupManager}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         setShowInlineSettings={setShowInlineSettings}
       />
@@ -331,15 +432,15 @@ describe("useInputHandling focus mode", () => {
     stdin.write("s")
     await sleep(40)
 
-    expect(setShowInlineSettings).not.toHaveBeenCalled()
+    expectNoEvents(setShowInlineSettings)
 
     unmount()
   })
 
   it("falls back to inline settings when popup launch is unavailable", async () => {
-    const setShowInlineSettings = vi.fn()
+    const setShowInlineSettings = eventFn(() => undefined)
     const popupManager = {
-      launchSettingsPopup: vi.fn(async () => ({
+      launchSettingsPopup: eventFn(async () => ({
         kind: "unavailable" as const,
         reason: "error" as const,
       })),
@@ -351,8 +452,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="grid"
         popupManager={popupManager}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         setShowInlineSettings={setShowInlineSettings}
       />
@@ -362,20 +463,18 @@ describe("useInputHandling focus mode", () => {
     stdin.write("s")
     await sleep(40)
 
-    expect(setShowInlineSettings).toHaveBeenCalledWith(true)
+    expectEvent(setShowInlineSettings, true)
 
     unmount()
   })
 
   it("uses the latest active project root when remote settings are opened from an unmanaged pane", async () => {
-    vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
-    vi.mocked(drainRemotePaneActions)
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ shortcut: "m", targetPaneId: "%999" }])
+    remoteQueueState.sessionName = "dmux-test"
+    remoteQueueState.queues.push([], [{ shortcut: "m", targetPaneId: "%999" }])
 
     const popupManager = {
-      launchHooksPopup: vi.fn(async () => null),
-      launchSettingsPopup: vi.fn(async () => ({
+      launchHooksPopup: eventFn(async () => null),
+      launchSettingsPopup: eventFn(async () => ({
         kind: "cancelled" as const,
       })),
     }
@@ -387,8 +486,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="grid"
         popupManager={popupManager}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         projectActionItems={[
           { index: 1, projectRoot: "/repo-a", projectName: "repo-a", kind: "new-agent", hotkey: "n" },
@@ -405,8 +504,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="grid"
         popupManager={popupManager}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         projectActionItems={[
           { index: 1, projectRoot: "/repo-b", projectName: "repo-b", kind: "new-agent", hotkey: "n" },
@@ -418,23 +517,21 @@ describe("useInputHandling focus mode", () => {
     process.emit("dmux-external-command-signal" as any)
     await sleep(80)
 
-    expect(popupManager.launchSettingsPopup).toHaveBeenLastCalledWith(
+    expect(popupManager.launchSettingsPopup.events.at(-1)).toEqual([
       expect.any(Function),
-      "/repo-b"
-    )
+      "/repo-b",
+    ])
 
     renderResult.unmount()
   })
 
   it("applies non-session project settings updates to the selected sidebar project root", async () => {
-    vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
-    vi.mocked(drainRemotePaneActions)
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ shortcut: "m", targetPaneId: "%999" }])
+    remoteQueueState.sessionName = "dmux-test"
+    remoteQueueState.queues.push([], [{ shortcut: "m", targetPaneId: "%999" }])
 
     const popupManager = {
-      launchHooksPopup: vi.fn(async () => null),
-      launchSettingsPopup: vi.fn(async () => ({
+      launchHooksPopup: eventFn(async () => null),
+      launchSettingsPopup: eventFn(async () => ({
         kind: "completed" as const,
         updates: [{
           key: "showFooterTips",
@@ -444,15 +541,15 @@ describe("useInputHandling focus mode", () => {
       })),
     }
     const sessionSettingsManager = {
-      updateSetting: vi.fn(),
-      getEffectiveScope: vi.fn(() => "global"),
-      getSettings: vi.fn(() => ({ showFooterTips: true })),
+      updateSetting: eventFn(() => undefined),
+      getEffectiveScope: eventFn(() => "global"),
+      getSettings: eventFn(() => ({ showFooterTips: true })),
     }
     const repoBSettingsManager = {
-      updateSetting: vi.fn(),
-      getSettings: vi.fn(() => ({ showFooterTips: true })),
+      updateSetting: eventFn(() => undefined),
+      getSettings: eventFn(() => ({ showFooterTips: true })),
     }
-    const getSettingsManagerForProjectRoot = vi.fn((projectRoot: string) =>
+    const getSettingsManagerForProjectRoot = eventFn((projectRoot: string) =>
       projectRoot === "/repo-b" ? repoBSettingsManager : sessionSettingsManager
     )
 
@@ -474,27 +571,25 @@ describe("useInputHandling focus mode", () => {
     process.emit("dmux-external-command-signal" as any)
     await sleep(80)
 
-    expect(repoBSettingsManager.updateSetting).toHaveBeenCalledWith(
+    expectEvent(repoBSettingsManager.updateSetting,
       "showFooterTips",
       false,
       "project"
     )
-    expect(sessionSettingsManager.updateSetting).not.toHaveBeenCalled()
+    expectNoEvents(sessionSettingsManager.updateSetting)
 
     unmount()
   })
 
   it("targets the selected sidebar project when falling back to inline settings", async () => {
-    vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
-    vi.mocked(drainRemotePaneActions)
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ shortcut: "m", targetPaneId: "%999" }])
+    remoteQueueState.sessionName = "dmux-test"
+    remoteQueueState.queues.push([], [{ shortcut: "m", targetPaneId: "%999" }])
 
-    const setShowInlineSettings = vi.fn()
-    const setInlineSettingsProjectRoot = vi.fn()
+    const setShowInlineSettings = eventFn(() => undefined)
+    const setInlineSettingsProjectRoot = eventFn(() => undefined)
     const popupManager = {
-      launchHooksPopup: vi.fn(async () => null),
-      launchSettingsPopup: vi.fn(async () => ({
+      launchHooksPopup: eventFn(async () => null),
+      launchSettingsPopup: eventFn(async () => ({
         kind: "unavailable" as const,
         reason: "unsupported" as const,
       })),
@@ -507,9 +602,9 @@ describe("useInputHandling focus mode", () => {
         presentationMode="grid"
         popupManager={popupManager}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
-          getSettings: vi.fn(() => ({})),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
+          getSettings: eventFn(() => ({})),
         }}
         setShowInlineSettings={setShowInlineSettings}
         setInlineSettingsProjectRoot={setInlineSettingsProjectRoot}
@@ -523,21 +618,19 @@ describe("useInputHandling focus mode", () => {
     process.emit("dmux-external-command-signal" as any)
     await sleep(80)
 
-    expect(setInlineSettingsProjectRoot).toHaveBeenCalledWith("/repo-b")
-    expect(setShowInlineSettings).toHaveBeenCalledWith(true)
+    expectEvent(setInlineSettingsProjectRoot, "/repo-b")
+    expectEvent(setShowInlineSettings, true)
 
     unmount()
   })
 
   it("persists non-session project presentation mode without live-applying it to the current session", async () => {
-    vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
-    vi.mocked(drainRemotePaneActions)
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ shortcut: "m", targetPaneId: "%999" }])
+    remoteQueueState.sessionName = "dmux-test"
+    remoteQueueState.queues.push([], [{ shortcut: "m", targetPaneId: "%999" }])
 
     const popupManager = {
-      launchHooksPopup: vi.fn(async () => null),
-      launchSettingsPopup: vi.fn(async () => ({
+      launchHooksPopup: eventFn(async () => null),
+      launchSettingsPopup: eventFn(async () => ({
         kind: "completed" as const,
         updates: [{
           key: "presentationMode",
@@ -547,18 +640,18 @@ describe("useInputHandling focus mode", () => {
       })),
     }
     const sessionSettingsManager = {
-      updateSetting: vi.fn(),
-      getEffectiveScope: vi.fn(() => "global"),
-      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+      updateSetting: eventFn(() => undefined),
+      getEffectiveScope: eventFn(() => "global"),
+      getSettings: eventFn(() => ({ presentationMode: "grid" })),
     }
     const repoBSettingsManager = {
-      updateSetting: vi.fn(),
-      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+      updateSetting: eventFn(() => undefined),
+      getSettings: eventFn(() => ({ presentationMode: "grid" })),
     }
-    const getSettingsManagerForProjectRoot = vi.fn((projectRoot: string) =>
+    const getSettingsManagerForProjectRoot = eventFn((projectRoot: string) =>
       projectRoot === "/repo-b" ? repoBSettingsManager : sessionSettingsManager
     )
-    const savePanes = vi.fn(async () => {})
+    const savePanes = eventFn(async () => {})
 
     const { unmount } = render(
       <Harness
@@ -579,28 +672,26 @@ describe("useInputHandling focus mode", () => {
     process.emit("dmux-external-command-signal" as any)
     await sleep(80)
 
-    expect(repoBSettingsManager.updateSetting).toHaveBeenCalledWith(
+    expectEvent(repoBSettingsManager.updateSetting,
       "presentationMode",
       "focus",
       "project"
     )
-    expect(sessionSettingsManager.updateSetting).not.toHaveBeenCalled()
-    expect(tmuxServiceMock.breakPaneToWindow).not.toHaveBeenCalled()
-    expect(savePanes).not.toHaveBeenCalled()
+    expectNoEvents(sessionSettingsManager.updateSetting)
+    expect(tmuxState.hiddenWindows.size).toBe(0)
+    expectNoEvents(savePanes)
 
     unmount()
   })
 
   it("blocks remote queued actions while inline settings are open", async () => {
-    vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
-    vi.mocked(drainRemotePaneActions).mockResolvedValue([
-      { shortcut: "m", targetPaneId: "%999" },
-    ])
+    remoteQueueState.sessionName = "dmux-test"
+    remoteQueueState.queues.push([{ shortcut: "m", targetPaneId: "%999" }])
 
     const popupManager = {
-      launchSettingsPopup: vi.fn(),
+      launchSettingsPopup: eventFn(() => undefined),
     }
-    const setStatusMessage = vi.fn()
+    const setStatusMessage = eventFn(() => undefined)
 
     const { unmount } = render(
       <Harness
@@ -608,8 +699,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="grid"
         popupManager={popupManager}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         showInlineSettings={true}
         setStatusMessage={setStatusMessage}
@@ -618,8 +709,8 @@ describe("useInputHandling focus mode", () => {
 
     await sleep(80)
 
-    expect(popupManager.launchSettingsPopup).not.toHaveBeenCalled()
-    expect(setStatusMessage).toHaveBeenCalledWith(
+    expectNoEvents(popupManager.launchSettingsPopup)
+    expectEvent(setStatusMessage,
       "dmux is busy; ignored remote pane action m"
     )
 
@@ -627,14 +718,12 @@ describe("useInputHandling focus mode", () => {
   })
 
   it("refreshes layout once when remote settings update pane width bounds", async () => {
-    vi.mocked(getCurrentTmuxSessionName).mockReturnValue("dmux-test")
-    vi.mocked(drainRemotePaneActions).mockResolvedValue([
-      { shortcut: "m", targetPaneId: "%999" },
-    ])
+    remoteQueueState.sessionName = "dmux-test"
+    remoteQueueState.queues.push([{ shortcut: "m", targetPaneId: "%999" }])
 
     const popupManager = {
-      launchHooksPopup: vi.fn(async () => null),
-      launchSettingsPopup: vi.fn(async () => ({
+      launchHooksPopup: eventFn(async () => null),
+      launchSettingsPopup: eventFn(async () => ({
         kind: "completed" as const,
         updates: [{
           key: "minPaneWidth",
@@ -644,8 +733,8 @@ describe("useInputHandling focus mode", () => {
       })),
     }
     const settingsManager = {
-      updateSetting: vi.fn(),
-      getEffectiveScope: vi.fn(() => "global"),
+      updateSetting: eventFn(() => undefined),
+      getEffectiveScope: eventFn(() => "global"),
     }
 
     const { unmount } = render(
@@ -659,26 +748,28 @@ describe("useInputHandling focus mode", () => {
 
     await sleep(320)
 
-    expect(settingsManager.updateSetting).toHaveBeenCalledWith(
+    expectEvent(settingsManager.updateSetting,
       "minPaneWidth",
       72,
       "global"
     )
-    expect(enforceControlPaneSize).toHaveBeenCalledTimes(1)
-    expect(enforceControlPaneSize).toHaveBeenCalledWith(
-      "%0",
-      expect.any(Number),
-      { forceLayout: true }
-    )
+    expect(layoutRefreshEvents).toHaveLength(1)
+    expect(layoutRefreshEvents[0]).toEqual({
+      paneId: "%0",
+      width: expect.any(Number),
+      options: { forceLayout: true },
+    })
 
     unmount()
   })
 
   it("does not persist presentation mode when the live tmux apply fails", async () => {
-    tmuxServiceMock.breakPaneToWindow.mockRejectedValueOnce(new Error("break-pane failed"))
+    tmuxState.nextBreakPaneImplementation = async () => {
+      throw new Error("break-pane failed")
+    }
 
     const popupManager = {
-      launchSettingsPopup: vi.fn(async () => ({
+      launchSettingsPopup: eventFn(async () => ({
         kind: "completed" as const,
         updates: [{
           key: "presentationMode",
@@ -688,11 +779,11 @@ describe("useInputHandling focus mode", () => {
       })),
     }
     const settingsManager = {
-      updateSetting: vi.fn(),
-      getEffectiveScope: vi.fn(() => "global"),
-      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+      updateSetting: eventFn(() => undefined),
+      getEffectiveScope: eventFn(() => "global"),
+      getSettings: eventFn(() => ({ presentationMode: "grid" })),
     }
-    const setStatusMessage = vi.fn()
+    const setStatusMessage = eventFn(() => undefined)
 
     const { stdin, unmount } = render(
       <Harness
@@ -708,8 +799,8 @@ describe("useInputHandling focus mode", () => {
     stdin.write("s")
     await sleep(80)
 
-    expect(settingsManager.updateSetting).not.toHaveBeenCalled()
-    expect(setStatusMessage).toHaveBeenCalledWith(
+    expectNoEvents(settingsManager.updateSetting)
+    expectEvent(setStatusMessage,
       "Failed to save setting: break-pane failed"
     )
 
@@ -718,7 +809,7 @@ describe("useInputHandling focus mode", () => {
 
   it("restores the previous pane visibility snapshot when presentation mode persistence fails", async () => {
     const popupManager = {
-      launchSettingsPopup: vi.fn(async () => ({
+      launchSettingsPopup: eventFn(async () => ({
         kind: "completed" as const,
         updates: [{
           key: "presentationMode",
@@ -728,15 +819,15 @@ describe("useInputHandling focus mode", () => {
       })),
     }
     const settingsManager = {
-      updateSetting: vi.fn(() => {
+      updateSetting: eventFn(() => {
         throw new Error("disk full")
       }),
-      getEffectiveScope: vi.fn(() => "global"),
-      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+      getEffectiveScope: eventFn(() => "global"),
+      getSettings: eventFn(() => ({ presentationMode: "grid" })),
     }
-    const savePanes = vi.fn(async () => {})
-    const loadPanes = vi.fn(async () => {})
-    const setStatusMessage = vi.fn()
+    const savePanes = eventFn(async () => {})
+    const loadPanes = eventFn(async () => {})
+    const setStatusMessage = eventFn(() => undefined)
 
     const { stdin, unmount } = render(
       <Harness
@@ -754,18 +845,20 @@ describe("useInputHandling focus mode", () => {
     stdin.write("s")
     await sleep(100)
 
-    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%2", "dmux-hidden-2")
-    expect(tmuxServiceMock.joinPaneToTarget).toHaveBeenCalledWith("%2", "%1")
-    expect(savePanes).toHaveBeenNthCalledWith(1, [
+    expect(tmuxState.hiddenWindows).toEqual(new Map([
+      ["%2", "dmux-hidden-2"],
+    ]))
+    expect(tmuxState.joins).toContainEqual({ paneId: "%2", targetPaneId: "%1" })
+    expect(savePanes.events[0]).toEqual([[
       expect.objectContaining({ id: "1", hidden: false }),
       expect.objectContaining({ id: "2", hidden: true }),
-    ])
-    expect(savePanes.mock.calls[1]?.[0]).toEqual([
+    ]])
+    expect(savePanes.events[1]?.[0]).toEqual([
       expect.objectContaining({ id: "1" }),
       expect.objectContaining({ id: "2" }),
     ])
-    expect((savePanes.mock.calls[1]?.[0] as DmuxPane[]).every((pane) => pane.hidden !== true)).toBe(true)
-    expect(setStatusMessage).toHaveBeenCalledWith("Failed to save setting: disk full")
+    expect((savePanes.events[1]?.[0] as DmuxPane[]).every((pane) => pane.hidden !== true)).toBe(true)
+    expectEvent(setStatusMessage, "Failed to save setting: disk full")
 
     unmount()
   })
@@ -776,7 +869,7 @@ describe("useInputHandling focus mode", () => {
     let latestPanes = basePanes
     let savedPanes: DmuxPane[] = []
     const popupManager = {
-      launchSettingsPopup: vi.fn(async () => ({
+      launchSettingsPopup: eventFn(async () => ({
         kind: "completed" as const,
         updates: [{
           key: "presentationMode",
@@ -786,14 +879,14 @@ describe("useInputHandling focus mode", () => {
       })),
     }
     const settingsManager = {
-      updateSetting: vi.fn(),
-      getEffectiveScope: vi.fn(() => "global"),
-      getSettings: vi.fn(() => ({ presentationMode: "grid" })),
+      updateSetting: eventFn(() => undefined),
+      getEffectiveScope: eventFn(() => "global"),
+      getSettings: eventFn(() => ({ presentationMode: "grid" })),
     }
-    tmuxServiceMock.breakPaneToWindow.mockImplementationOnce(async (paneId, windowName) => {
+    tmuxState.nextBreakPaneImplementation = async (paneId, windowName) => {
       tmuxState.hiddenWindows.set(paneId, windowName)
       latestPanes = [...basePanes, concurrentPane]
-    })
+    }
 
     const { stdin, unmount } = render(
       <Harness
@@ -878,7 +971,7 @@ describe("useInputHandling focus mode", () => {
     const latestPanes = [hiddenPane, latestHiddenPane, concurrentPane]
     let savedPanes: DmuxPane[] = []
     const popupManager = {
-      launchSettingsPopup: vi.fn(async () => ({
+      launchSettingsPopup: eventFn(async () => ({
         kind: "completed" as const,
         updates: [{
           key: "presentationMode",
@@ -888,9 +981,9 @@ describe("useInputHandling focus mode", () => {
       })),
     }
     const settingsManager = {
-      updateSetting: vi.fn(),
-      getEffectiveScope: vi.fn(() => "global"),
-      getSettings: vi.fn(() => ({ presentationMode: "focus" })),
+      updateSetting: eventFn(() => undefined),
+      getEffectiveScope: eventFn(() => "global"),
+      getSettings: eventFn(() => ({ presentationMode: "focus" })),
     }
 
     const { stdin, unmount } = render(
@@ -934,28 +1027,28 @@ describe("useInputHandling focus mode", () => {
         presentationMode="focus"
         popupManager={{}}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
       />
     )
 
     await sleep(40)
-    tmuxServiceMock.selectPane.mockClear()
+    tmuxState.selectedPaneIds = []
 
     stdin.write("j")
     await sleep(40)
 
-    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%2")
+    expect(tmuxState.selectedPaneIds).toContain("%2")
 
     unmount()
   })
 
   it("shows a visible grid pane on Enter without leaving the sidebar", async () => {
     const popupManager = {
-      launchKebabMenuPopup: vi.fn(),
+      launchKebabMenuPopup: eventFn(() => undefined),
     }
-    const setSelectedIndex = vi.fn()
+    const setSelectedIndex = eventFn(() => undefined)
 
     const { stdin, unmount } = render(
       <Harness
@@ -969,14 +1062,14 @@ describe("useInputHandling focus mode", () => {
     )
 
     await sleep(20)
-    clearFocusMocks()
+    clearFocusEvents()
 
     stdin.write("\r")
     await sleep(80)
 
-    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
-    expect(setSelectedIndex).toHaveBeenCalledWith(1)
-    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith("%2")
+    expectNoEvents(popupManager.launchKebabMenuPopup)
+    expectEvent(setSelectedIndex, 1)
+    expect(tmuxState.selectedPaneIds).not.toContain("%2")
     expectSidebarFocusRestored()
 
     unmount()
@@ -985,13 +1078,13 @@ describe("useInputHandling focus mode", () => {
   it("reveals a hidden grid pane on Enter while keeping sidebar focus", async () => {
     let currentPanes = [pane("1", { hidden: true }), pane("2")]
     const popupManager = {
-      launchKebabMenuPopup: vi.fn(),
+      launchKebabMenuPopup: eventFn(() => undefined),
     }
-    const setSelectedIndex = vi.fn()
-    const savePanes = vi.fn(async (updatedPanes: DmuxPane[]) => {
+    const setSelectedIndex = eventFn(() => undefined)
+    const savePanes = eventFn(async (updatedPanes: DmuxPane[]) => {
       currentPanes = updatedPanes.map((updatedPane) => ({ ...updatedPane }))
     })
-    const loadPanes = vi.fn(async () => {})
+    const loadPanes = eventFn(async () => {})
 
     const { stdin, unmount } = render(
       <Harness
@@ -1008,20 +1101,20 @@ describe("useInputHandling focus mode", () => {
     )
 
     await sleep(20)
-    clearFocusMocks()
+    clearFocusEvents()
 
     stdin.write("\r")
     await sleep(80)
 
-    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
-    expect(tmuxServiceMock.joinPaneToTarget).toHaveBeenCalledWith("%1", "%2")
-    expect(savePanes).toHaveBeenCalledWith([
+    expectNoEvents(popupManager.launchKebabMenuPopup)
+    expect(tmuxState.joins).toContainEqual({ paneId: "%1", targetPaneId: "%2" })
+    expectEvent(savePanes, [
       expect.objectContaining({ id: "1", hidden: false }),
       expect.objectContaining({ id: "2" }),
     ])
-    expect(loadPanes).toHaveBeenCalled()
-    expect(setSelectedIndex).toHaveBeenCalledWith(0)
-    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith("%1")
+    expect(loadPanes.events.length).toBeGreaterThan(0)
+    expectEvent(setSelectedIndex, 0)
+    expect(tmuxState.selectedPaneIds).not.toContain("%1")
     expectSidebarFocusRestored()
 
     unmount()
@@ -1029,7 +1122,7 @@ describe("useInputHandling focus mode", () => {
 
   it("does not steal focus when Enter presents a pane in focus mode", async () => {
     const popupManager = {
-      launchKebabMenuPopup: vi.fn(),
+      launchKebabMenuPopup: eventFn(() => undefined),
     }
 
     const { stdin, unmount } = render(
@@ -1043,13 +1136,13 @@ describe("useInputHandling focus mode", () => {
     )
 
     await sleep(40)
-    clearFocusMocks()
+    clearFocusEvents()
 
     stdin.write("\r")
     await sleep(80)
 
-    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
-    expect(tmuxServiceMock.selectPane).not.toHaveBeenCalledWith("%2")
+    expectNoEvents(popupManager.launchKebabMenuPopup)
+    expect(tmuxState.selectedPaneIds).not.toContain("%2")
     expectSidebarFocusRestored()
 
     unmount()
@@ -1057,7 +1150,7 @@ describe("useInputHandling focus mode", () => {
 
   it("keeps m as the explicit pane menu shortcut", async () => {
     const popupManager = {
-      launchKebabMenuPopup: vi.fn(async () => null),
+      launchKebabMenuPopup: eventFn(async () => null),
     }
 
     const { stdin, unmount } = render(
@@ -1074,7 +1167,7 @@ describe("useInputHandling focus mode", () => {
     stdin.write("m")
     await sleep(80)
 
-    expect(popupManager.launchKebabMenuPopup).toHaveBeenCalledWith(
+    expectEvent(popupManager.launchKebabMenuPopup,
       expect.objectContaining({ id: "1" }),
       [expect.objectContaining({ id: "1" })],
       {}
@@ -1261,7 +1354,7 @@ describe("useInputHandling focus mode", () => {
     const savePanes = async (nextPanes: DmuxPane[]) => {
       savedPanes = nextPanes
     }
-    const loadPanes = vi.fn(async () => {})
+    const loadPanes = eventFn(async () => {})
     tmuxState.splitPaneIds.push("%9")
     tmuxState.failedJoinPaneIds.add("%missing")
 
@@ -1293,7 +1386,7 @@ describe("useInputHandling focus mode", () => {
         browserPath: workPane.worktreePath,
       }),
     ])
-    expect(loadPanes).toHaveBeenCalled()
+    expect(loadPanes.events.length).toBeGreaterThan(0)
 
     unmount()
   })
@@ -1357,7 +1450,7 @@ describe("useInputHandling focus mode", () => {
   })
 
   it("falls back to another visible pane instead of re-showing a hidden selection", async () => {
-    const setSelectedIndex = vi.fn()
+    const setSelectedIndex = eventFn(() => undefined)
 
     const { unmount } = render(
       <Harness
@@ -1366,8 +1459,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="focus"
         popupManager={{}}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         setSelectedIndex={setSelectedIndex}
       />
@@ -1375,19 +1468,15 @@ describe("useInputHandling focus mode", () => {
 
     await sleep(60)
 
-    expect(setSelectedIndex).toHaveBeenCalledWith(1)
-    expect(
-      tmuxServiceMock.joinPaneToTarget.mock.calls.some(
-        ([paneId]) => paneId === "%1"
-      )
-    ).toBe(false)
+    expectEvent(setSelectedIndex, 1)
+    expect(tmuxState.joins.some((join) => join.paneId === "%1")).toBe(false)
 
     unmount()
   })
 
   it("keeps the selected hidden pane hidden when focus mode has no visible panes", async () => {
-    const savePanes = vi.fn(async () => {})
-    const setSelectedIndex = vi.fn()
+    const savePanes = eventFn(async () => {})
+    const setSelectedIndex = eventFn(() => undefined)
 
     const { unmount } = render(
       <Harness
@@ -1396,8 +1485,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="focus"
         popupManager={{}}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         savePanes={savePanes}
         setSelectedIndex={setSelectedIndex}
@@ -1406,9 +1495,9 @@ describe("useInputHandling focus mode", () => {
 
     await sleep(60)
 
-    expect(tmuxServiceMock.joinPaneToTarget).not.toHaveBeenCalled()
-    expect(setSelectedIndex).not.toHaveBeenCalled()
-    expect(savePanes).not.toHaveBeenCalled()
+    expect(tmuxState.joins).toEqual([])
+    expectNoEvents(setSelectedIndex)
+    expectNoEvents(savePanes)
 
     unmount()
   })
@@ -1417,10 +1506,10 @@ describe("useInputHandling focus mode", () => {
     let currentPanes = [pane("1"), pane("2", { hidden: true })]
     let currentSelectedIndex = 0
 
-    const savePanes = vi.fn(async (updatedPanes: DmuxPane[]) => {
+    const savePanes = eventFn(async (updatedPanes: DmuxPane[]) => {
       currentPanes = updatedPanes.map((pane) => ({ ...pane }))
     })
-    const setSelectedIndex = vi.fn((index: number) => {
+    const setSelectedIndex = eventFn((index: number) => {
       currentSelectedIndex = index
     })
 
@@ -1431,8 +1520,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="focus"
         popupManager={{}}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         savePanes={savePanes}
         setSelectedIndex={setSelectedIndex}
@@ -1450,8 +1539,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="focus"
         popupManager={{}}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         savePanes={savePanes}
         setSelectedIndex={setSelectedIndex}
@@ -1460,10 +1549,10 @@ describe("useInputHandling focus mode", () => {
 
     await sleep(80)
 
-    expect(setSelectedIndex).not.toHaveBeenCalled()
-    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%0")
-    expect(tmuxServiceMock.normalizeClientKeyTableToRoot).toHaveBeenCalled()
-    expect(tmuxServiceMock.joinPaneToTarget).not.toHaveBeenCalled()
+    expectNoEvents(setSelectedIndex)
+    expect(tmuxState.selectedPaneIds).toContain("%0")
+    expect(tmuxState.normalizeClientKeyTableCount).toBeGreaterThan(0)
+    expect(tmuxState.joins).toEqual([])
     expect(currentPanes).toEqual([
       expect.objectContaining({ id: "1", hidden: true }),
       expect.objectContaining({ id: "2", hidden: true }),
@@ -1473,7 +1562,7 @@ describe("useInputHandling focus mode", () => {
   })
 
   it("keeps sidebar focus after hiding other panes from the sidebar", async () => {
-    const savePanes = vi.fn(async () => {})
+    const savePanes = eventFn(async () => {})
 
     const { stdin, unmount } = render(
       <Harness
@@ -1487,13 +1576,15 @@ describe("useInputHandling focus mode", () => {
     )
 
     await sleep(20)
-    clearFocusMocks()
+    clearFocusEvents()
 
     stdin.write("H")
     await sleep(80)
 
-    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%2", "dmux-hidden-2")
-    expect(savePanes).toHaveBeenCalledWith([
+    expect(tmuxState.hiddenWindows).toEqual(new Map([
+      ["%2", "dmux-hidden-2"],
+    ]))
+    expectEvent(savePanes, [
       expect.objectContaining({ id: "1" }),
       expect.objectContaining({ id: "2", hidden: true }),
     ])
@@ -1503,7 +1594,7 @@ describe("useInputHandling focus mode", () => {
   })
 
   it("keeps sidebar focus after focusing a project from the sidebar", async () => {
-    const savePanes = vi.fn(async () => {})
+    const savePanes = eventFn(async () => {})
     const repoPane = pane("1", { projectRoot: "/repo", projectName: "repo" })
     const otherPane = pane("2", {
       projectRoot: "/repo-b",
@@ -1523,13 +1614,15 @@ describe("useInputHandling focus mode", () => {
     )
 
     await sleep(20)
-    clearFocusMocks()
+    clearFocusEvents()
 
     stdin.write("P")
     await sleep(80)
 
-    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%2", "dmux-hidden-2")
-    expect(savePanes).toHaveBeenCalledWith([
+    expect(tmuxState.hiddenWindows).toEqual(new Map([
+      ["%2", "dmux-hidden-2"],
+    ]))
+    expectEvent(savePanes, [
       expect.objectContaining({ id: "1" }),
       expect.objectContaining({ id: "2", hidden: true }),
     ])
@@ -1540,17 +1633,17 @@ describe("useInputHandling focus mode", () => {
 
   it("keeps a newly created pane active after the panes list reloads in focus mode", async () => {
     const popupManager = {
-      launchNewPanePopup: vi.fn(async () => "Build the feature"),
+      launchNewPanePopup: eventFn(async () => "Build the feature"),
     }
     const settingsManager = {
-      updateSetting: vi.fn(),
-      getEffectiveScope: vi.fn(() => "global"),
+      updateSetting: eventFn(() => undefined),
+      getEffectiveScope: eventFn(() => "global"),
     }
-    const savePanes = vi.fn(async () => {})
-    const loadPanes = vi.fn(async () => {})
-    const setSelectedIndex = vi.fn()
+    const savePanes = eventFn(async () => {})
+    const loadPanes = eventFn(async () => {})
+    const setSelectedIndex = eventFn(() => undefined)
     const newPane = pane("2")
-    const handlePaneCreationWithAgent = vi.fn(async () => [newPane])
+    const handlePaneCreationWithAgent = eventFn(async () => [newPane])
 
     const renderResult = render(
       <Harness
@@ -1569,12 +1662,12 @@ describe("useInputHandling focus mode", () => {
     renderResult.stdin.write("n")
     await sleep(80)
 
-    expect(handlePaneCreationWithAgent).toHaveBeenCalledWith("Build the feature", "/repo")
+    expectEvent(handlePaneCreationWithAgent, "Build the feature", "/repo")
 
-    tmuxServiceMock.breakPaneToWindow.mockClear()
-    tmuxServiceMock.selectPane.mockClear()
-    savePanes.mockClear()
-    setSelectedIndex.mockClear()
+    tmuxState.hiddenWindows.clear()
+    tmuxState.selectedPaneIds = []
+    savePanes.clear()
+    setSelectedIndex.clear()
 
     renderResult.rerender(
       <Harness
@@ -1591,10 +1684,12 @@ describe("useInputHandling focus mode", () => {
 
     await sleep(80)
 
-    expect(setSelectedIndex).toHaveBeenCalledWith(1)
-    expect(tmuxServiceMock.breakPaneToWindow).toHaveBeenCalledWith("%1", "dmux-hidden-1")
-    expect(tmuxServiceMock.selectPane).toHaveBeenCalledWith("%2")
-    expect(savePanes).toHaveBeenCalledWith([
+    expectEvent(setSelectedIndex, 1)
+    expect(tmuxState.hiddenWindows).toEqual(new Map([
+      ["%1", "dmux-hidden-1"],
+    ]))
+    expect(tmuxState.selectedPaneIds).toContain("%2")
+    expectEvent(savePanes, [
       expect.objectContaining({ id: "1", hidden: true }),
       expect.objectContaining({ id: "2", hidden: false }),
     ])
@@ -1604,10 +1699,10 @@ describe("useInputHandling focus mode", () => {
 
   it("uses Enter on a selected project action instead of opening a stale pane menu", async () => {
     const popupManager = {
-      launchNewPanePopup: vi.fn(async () => ({ prompt: "from action" })),
-      launchKebabMenuPopup: vi.fn(),
+      launchNewPanePopup: eventFn(async () => ({ prompt: "from action" })),
+      launchKebabMenuPopup: eventFn(() => undefined),
     }
-    const handlePaneCreationWithAgent = vi.fn(async () => [])
+    const handlePaneCreationWithAgent = eventFn(async () => [])
 
     const { stdin, unmount } = render(
       <Harness
@@ -1616,8 +1711,8 @@ describe("useInputHandling focus mode", () => {
         presentationMode="grid"
         popupManager={popupManager}
         settingsManager={{
-          updateSetting: vi.fn(),
-          getEffectiveScope: vi.fn(() => "global"),
+          updateSetting: eventFn(() => undefined),
+          getEffectiveScope: eventFn(() => "global"),
         }}
         handlePaneCreationWithAgent={handlePaneCreationWithAgent}
         projectActionItems={[
@@ -1630,20 +1725,20 @@ describe("useInputHandling focus mode", () => {
     stdin.write("\r")
     await sleep(80)
 
-    expect(popupManager.launchNewPanePopup).toHaveBeenCalledWith("/repo-b")
-    expect(handlePaneCreationWithAgent).toHaveBeenCalledWith({ prompt: "from action" }, "/repo-b")
-    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
+    expectEvent(popupManager.launchNewPanePopup, "/repo-b")
+    expectEvent(handlePaneCreationWithAgent, { prompt: "from action" }, "/repo-b")
+    expectNoEvents(popupManager.launchKebabMenuPopup)
 
     unmount()
   })
 
   it("re-resolves stale pane selection before Enter acts from the control pane", async () => {
     const popupManager = {
-      launchNewPanePopup: vi.fn(async () => ({ prompt: "from control focus" })),
-      launchKebabMenuPopup: vi.fn(),
+      launchNewPanePopup: eventFn(async () => ({ prompt: "from control focus" })),
+      launchKebabMenuPopup: eventFn(() => undefined),
     }
-    const handlePaneCreationWithAgent = vi.fn(async () => [])
-    const setSelectedIndex = vi.fn()
+    const handlePaneCreationWithAgent = eventFn(async () => [])
+    const setSelectedIndex = eventFn(() => undefined)
 
     await withTmuxEnv(async () => {
       const { stdin, unmount } = render(
@@ -1653,8 +1748,8 @@ describe("useInputHandling focus mode", () => {
           presentationMode="grid"
           popupManager={popupManager}
           settingsManager={{
-            updateSetting: vi.fn(),
-            getEffectiveScope: vi.fn(() => "global"),
+            updateSetting: eventFn(() => undefined),
+            getEffectiveScope: eventFn(() => "global"),
           }}
           setSelectedIndex={setSelectedIndex}
           handlePaneCreationWithAgent={handlePaneCreationWithAgent}
@@ -1669,14 +1764,15 @@ describe("useInputHandling focus mode", () => {
       stdin.write("\r")
       await sleep(80)
 
-      expect(tmuxServiceMock.getActivePaneId).toHaveBeenCalledTimes(1)
-      expect(setSelectedIndex).toHaveBeenCalledWith(1)
-      expect(popupManager.launchNewPanePopup).toHaveBeenCalledWith("/repo")
-      expect(handlePaneCreationWithAgent).toHaveBeenCalledWith(
+      expect(tmuxState.activePaneIdLookups).toBe(1)
+      expectEvent(setSelectedIndex, 1)
+      expectEvent(popupManager.launchNewPanePopup, "/repo")
+      expectEvent(
+        handlePaneCreationWithAgent,
         { prompt: "from control focus" },
         "/repo"
       )
-      expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
+      expectNoEvents(popupManager.launchKebabMenuPopup)
 
       unmount()
     })
@@ -1684,11 +1780,11 @@ describe("useInputHandling focus mode", () => {
 
   it("keeps re-resolving stale Enter while control focus normalization is pending", async () => {
     const popupManager = {
-      launchNewPanePopup: vi.fn(async () => ({ prompt: "pending control focus" })),
-      launchKebabMenuPopup: vi.fn(),
+      launchNewPanePopup: eventFn(async () => ({ prompt: "pending control focus" })),
+      launchKebabMenuPopup: eventFn(() => undefined),
     }
-    const handlePaneCreationWithAgent = vi.fn(async () => [])
-    const setSelectedIndex = vi.fn()
+    const handlePaneCreationWithAgent = eventFn(async () => [])
+    const setSelectedIndex = eventFn(() => undefined)
 
     await withTmuxEnv(async () => {
       const { stdin, unmount } = render(
@@ -1698,8 +1794,8 @@ describe("useInputHandling focus mode", () => {
           presentationMode="grid"
           popupManager={popupManager}
           settingsManager={{
-            updateSetting: vi.fn(),
-            getEffectiveScope: vi.fn(() => "global"),
+            updateSetting: eventFn(() => undefined),
+            getEffectiveScope: eventFn(() => "global"),
           }}
           setSelectedIndex={setSelectedIndex}
           handlePaneCreationWithAgent={handlePaneCreationWithAgent}
@@ -1715,14 +1811,15 @@ describe("useInputHandling focus mode", () => {
       stdin.write("\r")
       await sleep(80)
 
-      expect(tmuxServiceMock.getActivePaneId).toHaveBeenCalledTimes(1)
-      expect(setSelectedIndex).toHaveBeenCalledWith(1)
-      expect(popupManager.launchNewPanePopup).toHaveBeenCalledWith("/repo")
-      expect(handlePaneCreationWithAgent).toHaveBeenCalledWith(
+      expect(tmuxState.activePaneIdLookups).toBe(1)
+      expectEvent(setSelectedIndex, 1)
+      expectEvent(popupManager.launchNewPanePopup, "/repo")
+      expectEvent(
+        handlePaneCreationWithAgent,
         { prompt: "pending control focus" },
         "/repo"
       )
-      expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
+      expectNoEvents(popupManager.launchKebabMenuPopup)
 
       unmount()
     })
@@ -1732,17 +1829,17 @@ describe("useInputHandling focus mode", () => {
     let currentSelectedIndex = 1
     let controlSelectionPending = true
     const popupManager = {
-      launchNewPanePopup: vi.fn(async () => ({ prompt: "should not launch" })),
-      launchKebabMenuPopup: vi.fn(async () => null),
+      launchNewPanePopup: eventFn(async () => ({ prompt: "should not launch" })),
+      launchKebabMenuPopup: eventFn(async () => null),
     }
-    const handlePaneCreationWithAgent = vi.fn(async () => [])
-    const setSelectedIndex = vi.fn((index: number) => {
+    const handlePaneCreationWithAgent = eventFn(async () => [])
+    const setSelectedIndex = eventFn((index: number) => {
       currentSelectedIndex = index
     })
-    const clearControlPaneSelectionPending = vi.fn(() => {
+    const clearControlPaneSelectionPending = eventFn(() => {
       controlSelectionPending = false
     })
-    const findCardInDirection = vi.fn((
+    const findCardInDirection = eventFn((
       currentIndex: number,
       direction: "up" | "down" | "left" | "right"
     ) => (
@@ -1780,9 +1877,9 @@ describe("useInputHandling focus mode", () => {
     renderResult.stdin.write("\u001B[A")
     await sleep(40)
 
-    expect(findCardInDirection).toHaveBeenCalledWith(1, "up")
-    expect(clearControlPaneSelectionPending).toHaveBeenCalledTimes(1)
-    expect(setSelectedIndex).toHaveBeenCalledWith(0)
+    expectEvent(findCardInDirection, 1, "up")
+    expectEvent(clearControlPaneSelectionPending)
+    expectEvent(setSelectedIndex, 0)
 
     renderResult.rerender(harness())
 
@@ -1790,9 +1887,9 @@ describe("useInputHandling focus mode", () => {
     renderResult.stdin.write("\r")
     await sleep(80)
 
-    expect(popupManager.launchKebabMenuPopup).not.toHaveBeenCalled()
-    expect(popupManager.launchNewPanePopup).not.toHaveBeenCalled()
-    expect(handlePaneCreationWithAgent).not.toHaveBeenCalled()
+    expectNoEvents(popupManager.launchKebabMenuPopup)
+    expectNoEvents(popupManager.launchNewPanePopup)
+    expectNoEvents(handlePaneCreationWithAgent)
     expectSidebarFocusRestored()
 
     renderResult.unmount()
