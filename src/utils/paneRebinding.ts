@@ -17,7 +17,8 @@ import { StateManager } from '../shared/StateManager.js';
 export function rebindPaneByTitle(
   pane: DmuxPane,
   titleToIdMap: Map<string, string>,
-  allPaneIds: string[]
+  allPaneIds: string[],
+  projectRoot?: string
 ): DmuxPane {
   // If pane ID exists in tmux, keep using it (even if title changed)
   if (allPaneIds.length > 0 && allPaneIds.includes(pane.paneId)) {
@@ -26,7 +27,7 @@ export function rebindPaneByTitle(
 
   // Pane ID missing - try to find it by title match
   if (allPaneIds.length > 0 && !allPaneIds.includes(pane.paneId)) {
-    const sessionProjectRoot = StateManager.getInstance().getState().projectRoot;
+    const sessionProjectRoot = projectRoot || StateManager.getInstance().getState().projectRoot;
     const titleCandidates = getPaneTitleCandidates(
       pane,
       sessionProjectRoot || undefined

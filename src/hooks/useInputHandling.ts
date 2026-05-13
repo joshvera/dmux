@@ -36,6 +36,7 @@ import {
   getProjectActionByIndex,
   type ProjectActionItem,
 } from "../utils/projectActions.js"
+import { resolveControlPaneSelection } from "../utils/controlPaneFocus.js"
 import { createShellPane, getNextDmuxId } from "../utils/shellPaneDetection.js"
 import type { AgentName } from "../utils/agentLaunch.js"
 import {
@@ -79,6 +80,22 @@ interface ActionSystem {
   clearStatus: () => void
   setActionState: (state: any) => void
 }
+
+type ActiveInputSurface = "control" | "work" | "unknown"
+
+type InputHandlingTmuxService = Pick<
+  TmuxService,
+  | "breakPaneToWindow"
+  | "enterDetachConfirmMode"
+  | "getActivePaneId"
+  | "getCurrentPaneId"
+  | "getPaneTitle"
+  | "joinPaneToTarget"
+  | "normalizeClientKeyTableToRoot"
+  | "selectPane"
+  | "setPaneTitle"
+  | "splitPane"
+>
 
 interface UseInputHandlingParams {
   // State
@@ -131,6 +148,15 @@ interface UseInputHandlingParams {
   popupManager: PopupManager
   actionSystem: ActionSystem
   controlPaneId: string | undefined
+  tmuxService?: InputHandlingTmuxService
+  enforceControlPaneSizeFn?: typeof enforceControlPaneSize
+  getCurrentTmuxSessionNameFn?: typeof getCurrentTmuxSessionName
+  drainRemotePaneActionsFn?: typeof drainRemotePaneActions
+  createShellPaneFn?: typeof createShellPane
+  getActiveSurface?: () => ActiveInputSurface
+  isControlPaneSelectionPending?: () => boolean
+  clearControlPaneSelectionPending?: () => void
+  isTmuxSession?: () => boolean
   trackProjectActivity: TrackProjectActivity
 
   // Callbacks
@@ -148,6 +174,7 @@ interface UseInputHandlingParams {
   sidebarProjects: SidebarProject[]
   saveSidebarProjects: (projects: SidebarProject[]) => Promise<SidebarProject[]>
   loadPanes: () => Promise<void>
+  getPanes?: () => DmuxPane[]
   cleanExit: () => void
 
   // Agent info
@@ -213,6 +240,15 @@ export function useInputHandling(params: UseInputHandlingParams) {
     popupManager,
     actionSystem,
     controlPaneId,
+    tmuxService = TmuxService.getInstance(),
+    enforceControlPaneSizeFn = enforceControlPaneSize,
+    getCurrentTmuxSessionNameFn = getCurrentTmuxSessionName,
+    drainRemotePaneActionsFn = drainRemotePaneActions,
+    createShellPaneFn = createShellPane,
+    getActiveSurface = () => "unknown",
+    isControlPaneSelectionPending = () => false,
+    clearControlPaneSelectionPending = () => {},
+    isTmuxSession = () => Boolean(process.env.TMUX),
     trackProjectActivity,
     setStatusMessage,
     copyNonGitFiles,
@@ -225,6 +261,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     sidebarProjects,
     saveSidebarProjects,
     loadPanes,
+    getPanes = () => panes,
     cleanExit,
     getAvailableAgentsForProject,
     panesFile,
@@ -236,6 +273,15 @@ export function useInputHandling(params: UseInputHandlingParams) {
   } = params
 
   const effectivePresentationMode = resolvePresentationMode(presentationMode)
+  const getLatestPanes = (): DmuxPane[] => {
+    const latestPanes = getPanes()
+    return latestPanes.length > 0 ? latestPanes : panes
+  }
+  const resolveLatestPane = (targetPane: DmuxPane): DmuxPane => {
+    return getLatestPanes().find((pane) => pane.id === targetPane.id)
+      || panes.find((pane) => pane.id === targetPane.id)
+      || targetPane
+  }
   const selectedPane = selectedIndex < panes.length ? panes[selectedIndex] : undefined
   const selectedProjectRoot = selectedPane
     ? getPaneProjectRoot(selectedPane, projectRoot)
@@ -275,7 +321,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     layoutRefreshDebounceRef.current = setTimeout(async () => {
       layoutRefreshDebounceRef.current = null
       try {
-        await enforceControlPaneSize(controlPaneId, SIDEBAR_WIDTH, { forceLayout: true })
+        await enforceControlPaneSizeFn(controlPaneId, SIDEBAR_WIDTH, { forceLayout: true })
       } catch (error: any) {
         setStatusMessage(`Setting saved but layout refresh failed: ${error?.message || String(error)}`)
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
@@ -314,20 +360,23 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setIsCreatingPane(true)
       setStatusMessage("Creating terminal pane...")
 
-      const tmuxService = TmuxService.getInstance()
       const newPaneId = await tmuxService.splitPane({ cwd: targetProjectRoot })
 
       // Wait for pane creation to settle
       await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAY))
 
       // Persist shell pane immediately with project metadata so grouping is stable.
-      const shellPane = await createShellPane(
+      const shellPane = await createShellPaneFn(
         newPaneId,
         getNextDmuxId(panes)
       )
       shellPane.projectRoot = targetProjectRoot
       shellPane.projectName = path.basename(targetProjectRoot)
       shellPane.colorTheme = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
+      pendingPaneActivationRef.current = {
+        dmuxPaneId: shellPane.id,
+        paneId: shellPane.paneId,
+      }
       await savePanes([...panes, shellPane])
 
       setIsCreatingPane(false)
@@ -376,19 +425,22 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setIsCreatingPane(true)
       setStatusMessage(`Opening terminal in ${getPaneDisplayName(selectedPane)}...`)
 
-      const tmuxService = TmuxService.getInstance()
       const newPaneId = await tmuxService.splitPane({ cwd: selectedPane.worktreePath })
 
       // Wait for pane creation to settle
       await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAY))
 
-      const shellPane = await createShellPane(
+      const shellPane = await createShellPaneFn(
         newPaneId,
         getNextDmuxId(panes)
       )
       shellPane.projectRoot = targetProjectRoot
       shellPane.projectName = path.basename(targetProjectRoot)
       shellPane.colorTheme = resolveProjectColorTheme(targetProjectRoot, sidebarProjects)
+      pendingPaneActivationRef.current = {
+        dmuxPaneId: shellPane.id,
+        paneId: shellPane.paneId,
+      }
       await savePanes([...panes, shellPane])
 
       setStatusMessage(`Opened terminal in ${getPaneDisplayName(selectedPane)}`)
@@ -412,19 +464,23 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     const existingBrowserPane = panes.find((pane) =>
-      pane.browserPath === selectedPane.worktreePath && !pane.hidden
+      pane.type === "shell" &&
+      pane.shellType === "fb" &&
+      pane.browserPath === selectedPane.worktreePath
     )
+    let staleBrowserPaneId: string | undefined
 
     if (existingBrowserPane) {
       try {
-        await TmuxService.getInstance().selectPane(existingBrowserPane.paneId)
+        await activatePaneForCurrentPresentation(existingBrowserPane, {
+          suppressStatus: true,
+        })
         setStatusMessage(`File browser already open for ${getPaneDisplayName(selectedPane)}`)
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+        return
       } catch (error: any) {
-        setStatusMessage(`Failed to focus file browser: ${error?.message || String(error)}`)
-        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+        staleBrowserPaneId = existingBrowserPane.id
       }
-      return
     }
 
     const targetProjectRoot = getPaneProjectRoot(selectedPane, projectRoot)
@@ -434,24 +490,26 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setIsCreatingPane(true)
       setStatusMessage(`Opening file browser for ${getPaneDisplayName(selectedPane)}...`)
 
-      const tmuxService = TmuxService.getInstance()
       const newPaneId = await tmuxService.splitPane({
         cwd: selectedPane.worktreePath,
         command: buildFilesOnlyCommand(projectRoot),
       })
 
       await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAY))
+      const basePanes = staleBrowserPaneId
+        ? getLatestPanes().filter((pane) => pane.id !== staleBrowserPaneId)
+        : getLatestPanes()
 
       const slugBase = `files-${path.basename(selectedPane.worktreePath)}`
       let slug = slugBase
       let suffix = 2
-      while (panes.some((pane) => pane.slug === slug)) {
+      while (basePanes.some((pane) => pane.slug === slug)) {
         slug = `${slugBase}-${suffix}`
         suffix += 1
       }
 
       const browserPane: DmuxPane = {
-        id: `dmux-${getNextDmuxId(panes)}`,
+        id: `dmux-${getNextDmuxId(basePanes)}`,
         slug,
         prompt: "",
         paneId: newPaneId,
@@ -464,7 +522,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
 
       await tmuxService.setPaneTitle(newPaneId, slug)
-      await savePanes([...panes, browserPane])
+      pendingPaneActivationRef.current = {
+        dmuxPaneId: browserPane.id,
+        paneId: browserPane.paneId,
+      }
+      await savePanes([...basePanes, browserPane])
       await loadPanes()
 
       setStatusMessage(`Opened file browser for ${getPaneDisplayName(selectedPane)}`)
@@ -631,7 +693,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    await enforceControlPaneSize(controlPaneId, SIDEBAR_WIDTH, {
+    await enforceControlPaneSizeFn(controlPaneId, SIDEBAR_WIDTH, {
       forceLayout: true,
       suppressLayoutLogs: true,
     })
@@ -657,7 +719,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }
 
   const getPaneShowTarget = async (excludedPaneId?: string): Promise<string | null> => {
-    const visiblePaneId = panes.find(
+    const visiblePaneId = getLatestPanes().find(
       (pane) => !pane.hidden && pane.paneId !== excludedPaneId
     )?.paneId
     if (visiblePaneId) {
@@ -669,7 +731,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     try {
-      return await TmuxService.getInstance().getCurrentPaneId()
+      return await tmuxService.getCurrentPaneId()
     } catch {
       return null
     }
@@ -696,12 +758,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
   }
 
   const revealAllHiddenPanes = async () => {
-    const hiddenPanes = panes.filter((pane) => pane.hidden)
+    const hiddenPanes = getLatestPanes().filter((pane) => pane.hidden)
     if (hiddenPanes.length === 0) {
       return
     }
+    const revealedPaneIds = new Set(hiddenPanes.map((pane) => pane.id))
 
-    const tmuxService = TmuxService.getInstance()
     for (const pane of hiddenPanes) {
       const targetPaneId = await getPaneShowTarget(pane.paneId)
       if (!targetPaneId) {
@@ -710,7 +772,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await tmuxService.joinPaneToTarget(pane.paneId, targetPaneId)
     }
 
-    await savePanes(panes.map((pane) => ({ ...pane, hidden: false })))
+    await savePanes(
+      getLatestPanes().map((pane) =>
+        revealedPaneIds.has(pane.id)
+          ? { ...pane, hidden: false }
+          : pane
+      )
+    )
     await refreshPaneLayout()
     await loadPanes()
   }
@@ -722,8 +790,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       suppressStatus?: boolean
     } = {}
   ) => {
-    const tmuxService = TmuxService.getInstance()
-    const resolvedTargetPane = panes.find((pane) => pane.id === targetPane.id) || targetPane
+    let resolvedTargetPane = resolveLatestPane(targetPane)
     let changed = false
 
     if (resolvedTargetPane.hidden) {
@@ -735,21 +802,23 @@ export function useInputHandling(params: UseInputHandlingParams) {
       changed = true
     }
 
-    const otherVisiblePanes = panes.filter(
+    const otherVisiblePanes = getLatestPanes().filter(
       (pane) => pane.id !== resolvedTargetPane.id && !pane.hidden
     )
+    const hiddenPaneIds = new Set<string>()
     for (const pane of otherVisiblePanes) {
       await tmuxService.breakPaneToWindow(pane.paneId, `dmux-hidden-${pane.id}`)
+      hiddenPaneIds.add(pane.id)
       changed = true
     }
 
     if (changed) {
       await savePanes(
-        panes.map((pane) => {
+        getLatestPanes().map((pane) => {
           if (pane.id === resolvedTargetPane.id) {
             return { ...pane, hidden: false }
           }
-          if (!pane.hidden) {
+          if (hiddenPaneIds.has(pane.id)) {
             return { ...pane, hidden: true }
           }
           return pane
@@ -757,9 +826,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
       )
       await refreshPaneLayout()
       await loadPanes()
+      resolvedTargetPane = resolveLatestPane(resolvedTargetPane)
     }
 
-    const targetIndex = panes.findIndex((pane) => pane.id === resolvedTargetPane.id)
+    const latestPanes = getPanes()
+    const targetIndex = latestPanes.findIndex((pane) => pane.id === resolvedTargetPane.id)
     if (targetIndex >= 0) {
       setSelectedIndex(targetIndex)
     }
@@ -774,6 +845,167 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
   }
 
+  const activatePaneForCurrentPresentation = async (
+    targetPane: DmuxPane,
+    options: {
+      activatePane?: boolean
+      suppressStatus?: boolean
+    } = {}
+  ) => {
+    let resolvedTargetPane = resolveLatestPane(targetPane)
+    const activatePane = options.activatePane !== false
+
+    if (effectivePresentationMode === "focus") {
+      await isolatePane(resolvedTargetPane, {
+        activatePane,
+        suppressStatus: options.suppressStatus,
+      })
+      return
+    }
+
+    if (resolvedTargetPane.hidden) {
+      const targetPaneId = await getPaneShowTarget(resolvedTargetPane.paneId)
+      if (!targetPaneId) {
+        throw new Error("No target pane is available to show this pane")
+      }
+
+      await tmuxService.joinPaneToTarget(
+        resolvedTargetPane.paneId,
+        targetPaneId
+      )
+
+      const updatedPanes = getLatestPanes().map((pane) =>
+        pane.id === resolvedTargetPane.id
+          ? { ...pane, hidden: false }
+          : pane
+      )
+      await savePanes(updatedPanes)
+      await refreshPaneLayout()
+      await loadPanes()
+      resolvedTargetPane = resolveLatestPane(resolvedTargetPane)
+    }
+
+    const latestPanes = getPanes()
+    const targetIndex = latestPanes.findIndex((pane) => pane.id === resolvedTargetPane.id)
+    if (targetIndex >= 0) {
+      setSelectedIndex(targetIndex)
+    }
+
+    if (activatePane) {
+      await tmuxService.selectPane(resolvedTargetPane.paneId)
+    }
+
+    if (!options.suppressStatus) {
+      setStatusMessage(`Viewing ${getPaneDisplayName(resolvedTargetPane)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
+    }
+  }
+
+  const returnFocusToControlPane = async () => {
+    if (!controlPaneId) {
+      return
+    }
+
+    await tmuxService.selectPane(controlPaneId)
+    await tmuxService.normalizeClientKeyTableToRoot()
+  }
+
+  const restoreSidebarFocusAfterCommand = async () => {
+    try {
+      await returnFocusToControlPane()
+    } catch (error: any) {
+      setStatusMessage(`Failed to return to sidebar: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    }
+  }
+
+  const presentPaneFromSidebar = async (targetPane: DmuxPane) => {
+    try {
+      await activatePaneForCurrentPresentation(targetPane, {
+        activatePane: false,
+      })
+    } catch (error: any) {
+      setStatusMessage(`Failed to view pane: ${error?.message || String(error)}`)
+      setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+    } finally {
+      await restoreSidebarFocusAfterCommand()
+    }
+  }
+
+  const handleQuitShortcut = async () => {
+    if (isTmuxSession()) {
+      try {
+        await tmuxService.enterDetachConfirmMode()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setStatusMessage(`Failed to arm detach confirmation: ${message}`)
+        setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
+      }
+      return
+    }
+
+    if (quitConfirmMode) {
+      cleanExit()
+      return
+    }
+
+    setQuitConfirmMode(true)
+    setTimeout(() => {
+      setQuitConfirmMode(false)
+    }, 3000)
+  }
+
+  const executeProjectAction = async (selectedAction: ProjectActionItem) => {
+    if (selectedAction.kind === "new-agent") {
+      await handleCreateAgentPane(selectedAction.projectRoot)
+    } else if (selectedAction.kind === "terminal") {
+      await handleCreateTerminalPane(selectedAction.projectRoot)
+    } else if (selectedAction.kind === "remove-project") {
+      await handleRemoveProjectFromSidebar(selectedAction.projectRoot)
+    }
+  }
+
+  const resolveEnterTarget = async (): Promise<
+    | { kind: "project-action"; action: ProjectActionItem }
+    | { kind: "pane"; pane: DmuxPane }
+    | { kind: "none" }
+  > => {
+    const selectedAction = getProjectActionByIndex(projectActionItems, selectedIndex)
+    if (selectedAction) {
+      return { kind: "project-action", action: selectedAction }
+    }
+
+    const shouldVerifyControlFocus =
+      getActiveSurface() !== "control" || isControlPaneSelectionPending()
+
+    if (isTmuxSession() && controlPaneId && shouldVerifyControlFocus) {
+      try {
+        const activePaneId = await tmuxService.getActivePaneId()
+        if (activePaneId === controlPaneId) {
+          const resolvedIndex = resolveControlPaneSelection(
+            selectedIndex,
+            panes,
+            projectActionItems,
+            projectRoot
+          )
+          if (resolvedIndex !== selectedIndex) {
+            setSelectedIndex(resolvedIndex)
+          }
+
+          const resolvedAction = getProjectActionByIndex(projectActionItems, resolvedIndex)
+          return resolvedAction
+            ? { kind: "project-action", action: resolvedAction }
+            : { kind: "none" }
+        }
+      } catch {
+        // Best effort. If tmux cannot report focus, keep the existing selection behavior.
+      }
+    }
+
+    const pane = panes[selectedIndex]
+    return pane ? { kind: "pane", pane } : { kind: "none" }
+  }
+
   const applyPresentationModeChange = async (
     nextMode: "grid" | "focus",
     options: {
@@ -785,7 +1017,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } = {}
   ): Promise<boolean> => {
     const resolvedNextMode = resolvePresentationMode(nextMode)
-    const tmuxService = TmuxService.getInstance()
     const targetPane = getPresentationPane(options.preferredPane)
     const scope = options.scope || "global"
     const targetProjectRoot = options.targetProjectRoot || getActiveProjectRoot()
@@ -798,17 +1029,13 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const applyPresentationModeLayout = async (mode: "grid" | "focus") => {
       if (mode === "grid") {
         await revealAllHiddenPanes()
-        if (controlPaneId) {
-          await tmuxService.selectPane(controlPaneId)
-        }
+        await returnFocusToControlPane()
         presentationSyncKeyRef.current = ""
         return
       }
 
       if (!targetPane) {
-        if (controlPaneId) {
-          await tmuxService.selectPane(controlPaneId)
-        }
+        await returnFocusToControlPane()
         presentationSyncKeyRef.current = ""
         return
       }
@@ -819,7 +1046,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       })
 
       if (options.activateTargetPane !== true && controlPaneId) {
-        await tmuxService.selectPane(controlPaneId)
+        await returnFocusToControlPane()
       }
 
       presentationSyncKeyRef.current = ""
@@ -864,9 +1091,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await refreshPaneLayout()
       await loadPanes()
 
-      if (controlPaneId) {
-        await tmuxService.selectPane(controlPaneId)
-      }
+      await returnFocusToControlPane()
 
       presentationSyncKeyRef.current = ""
     }
@@ -1103,8 +1328,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         pendingPaneActivationRef.current = null
         presentationSyncKeyRef.current = ""
 
-        void isolatePane(targetPane, {
-          activatePane: true,
+        void activatePaneForCurrentPresentation(targetPane, {
           suppressStatus: true,
         }).catch((error: any) => {
           setStatusMessage(`Failed to activate created pane: ${error?.message || String(error)}`)
@@ -1142,9 +1366,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
     selectedIndex,
   ])
 
-  const togglePaneVisibility = async (selectedPane: DmuxPane) => {
-    const tmuxService = TmuxService.getInstance()
-
+  const togglePaneVisibility = async (
+    selectedPane: DmuxPane,
+    options: { preserveControlFocus?: boolean } = {}
+  ) => {
     try {
       setIsCreatingPane(true)
       setStatusMessage(
@@ -1185,7 +1410,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         && !updatedPanes.some((pane) => !pane.hidden)
         && controlPaneId
       ) {
-        await tmuxService.selectPane(controlPaneId)
+        await returnFocusToControlPane()
       }
 
       setStatusMessage(
@@ -1198,11 +1423,17 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setStatusMessage(`Failed to toggle pane visibility: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
+      if (options.preserveControlFocus) {
+        await restoreSidebarFocusAfterCommand()
+      }
       setIsCreatingPane(false)
     }
   }
 
-  const toggleOtherPanesVisibility = async (selectedPane: DmuxPane) => {
+  const toggleOtherPanesVisibility = async (
+    selectedPane: DmuxPane,
+    options: { preserveControlFocus?: boolean } = {}
+  ) => {
     const action = getBulkVisibilityAction(panes, selectedPane)
     if (!action) {
       setStatusMessage("No other panes to toggle")
@@ -1221,7 +1452,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    const tmuxService = TmuxService.getInstance()
     const hidden = action === "hide-others"
 
     try {
@@ -1267,12 +1497,16 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setStatusMessage(`Failed to toggle other panes: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
+      if (options.preserveControlFocus) {
+        await restoreSidebarFocusAfterCommand()
+      }
       setIsCreatingPane(false)
     }
   }
 
   const toggleProjectPanesVisibility = async (
-    targetProjectRoot: string = getActiveProjectRoot()
+    targetProjectRoot: string = getActiveProjectRoot(),
+    options: { preserveControlFocus?: boolean } = {}
   ) => {
     const action = getProjectVisibilityAction(panes, targetProjectRoot, projectRoot)
 
@@ -1304,7 +1538,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
     const panesToHide = action === "focus-project"
       ? otherPanes.filter((pane) => !pane.hidden)
       : []
-
     try {
       setIsCreatingPane(true)
       setStatusMessage(
@@ -1320,11 +1553,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
         if (!targetPaneId) {
           throw new Error("No target pane is available to show hidden panes")
         }
-        await TmuxService.getInstance().joinPaneToTarget(pane.paneId, targetPaneId)
+        await tmuxService.joinPaneToTarget(pane.paneId, targetPaneId)
       }
 
       for (const pane of panesToHide) {
-        await TmuxService.getInstance().breakPaneToWindow(
+        await tmuxService.breakPaneToWindow(
           pane.paneId,
           `dmux-hidden-${pane.id}`
         )
@@ -1360,6 +1593,9 @@ export function useInputHandling(params: UseInputHandlingParams) {
       setStatusMessage(`Failed to toggle project panes: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
     } finally {
+      if (options.preserveControlFocus) {
+        await restoreSidebarFocusAfterCommand()
+      }
       setIsCreatingPane(false)
     }
   }
@@ -1373,7 +1609,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
       return
     }
 
-    const actionId = await launchKebabMenuPopup(
+    const actionId = await launchKebabMenuPopup.call(
+      popupManager,
       pane,
       panes,
       options
@@ -1642,7 +1879,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         )
         setTimeout(() => StateManager.getInstance().setDebugMessage(""), STATUS_MESSAGE_DURATION_SHORT)
         if (effectivePresentationMode === "focus") {
-          await TmuxService.getInstance().selectPane(selectedPane.paneId)
+          await tmuxService.selectPane(selectedPane.paneId)
           return
         }
         await actionSystem.executeAction(PaneAction.VIEW, selectedPane)
@@ -1661,12 +1898,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
   useEffect(() => {
     const drainQueuedRemoteActions = async () => {
-      const sessionName = getCurrentTmuxSessionName()
+      const sessionName = getCurrentTmuxSessionNameFn()
       if (!sessionName) {
         return
       }
 
-      const queuedActions = await drainRemotePaneActions(sessionName)
+      const queuedActions = await drainRemotePaneActionsFn(sessionName)
       if (queuedActions.length === 0) {
         return
       }
@@ -1746,17 +1983,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     // Handle Ctrl+C for quit confirmation (must be first, before any other checks)
     if (key.ctrl && input === "c") {
-      if (quitConfirmMode) {
-        // Second Ctrl+C - actually quit
-        cleanExit()
-      } else {
-        // First Ctrl+C - show confirmation
-        setQuitConfirmMode(true)
-        // Reset after 3 seconds if user doesn't press Ctrl+C again
-        setTimeout(() => {
-          setQuitConfirmMode(false)
-        }, 3000)
-      }
+      await handleQuitShortcut()
       return
     }
 
@@ -1887,6 +2114,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
 
       if (targetIndex !== null) {
+        clearControlPaneSelectionPending()
         setSelectedIndex(targetIndex)
       }
       return
@@ -1905,23 +2133,32 @@ export function useInputHandling(params: UseInputHandlingParams) {
       await popupManager.launchLogsPopup(getActiveProjectRoot())
     } else if (input === "h") {
       if (selectedIndex < panes.length) {
-        await executePaneShortcut("h", panes[selectedIndex])
+        await togglePaneVisibility(panes[selectedIndex], {
+          preserveControlFocus: true,
+        })
       } else {
         setStatusMessage("Select a pane to toggle visibility")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       }
     } else if (input === "H") {
       if (selectedIndex < panes.length) {
-        await executePaneShortcut("H", panes[selectedIndex])
+        await toggleOtherPanesVisibility(panes[selectedIndex], {
+          preserveControlFocus: true,
+        })
       } else {
         setStatusMessage("Select a pane to toggle the others")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       }
     } else if (input === "P") {
       if (selectedIndex < panes.length) {
-        await executePaneShortcut("P", panes[selectedIndex])
+        await toggleProjectPanesVisibility(
+          getPaneProjectRoot(panes[selectedIndex], projectRoot),
+          { preserveControlFocus: true }
+        )
       } else {
-        await toggleProjectPanesVisibility()
+        await toggleProjectPanesVisibility(getActiveProjectRoot(), {
+          preserveControlFocus: true,
+        })
       }
     } else if (input === "?") {
       // Open keyboard shortcuts popup
@@ -1935,7 +2172,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } else if (input === "L" && controlPaneId) {
       // Reset layout to sidebar configuration (Shift+L)
       try {
-        await enforceControlPaneSize(controlPaneId, SIDEBAR_WIDTH, { forceLayout: true })
+        await enforceControlPaneSizeFn(controlPaneId, SIDEBAR_WIDTH, { forceLayout: true })
         setStatusMessage("Layout reset")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       } catch (error: any) {
@@ -1954,7 +2191,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
       // Queue all demo toasts
       demos.forEach(demo => stateManager.showToast(demo.msg, demo.severity))
     } else if (input === "q") {
-      cleanExit()
+      await handleQuitShortcut()
+      return
     } else if (isDevMode && input === "S" && selectedIndex < panes.length) {
       await executePaneShortcut("S", panes[selectedIndex])
       return
@@ -1980,18 +2218,12 @@ export function useInputHandling(params: UseInputHandlingParams) {
     } else if (!isLoading && input === "t") {
       await handleCreateTerminalPane(getActiveProjectRoot())
       return
-    } else if (
-      !isLoading &&
-      key.return &&
-      !!getProjectActionByIndex(projectActionItems, selectedIndex)
-    ) {
-      const selectedAction = getProjectActionByIndex(projectActionItems, selectedIndex)!
-      if (selectedAction.kind === "new-agent") {
-        await handleCreateAgentPane(selectedAction.projectRoot)
-      } else if (selectedAction.kind === "terminal") {
-        await handleCreateTerminalPane(selectedAction.projectRoot)
-      } else if (selectedAction.kind === "remove-project") {
-        await handleRemoveProjectFromSidebar(selectedAction.projectRoot)
+    } else if (!isLoading && key.return) {
+      const target = await resolveEnterTarget()
+      if (target.kind === "project-action") {
+        await executeProjectAction(target.action)
+      } else if (target.kind === "pane") {
+        await presentPaneFromSidebar(target.pane)
       }
       return
     } else if (
@@ -1999,10 +2231,6 @@ export function useInputHandling(params: UseInputHandlingParams) {
       && (input === "j" || input === "x")
     ) {
       await executePaneShortcut(input as RemotePaneActionShortcut, panes[selectedIndex])
-      return
-    } else if (key.return && selectedIndex < panes.length) {
-      // Open pane menu for selected pane
-      await openPaneMenu(panes[selectedIndex])
       return
     }
   })

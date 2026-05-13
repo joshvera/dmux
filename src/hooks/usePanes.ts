@@ -29,6 +29,11 @@ import { SIDEBAR_WIDTH } from '../utils/layoutManager.js';
 import { atomicWriteJson } from '../utils/atomicWrite.js';
 import { normalizeSidebarProjects } from '../utils/sidebarProjects.js';
 import { syncPaneColorThemes } from '../utils/paneColors.js';
+import {
+  havePaneHiddenStatesChanged,
+  havePaneIdsChanged,
+  havePaneRuntimeStatesChanged,
+} from '../utils/paneVisibility.js';
 
 // Use p-queue for proper concurrency control instead of manual write lock
 // This prevents race conditions and provides better visibility into queue state
@@ -36,6 +41,31 @@ const configQueue = new PQueue({ concurrency: 1 });
 
 async function withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
   return configQueue.add(operation);
+}
+
+export interface PaneRuntimePersistOptions {
+  loadedPanes: DmuxPane[];
+  finalPanes: DmuxPane[];
+  hiddenStateChangedFromConfig: boolean;
+  shellPanesAdded: boolean;
+  shellPanesRemoved: boolean;
+  sidebarProjectsChanged: boolean;
+}
+
+export function shouldPersistPaneRuntimeConfig({
+  loadedPanes,
+  finalPanes,
+  hiddenStateChangedFromConfig,
+  shellPanesAdded,
+  shellPanesRemoved,
+  sidebarProjectsChanged,
+}: PaneRuntimePersistOptions): boolean {
+  return havePaneIdsChanged(loadedPanes, finalPanes)
+    || hiddenStateChangedFromConfig
+    || havePaneHiddenStatesChanged(loadedPanes, finalPanes)
+    || shellPanesAdded
+    || shellPanesRemoved
+    || sidebarProjectsChanged;
 }
 
 export interface UsePanesOptions {
@@ -88,7 +118,12 @@ export default function usePanes(
         pendingLoad.current = false;
 
         // Load panes from file and rebind IDs based on tmux state
-        const { panes: loadedPanes, allPaneIds, titleToId } = await loadAndProcessPanes(
+        const {
+          panes: loadedPanes,
+          allPaneIds,
+          titleToId,
+          hiddenStateChangedFromConfig,
+        } = await loadAndProcessPanes(
           panesFile,
           !initialLoadComplete.current
         );
@@ -100,6 +135,9 @@ export default function usePanes(
           setPanes(loadedPanes);
           sidebarProjectsRef.current = loadedSidebarProjects;
           setSidebarProjects(loadedSidebarProjects);
+          if (hiddenStateChangedFromConfig) {
+            await saveUpdatedPaneConfig(panesFile, loadedPanes, withWriteLock);
+          }
           initialLoadComplete.current = true;
           break; // Exit loop after initial load — pending loads are handled by the next polling/event cycle
         }
@@ -147,20 +185,17 @@ export default function usePanes(
         // reflecting any user-defined display names in the visible border title.
         await enforcePaneTitles(finalPanes, allPaneIds, controlPaneId);
 
-        // Check if panes changed (compare IDs and paneIds only)
-        const currentPaneIds = panesRef.current.map(p => `${p.id}:${p.paneId}`).sort().join(',');
-        const newPaneIds = finalPanes.map(p => `${p.id}:${p.paneId}`).sort().join(',');
-
-        // Check if IDs were remapped
-        const idsChanged = finalPanes.some((pane, idx) =>
-          loadedPanes[idx] && loadedPanes[idx].paneId !== pane.paneId
+        const runtimeStateChanged = havePaneRuntimeStatesChanged(
+          panesRef.current,
+          finalPanes
         );
         const sidebarProjectsChanged = JSON.stringify(sidebarProjectsRef.current)
           !== JSON.stringify(nextSidebarProjects);
 
-        // Update state and save if panes changed OR if shell panes were added/removed
+        // Update state when runtime pane state or persisted sidebar state changed.
         if (
-          currentPaneIds !== newPaneIds ||
+          runtimeStateChanged ||
+          hiddenStateChangedFromConfig ||
           shellPanesAdded ||
           shellPanesRemoved ||
           sidebarProjectsChanged
@@ -172,8 +207,15 @@ export default function usePanes(
             setSidebarProjects(nextSidebarProjects);
           }
 
-          // Save to file if IDs were remapped OR if shell panes were added/removed
-          if (idsChanged || shellPanesAdded || shellPanesRemoved) {
+          // Save only when runtime or sidebar changes need to be persisted.
+          if (shouldPersistPaneRuntimeConfig({
+            loadedPanes,
+            finalPanes,
+            hiddenStateChangedFromConfig,
+            shellPanesAdded,
+            shellPanesRemoved,
+            sidebarProjectsChanged,
+          })) {
             await saveUpdatedPaneConfig(panesFile, finalPanes, withWriteLock);
 
             if (shellPanesRemoved) {
@@ -276,6 +318,8 @@ export default function usePanes(
     });
   };
 
+  const getPanes = () => panesRef.current;
+
   // Initialize PaneEventService when session info is available
   useEffect(() => {
     if (!sessionName) return;
@@ -367,6 +411,7 @@ export default function usePanes(
     sidebarProjects,
     isLoading,
     loadPanes,
+    getPanes,
     savePanes,
     saveSidebarProjects,
     eventMode,

@@ -5,6 +5,16 @@ import {
   DMUX_DETACH_CONFIRM_TABLE,
 } from '../utils/remotePaneActions.js';
 import { shellQuote } from '../utils/shellQuote.js';
+import {
+  buildDetachClientCommand,
+  buildSwitchClientKeyTableCommand,
+  CLIENT_ACTIVITY_COMMAND,
+  CLIENT_KEY_TABLE_COMMAND,
+  CURRENT_CLIENT_TTY_COMMAND,
+  parseClientKeyTable,
+  parseContextualClientTty,
+  parseMostRecentClientTty,
+} from '../utils/tmuxClient.js';
 import type { PanePosition, WindowDimensions } from '../types.js';
 
 export type PaneListScope = 'window' | 'session';
@@ -327,33 +337,24 @@ export class TmuxService {
   async getCurrentClientTty(): Promise<string | null> {
     return this.executeWithRetry(
       () => {
-        const clientsOutput = this.execute(
-          'tmux list-clients -F "#{client_activity}\t#{client_tty}"'
-        ).trim();
-
-        const mostRecentClientTty = clientsOutput
-          .split('\n')
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .map((line) => {
-            const [activity = '', clientTty = ''] = line.split('\t');
-            return {
-              activity: Number.parseInt(activity, 10) || 0,
-              clientTty: clientTty.trim(),
-            };
-          })
-          .filter((entry) => entry.clientTty.length > 0)
-          .sort((left, right) => right.activity - left.activity)[0]?.clientTty;
-
-        if (mostRecentClientTty) {
-          return mostRecentClientTty;
+        const contextualClientTty = parseContextualClientTty(
+          this.execute(CURRENT_CLIENT_TTY_COMMAND)
+        );
+        if (contextualClientTty) {
+          return contextualClientTty;
         }
 
-        const value = this.execute('tmux display-message -p "#{client_tty}"').trim();
-        return value || null;
+        return parseMostRecentClientTty(this.execute(CLIENT_ACTIVITY_COMMAND));
       },
       RetryStrategy.IDEMPOTENT,
       'getCurrentClientTty'
+    );
+  }
+
+  private getClientKeyTable(targetClientTty: string): string | null {
+    return parseClientKeyTable(
+      this.execute(CLIENT_KEY_TABLE_COMMAND),
+      targetClientTty
     );
   }
 
@@ -799,7 +800,7 @@ export class TmuxService {
   async detachClient(targetClientTty: string): Promise<void> {
     await this.executeWithRetry(
       () => {
-        this.execute(`tmux detach-client -t '${targetClientTty}'`);
+        this.execute(buildDetachClientCommand(targetClientTty));
       },
       RetryStrategy.FAST,
       `detachClient(${targetClientTty})`
@@ -807,12 +808,63 @@ export class TmuxService {
   }
 
   /**
+   * Return an accidental prefix-state client to the root key table.
+   *
+   * This is intentionally best-effort. It is used to clean up accidental
+   * prefix state at dmux control-surface boundaries, and must never make
+   * startup or focus handling fail. Other tmux key tables may be intentional
+   * dmux modes, such as the detach confirmation table, so they are left alone.
+   */
+  async normalizeClientKeyTableToRoot(clientTty?: string): Promise<boolean> {
+    try {
+      const targetClientTty = clientTty || await this.getCurrentClientTty();
+      if (!targetClientTty) {
+        return false;
+      }
+
+      if (this.getClientKeyTable(targetClientTty) !== 'prefix') {
+        return false;
+      }
+
+      await this.executeWithRetry(
+        () => {
+          this.execute(buildSwitchClientKeyTableCommand('root', targetClientTty));
+        },
+        RetryStrategy.FAST,
+        `normalizeClientKeyTableToRoot(${targetClientTty})`
+      );
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.debug(
+        `Failed to normalize tmux client key table: ${errorMessage}`,
+        'TmuxService'
+      );
+      return false;
+    }
+  }
+
+  /**
    * Enter the client-local detach confirmation key table and show guidance.
    */
   async enterDetachConfirmMode(): Promise<void> {
+    let targetClientTty: string | null = null;
+    try {
+      targetClientTty = await this.getCurrentClientTty();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.debug(
+        `Failed to resolve tmux client for detach confirmation: ${errorMessage}`,
+        'TmuxService'
+      );
+    }
+
     await this.executeWithRetry(
       () => {
-        this.execute(`tmux switch-client -T '${DMUX_DETACH_CONFIRM_TABLE}'`);
+        this.execute(buildSwitchClientKeyTableCommand(
+          DMUX_DETACH_CONFIRM_TABLE,
+          targetClientTty || undefined
+        ));
         this.execute(
           `tmux display-message -d 3000 'Press q or Ctrl+C again to detach. Esc cancels.'`
         );

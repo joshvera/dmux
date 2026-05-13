@@ -4,6 +4,9 @@ import {
   getBulkVisibilityAction,
   getProjectVisibilityAction,
   getVisiblePanes,
+  havePaneHiddenStatesChanged,
+  havePaneIdsChanged,
+  havePaneRuntimeStatesChanged,
   partitionPanesByProject,
   syncHiddenStateFromCurrentWindow,
 } from '../src/utils/paneVisibility.js';
@@ -41,6 +44,50 @@ describe('paneVisibility', () => {
     const synced = syncHiddenStateFromCurrentWindow(panes, []);
 
     expect(synced).toEqual(panes);
+  });
+
+  it('detects hidden-only runtime state changes', () => {
+    const previous = [
+      pane('dmux-1', false),
+      pane('dmux-2', false),
+    ];
+    const next = [
+      pane('dmux-1', true),
+      pane('dmux-2', false),
+    ];
+
+    expect(havePaneHiddenStatesChanged(previous, next)).toBe(true);
+    expect(havePaneRuntimeStatesChanged(previous, next)).toBe(true);
+    expect(havePaneIdsChanged(previous, next)).toBe(false);
+  });
+
+  it('compares pane runtime state by id instead of array order', () => {
+    const previous = [
+      pane('dmux-1', false),
+      pane('dmux-2', true),
+    ];
+    const reordered = [
+      pane('dmux-2', true),
+      pane('dmux-1', false),
+    ];
+
+    expect(havePaneRuntimeStatesChanged(previous, reordered)).toBe(false);
+    expect(havePaneHiddenStatesChanged(previous, reordered)).toBe(false);
+    expect(havePaneIdsChanged(previous, reordered)).toBe(false);
+  });
+
+  it('detects pane ID changes without index alignment', () => {
+    const previous = [
+      pane('dmux-1', false),
+      pane('dmux-2', false),
+    ];
+    const next = [
+      { ...pane('dmux-2', false), paneId: '%22' },
+      pane('dmux-1', false),
+    ];
+
+    expect(havePaneIdsChanged(previous, next)).toBe(true);
+    expect(havePaneRuntimeStatesChanged(previous, next)).toBe(true);
   });
 
   it('chooses hide-others when any other pane is visible', () => {

@@ -17,6 +17,7 @@ import {
 } from '../utils/codexHooks.js';
 import { getPaneTmuxTitle } from '../utils/paneTitle.js';
 import {
+  havePaneHiddenStatesChanged,
   getVisiblePanes,
   syncHiddenStateFromCurrentWindow,
 } from '../utils/paneVisibility.js';
@@ -38,6 +39,35 @@ interface PaneLoadResult {
   panes: DmuxPane[];
   allPaneIds: string[];
   titleToId: Map<string, string>;
+  hiddenStateChangedFromConfig: boolean;
+}
+
+interface PaneRuntimeSyncInput {
+  allPaneIds: string[];
+  titleToId: Map<string, string>;
+  currentWindowPaneIds: string[];
+}
+
+export function syncLoadedPaneStateFromTmux(
+  loadedPanes: DmuxPane[],
+  tmuxState: PaneRuntimeSyncInput,
+  projectRoot?: string
+): Pick<PaneLoadResult, 'panes' | 'hiddenStateChangedFromConfig'> {
+  const reboundBeforeHiddenSync = loadedPanes.map((pane) =>
+    rebindPaneByTitle(pane, tmuxState.titleToId, tmuxState.allPaneIds, projectRoot)
+  );
+  const panes = syncHiddenStateFromCurrentWindow(
+    reboundBeforeHiddenSync,
+    tmuxState.currentWindowPaneIds
+  );
+
+  return {
+    panes,
+    hiddenStateChangedFromConfig: havePaneHiddenStatesChanged(
+      reboundBeforeHiddenSync,
+      panes
+    ),
+  };
 }
 
 async function restoreAgentSessionForPane(
@@ -359,11 +389,15 @@ export async function loadAndProcessPanes(
 ): Promise<PaneLoadResult> {
   const loadedPanes = await loadPanesFromFile(panesFile);
   let { allPaneIds, titleToId, currentWindowPaneIds } = await fetchTmuxPaneIds();
+  const projectRoot = path.dirname(path.dirname(panesFile));
 
-  // Attempt to rebind panes whose IDs changed by matching on their stable tmux title.
-  let reboundPanes = syncHiddenStateFromCurrentWindow(
-    loadedPanes.map(p => rebindPaneByTitle(p, titleToId, allPaneIds)),
-    currentWindowPaneIds
+  let {
+    panes: reboundPanes,
+    hiddenStateChangedFromConfig,
+  } = syncLoadedPaneStateFromTmux(
+    loadedPanes,
+    { allPaneIds, titleToId, currentWindowPaneIds },
+    projectRoot
   );
 
   // CRITICAL FIX: On initial load, immediately filter out shell panes with stale IDs
@@ -428,12 +462,15 @@ export async function loadAndProcessPanes(
     titleToId = freshData.titleToId;
     currentWindowPaneIds = freshData.currentWindowPaneIds;
 
-    // Re-rebind after recreation
-    reboundPanes = syncHiddenStateFromCurrentWindow(
-      reboundPanes.map(p => rebindPaneByTitle(p, titleToId, allPaneIds)),
-      currentWindowPaneIds
+    const postRecreationSync = syncLoadedPaneStateFromTmux(
+      reboundPanes,
+      { allPaneIds, titleToId, currentWindowPaneIds },
+      projectRoot
     );
+    hiddenStateChangedFromConfig =
+      hiddenStateChangedFromConfig || postRecreationSync.hiddenStateChangedFromConfig;
+    reboundPanes = postRecreationSync.panes;
   }
 
-  return { panes: reboundPanes, allPaneIds, titleToId };
+  return { panes: reboundPanes, allPaneIds, titleToId, hiddenStateChangedFromConfig };
 }

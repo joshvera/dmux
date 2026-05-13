@@ -76,6 +76,7 @@ import {
   TMUX_PANE_TITLE_LABEL_FORMAT,
   TMUX_PANE_TITLE_PREFIX_FORMAT,
 } from './utils/paneTitlePrefix.js';
+import { scheduleStartupKeyTableNormalization } from './utils/startupKeyTableNormalization.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
@@ -688,6 +689,7 @@ class Dmux {
     const app = render(React.createElement(DmuxApp, appProps), {
       exitOnCtrlC: false  // Disable automatic exit on Ctrl+C
     });
+    scheduleStartupKeyTableNormalization();
 
     // Clean shutdown on app exit
     app.waitUntilExit().then(async () => {
