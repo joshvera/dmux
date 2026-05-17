@@ -114,6 +114,13 @@ import {
 } from "./utils/paneTitlePrefix.js"
 import { getPaneTmuxDisplayTitle } from "./utils/paneTitle.js"
 import { resolveControlPaneFocusSelection } from "./utils/controlPaneFocus.js"
+import {
+  configureDmuxPerfMetadata,
+  patchDmuxPerfWritable,
+  recordDmuxPerfInput,
+  recordDmuxPerfRender,
+  startDmuxPerfRuntimeMonitor,
+} from "./utils/perf.js"
 
 const DmuxApp: React.FC<DmuxAppProps> = ({
   panesFile,
@@ -315,6 +322,26 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     controlPaneId,
     useHooks
   )
+
+  useEffect(() => {
+    return startDmuxPerfRuntimeMonitor()
+  }, [])
+
+  useEffect(() => {
+    return patchDmuxPerfWritable(stdout)
+  }, [stdout])
+
+  useEffect(() => {
+    configureDmuxPerfMetadata({
+      sessionName,
+      projectRoot: sessionProjectRoot,
+      paneCount: panes.length,
+    })
+  }, [sessionName, sessionProjectRoot, panes.length])
+
+  useEffect(() => {
+    recordDmuxPerfRender()
+  })
 
   // Check for tmux hooks preference on startup
   useEffect(() => {
@@ -1557,6 +1584,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   useInput(
     (input, key) => {
       if (!showHooksPrompt) return
+      recordDmuxPerfInput()
 
       if (key.upArrow || input === 'k') {
         setHooksPromptIndex(Math.max(0, hooksPromptIndex - 1))
@@ -1657,6 +1685,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     projectActionItems: projectActionLayout.actionItems,
     findCardInDirection,
     presentationMode,
+    recordInputEvent: recordDmuxPerfInput,
   })
 
   // Calculate available height for content (terminal height - footer lines - active status messages)

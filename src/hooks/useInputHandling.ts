@@ -186,6 +186,7 @@ interface UseInputHandlingParams {
   activeProjectRoot?: string
   projectActionItems: ProjectActionItem[]
   presentationMode: "grid" | "focus"
+  recordInputEvent?: () => void
 
   // Navigation
   findCardInDirection: (currentIndex: number, direction: "up" | "down" | "left" | "right") => number | null
@@ -269,6 +270,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     activeProjectRoot,
     projectActionItems,
     presentationMode,
+    recordInputEvent,
     findCardInDirection,
   } = params
 
@@ -1970,6 +1972,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
   ])
 
   useInput(async (input: string, key: any) => {
+    recordInputEvent?.()
+
     // Ignore input temporarily after popup operations (prevents buffered keys from being processed)
     if (ignoreInput) {
       return

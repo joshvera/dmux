@@ -16,6 +16,11 @@ import {
   parseMostRecentClientTty,
 } from '../utils/tmuxClient.js';
 import type { PanePosition, WindowDimensions } from '../types.js';
+import {
+  classifyTmuxCommand,
+  timeDmuxPerfAsync,
+  timeDmuxPerfSync,
+} from '../utils/perf.js';
 
 export type PaneListScope = 'window' | 'session';
 
@@ -157,22 +162,31 @@ export class TmuxService {
   ): string {
     const { encoding = 'utf-8', stdio = 'pipe', silent = false } = options;
 
-    try {
-      const result = execSync(command, {
-        encoding,
-        stdio,
-      });
-      return typeof result === 'string' ? result.trim() : '';
-    } catch (error) {
-      if (!silent) {
-        this.logger.debug(
-          `tmux command failed: ${command}`,
-          'error',
-          error instanceof Error ? error.message : String(error)
-        );
+    return timeDmuxPerfSync(
+      'tmux.command',
+      {
+        commandKind: classifyTmuxCommand(command),
+        sync: true,
+      },
+      () => {
+        try {
+          const result = execSync(command, {
+            encoding,
+            stdio,
+          });
+          return typeof result === 'string' ? result.trim() : '';
+        } catch (error) {
+          if (!silent) {
+            this.logger.debug(
+              `tmux command failed: ${command}`,
+              'error',
+              error instanceof Error ? error.message : String(error)
+            );
+          }
+          throw error;
+        }
       }
-      throw error;
-    }
+    );
   }
 
   /**
@@ -188,18 +202,27 @@ export class TmuxService {
   ): Promise<string> {
     const { silent = false, timeout = 5000 } = options;
 
-    try {
-      return await execAsync(command, { timeout, silent });
-    } catch (error) {
-      if (!silent) {
-        this.logger.debug(
-          `tmux command failed: ${command}`,
-          'error',
-          error instanceof Error ? error.message : String(error)
-        );
+    return timeDmuxPerfAsync(
+      'tmux.command',
+      {
+        commandKind: classifyTmuxCommand(command),
+        sync: false,
+      },
+      async () => {
+        try {
+          return await execAsync(command, { timeout, silent });
+        } catch (error) {
+          if (!silent) {
+            this.logger.debug(
+              `tmux command failed: ${command}`,
+              'error',
+              error instanceof Error ? error.message : String(error)
+            );
+          }
+          throw error;
+        }
       }
-      throw error;
-    }
+    );
   }
 
   private listPanesLines(

@@ -10,6 +10,10 @@ import type {
 import { LogService } from './LogService.js';
 import { WORKER_BACKOFF_BASE } from '../constants/timing.js';
 import { resolveDistPath } from '../utils/runtimePaths.js';
+import {
+  configureDmuxPerfMetadata,
+  recordDmuxPerfEvent,
+} from '../utils/perf.js';
 
 interface WorkerInfo {
   worker: Worker;
@@ -97,6 +101,7 @@ export class PaneWorkerManager {
       });
 
       this.workers.set(pane.id, workerInfo);
+      this.recordWorkerPool();
     } catch (error) {
       const msg = `Failed to create worker for pane ${pane.id}`;
       console.error(msg, error);
@@ -207,6 +212,7 @@ export class PaneWorkerManager {
       LogService.getInstance().error(msg, 'PaneWorkerManager', paneId, error instanceof Error ? error : undefined);
     } finally {
       this.workers.delete(paneId);
+      this.recordWorkerPool();
     }
   }
 
@@ -266,6 +272,7 @@ export class PaneWorkerManager {
       console.error(msg);
       LogService.getInstance().error(msg, 'PaneWorkerManager', paneId);
       this.workers.delete(paneId);
+      this.recordWorkerPool();
     }
   }
 
@@ -279,6 +286,7 @@ export class PaneWorkerManager {
         this.restartWorker(paneId);
       } else {
         this.workers.delete(paneId);
+        this.recordWorkerPool();
       }
     }
   }
@@ -295,6 +303,7 @@ export class PaneWorkerManager {
 
     // Destroy old worker
     this.workers.delete(paneId);
+    this.recordWorkerPool();
     try {
       await workerInfo.worker.terminate();
     } catch {
@@ -345,6 +354,16 @@ export class PaneWorkerManager {
     };
   }
 
+  private recordWorkerPool(): void {
+    configureDmuxPerfMetadata({ workerCount: this.workers.size });
+    recordDmuxPerfEvent('worker.pool', {
+      count: this.workers.size,
+      metadata: {
+        paneIds: Array.from(this.workers.keys()),
+      },
+    });
+  }
+
   /**
    * Shutdown all workers
    */
@@ -358,5 +377,6 @@ export class PaneWorkerManager {
 
     await Promise.all(shutdownPromises);
     this.workers.clear();
+    this.recordWorkerPool();
   }
 }

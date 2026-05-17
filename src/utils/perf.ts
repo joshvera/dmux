@@ -1,0 +1,487 @@
+import { execSync } from 'child_process';
+import { createHash, randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { performance } from 'perf_hooks';
+
+export type DmuxPerfLane = 'server-observed' | 'client-observed';
+
+export interface DmuxPerfMetadata {
+  sessionName?: string;
+  projectRoot?: string;
+  projectRootHash?: string;
+  instanceLabel?: string;
+  transport?: string;
+  terminalApp?: string;
+  paneCount?: number;
+  workerCount?: number;
+  tmuxServerPid?: number;
+}
+
+export interface DmuxPerfEventFields {
+  lane?: DmuxPerfLane;
+  durationMs?: number;
+  count?: number;
+  bytes?: number;
+  paneId?: string;
+  tmuxPaneId?: string;
+  commandKind?: string;
+  sync?: boolean;
+  success?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface DmuxPerfJsonEvent extends DmuxPerfEventFields {
+  timestamp: string;
+  monotonicMs: number;
+  runId: string;
+  pid: number;
+  event: string;
+  sessionName?: string;
+  projectRootHash?: string;
+  instanceLabel?: string;
+  transport?: string;
+}
+
+interface WritableLike {
+  write(chunk: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
+  write(
+    chunk: string | Uint8Array,
+    encoding?: BufferEncoding,
+    callback?: (error?: Error | null) => void
+  ): boolean;
+}
+
+interface ProcessStats {
+  pid: number;
+  cpuPercent?: number;
+  rssKb?: number;
+}
+
+let cachedRunId: string | undefined;
+let cachedLogPath: string | undefined;
+let metadata: DmuxPerfMetadata = {};
+let metadataSignature = '';
+let runtimeMonitorStop: (() => void) | undefined;
+const pendingInputMonotonicMs: number[] = [];
+const patchedWritables = new WeakMap<object, () => void>();
+
+export function isDmuxPerfEnabled(): boolean {
+  return process.env.DMUX_PERF === '1';
+}
+
+export function getDmuxPerfRunId(): string {
+  if (process.env.DMUX_PERF_RUN_ID) {
+    cachedRunId = process.env.DMUX_PERF_RUN_ID;
+    return cachedRunId;
+  }
+
+  if (!cachedRunId) {
+    const timestamp = new Date().toISOString().replace(/[-:.]/g, '').replace('T', '-').replace('Z', '');
+    cachedRunId = `${timestamp}-${randomUUID().slice(0, 8)}`;
+    process.env.DMUX_PERF_RUN_ID = cachedRunId;
+  }
+
+  return cachedRunId;
+}
+
+export function getDmuxPerfDir(): string {
+  return process.env.DMUX_PERF_DIR || path.join(os.homedir(), '.dmux', 'perf');
+}
+
+export function hashDmuxPerfProjectRoot(projectRoot: string): string {
+  return createHash('sha1').update(path.resolve(projectRoot)).digest('hex').slice(0, 12);
+}
+
+export function inferDmuxPerfTransport(): string {
+  if (process.env.DMUX_PERF_TRANSPORT) {
+    return process.env.DMUX_PERF_TRANSPORT;
+  }
+
+  const envKeys = Object.keys(process.env);
+  if (envKeys.some((key) => key === 'ET' || key.startsWith('ET_') || key.startsWith('LC_ET'))) {
+    return 'eternal-terminal';
+  }
+  if (process.env.MOSH_IP || process.env.MOSH_KEY) {
+    return 'mosh';
+  }
+  if (process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY) {
+    return 'ssh';
+  }
+  if (process.env.TMUX) {
+    return 'local-tmux';
+  }
+
+  return 'local';
+}
+
+export function classifyTmuxCommand(command: string): string {
+  if (/\bcapture-pane\b/.test(command)) return 'capture-pane';
+  if (/\blist-panes\b/.test(command)) return 'list-panes';
+  if (/\bdisplay-message\b/.test(command)) return 'display-message';
+  if (/\bsend-keys\b/.test(command)) return 'send-keys';
+  if (/\b(?:set-option|set-window-option|set)\b/.test(command)) return 'set-option';
+  if (/\b(?:show-options|show)\b/.test(command)) return 'show-option';
+  return 'other';
+}
+
+export function configureDmuxPerfMetadata(nextMetadata: DmuxPerfMetadata): void {
+  if (!isDmuxPerfEnabled()) {
+    return;
+  }
+
+  const projectRootHash = nextMetadata.projectRoot
+    ? hashDmuxPerfProjectRoot(nextMetadata.projectRoot)
+    : nextMetadata.projectRootHash;
+
+  metadata = {
+    ...metadata,
+    ...nextMetadata,
+    ...(projectRootHash ? { projectRootHash } : {}),
+    instanceLabel: nextMetadata.instanceLabel || process.env.DMUX_PERF_INSTANCE || metadata.instanceLabel,
+    transport: nextMetadata.transport || inferDmuxPerfTransport(),
+    terminalApp: nextMetadata.terminalApp || inferTerminalApp(),
+    tmuxServerPid: nextMetadata.tmuxServerPid || metadata.tmuxServerPid || readTmuxServerPid(),
+  };
+
+  const signature = JSON.stringify(metadata);
+  if (signature !== metadataSignature) {
+    metadataSignature = signature;
+    recordDmuxPerfEvent('perf.metadata', { metadata: { ...metadata } });
+  }
+}
+
+export function recordDmuxPerfEvent(event: string, fields: DmuxPerfEventFields = {}): void {
+  if (!isDmuxPerfEnabled()) {
+    return;
+  }
+
+  writePerfEvent(event, fields, getDmuxPerfLogPath());
+}
+
+export function timeDmuxPerfSync<T>(
+  event: string,
+  fields: DmuxPerfEventFields,
+  operation: () => T
+): T {
+  if (!isDmuxPerfEnabled()) {
+    return operation();
+  }
+
+  const startedAt = performance.now();
+  try {
+    const result = operation();
+    recordDmuxPerfEvent(event, buildTimingEventFields(fields, startedAt, true));
+    return result;
+  } catch (error) {
+    recordDmuxPerfEvent(event, buildTimingEventFields(fields, startedAt, false, error));
+    throw error;
+  }
+}
+
+export async function timeDmuxPerfAsync<T>(
+  event: string,
+  fields: DmuxPerfEventFields,
+  operation: () => Promise<T>
+): Promise<T> {
+  if (!isDmuxPerfEnabled()) {
+    return operation();
+  }
+
+  const startedAt = performance.now();
+  try {
+    const result = await operation();
+    recordDmuxPerfEvent(event, buildTimingEventFields(fields, startedAt, true));
+    return result;
+  } catch (error) {
+    recordDmuxPerfEvent(event, buildTimingEventFields(fields, startedAt, false, error));
+    throw error;
+  }
+}
+
+export function recordDmuxPerfInput(): void {
+  if (!isDmuxPerfEnabled()) {
+    return;
+  }
+
+  pendingInputMonotonicMs.push(performance.now());
+  recordDmuxPerfEvent('ui.input', { count: 1 });
+}
+
+export function recordDmuxPerfRender(): void {
+  if (!isDmuxPerfEnabled()) {
+    return;
+  }
+
+  const now = performance.now();
+  recordDmuxPerfEvent('ui.render', { count: 1 });
+
+  while (pendingInputMonotonicMs.length > 0) {
+    const inputAt = pendingInputMonotonicMs.shift();
+    if (inputAt !== undefined) {
+      recordDmuxPerfEvent('ui.key_to_render', {
+        durationMs: now - inputAt,
+        count: 1,
+      });
+    }
+  }
+}
+
+export function patchDmuxPerfWritable(writable: WritableLike | undefined): () => void {
+  if (!isDmuxPerfEnabled() || !writable) {
+    return () => {};
+  }
+
+  const existingUnpatch = patchedWritables.get(writable);
+  if (existingUnpatch) {
+    return existingUnpatch;
+  }
+
+  const originalWrite = writable.write.bind(writable) as WritableLike['write'];
+  writable.write = ((
+    chunk: string | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void
+  ) => {
+    const bytes = byteLength(chunk);
+    if (bytes > 0) {
+      recordDmuxPerfEvent('ui.stdout_write', {
+        bytes,
+        metadata: { approximate: true },
+      });
+    }
+    if (typeof encodingOrCallback === 'function') {
+      return originalWrite(chunk, encodingOrCallback);
+    }
+    return originalWrite(chunk, encodingOrCallback, callback);
+  }) as WritableLike['write'];
+
+  const unpatch = () => {
+    writable.write = originalWrite;
+    patchedWritables.delete(writable);
+  };
+  patchedWritables.set(writable, unpatch);
+  return unpatch;
+}
+
+export function startDmuxPerfRuntimeMonitor(): () => void {
+  if (!isDmuxPerfEnabled()) {
+    return () => {};
+  }
+
+  if (runtimeMonitorStop) {
+    return runtimeMonitorStop;
+  }
+
+  const eventLoopIntervalMs = 1000;
+  let expectedAt = performance.now() + eventLoopIntervalMs;
+  const eventLoopTimer = setInterval(() => {
+    const now = performance.now();
+    const lagMs = Math.max(0, now - expectedAt);
+    expectedAt = now + eventLoopIntervalMs;
+    recordDmuxPerfEvent('runtime.event_loop_lag', { durationMs: lagMs });
+  }, eventLoopIntervalMs);
+
+  const hostTimer = setInterval(() => {
+    recordDmuxPerfEvent('runtime.host_snapshot', {
+      metadata: buildHostSnapshot(),
+    });
+  }, 5000);
+
+  eventLoopTimer.unref();
+  hostTimer.unref();
+
+  runtimeMonitorStop = () => {
+    clearInterval(eventLoopTimer);
+    clearInterval(hostTimer);
+    runtimeMonitorStop = undefined;
+  };
+
+  return runtimeMonitorStop;
+}
+
+export function writeDmuxPerfClientMarker(options: {
+  runId: string;
+  marker: string;
+  instanceLabel?: string;
+  transport?: string;
+  metadata?: Record<string, unknown>;
+}): string {
+  const filePath = path.join(
+    getDmuxPerfDir(),
+    `dmux-client-${sanitizePathSegment(options.runId)}-${Date.now()}.jsonl`
+  );
+
+  writePerfEvent(
+    'client.marker',
+    {
+      lane: 'client-observed',
+      count: 1,
+      metadata: {
+        marker: options.marker,
+        ...options.metadata,
+      },
+    },
+    filePath,
+    {
+      runId: options.runId,
+      instanceLabel: options.instanceLabel,
+      transport: options.transport || inferDmuxPerfTransport(),
+    }
+  );
+
+  return filePath;
+}
+
+export function resetDmuxPerfForTests(): void {
+  cachedRunId = undefined;
+  cachedLogPath = undefined;
+  metadata = {};
+  metadataSignature = '';
+  pendingInputMonotonicMs.length = 0;
+  if (runtimeMonitorStop) {
+    runtimeMonitorStop();
+  }
+}
+
+function writePerfEvent(
+  event: string,
+  fields: DmuxPerfEventFields,
+  filePath: string,
+  overrides: Partial<DmuxPerfJsonEvent> = {}
+): void {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const payload: DmuxPerfJsonEvent = {
+      timestamp: new Date().toISOString(),
+      monotonicMs: performance.now(),
+      runId: overrides.runId || getDmuxPerfRunId(),
+      pid: process.pid,
+      event,
+      lane: fields.lane || 'server-observed',
+      sessionName: overrides.sessionName || metadata.sessionName,
+      projectRootHash: overrides.projectRootHash || metadata.projectRootHash,
+      instanceLabel: overrides.instanceLabel || metadata.instanceLabel,
+      transport: overrides.transport || metadata.transport || inferDmuxPerfTransport(),
+      ...fields,
+    };
+
+    fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
+  } catch {
+    // Perf logging must never affect dmux behavior.
+  }
+}
+
+function buildTimingEventFields(
+  fields: DmuxPerfEventFields,
+  startedAt: number,
+  success: boolean,
+  error?: unknown
+): DmuxPerfEventFields {
+  return {
+    ...fields,
+    durationMs: performance.now() - startedAt,
+    success,
+    ...(success
+      ? {}
+      : {
+          metadata: {
+            ...(fields.metadata || {}),
+            errorName: error instanceof Error ? error.name : 'unknown',
+          },
+        }),
+  };
+}
+
+function getDmuxPerfLogPath(): string {
+  if (!cachedLogPath) {
+    cachedLogPath = path.join(
+      getDmuxPerfDir(),
+      `dmux-${sanitizePathSegment(getDmuxPerfRunId())}-${process.pid}.jsonl`
+    );
+  }
+  return cachedLogPath;
+}
+
+function sanitizePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function inferTerminalApp(): string | undefined {
+  return process.env.DMUX_PERF_TERMINAL
+    || process.env.TERM_PROGRAM
+    || process.env.LC_TERMINAL
+    || process.env.TERMINAL_EMULATOR
+    || process.env.TERM;
+}
+
+function readTmuxServerPid(): number | undefined {
+  if (!process.env.TMUX) {
+    return undefined;
+  }
+
+  try {
+    const output = execSync("tmux display-message -p '#{pid}'", {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const pid = Number.parseInt(output, 10);
+    return Number.isFinite(pid) ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildHostSnapshot(): Record<string, unknown> {
+  const memory = process.memoryUsage();
+  const cpu = process.cpuUsage();
+  const tmuxServerStats = metadata.tmuxServerPid
+    ? readProcessStats(metadata.tmuxServerPid)
+    : undefined;
+
+  return {
+    process: {
+      pid: process.pid,
+      rss: memory.rss,
+      heapUsed: memory.heapUsed,
+      heapTotal: memory.heapTotal,
+      external: memory.external,
+      cpuUserMicros: cpu.user,
+      cpuSystemMicros: cpu.system,
+    },
+    host: {
+      loadavg: os.loadavg(),
+      freemem: os.freemem(),
+      totalmem: os.totalmem(),
+    },
+    tmuxServer: tmuxServerStats,
+  };
+}
+
+function readProcessStats(pid: number): ProcessStats | undefined {
+  try {
+    const output = execSync(`ps -p ${pid} -o pid=,pcpu=,rss=`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const [pidText, cpuText, rssText] = output.split(/\s+/);
+    return {
+      pid: Number.parseInt(pidText, 10),
+      cpuPercent: Number.parseFloat(cpuText),
+      rssKb: Number.parseInt(rssText, 10),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function byteLength(chunk: unknown): number {
+  if (typeof chunk === 'string') {
+    return Buffer.byteLength(chunk);
+  }
+  if (chunk instanceof Uint8Array) {
+    return chunk.byteLength;
+  }
+  return 0;
+}

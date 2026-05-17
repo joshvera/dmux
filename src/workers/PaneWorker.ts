@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import path from 'path';
 import { capturePaneContent } from '../utils/paneCapture.js';
+import { timeDmuxPerfSync } from '../utils/perf.js';
 import { TmuxService } from '../services/TmuxService.js';
 import type { AgentName } from '../utils/agentLaunch.js';
 import {
@@ -115,7 +116,19 @@ class PaneWorker {
     try {
       // Capture a stable slice of recent pane history for both activity detection
       // and downstream analysis.
-      const output = capturePaneContent(this.tmuxPaneId, PaneWorker.CAPTURE_LINE_COUNT);
+      const output = timeDmuxPerfSync(
+        'worker.capture',
+        {
+          paneId: this.paneId,
+          tmuxPaneId: this.tmuxPaneId,
+          count: PaneWorker.CAPTURE_LINE_COUNT,
+          metadata: {
+            agent: this.agent,
+            statusBefore: this.currentStatus,
+          },
+        },
+        () => capturePaneContent(this.tmuxPaneId, PaneWorker.CAPTURE_LINE_COUNT)
+      );
       const activityFingerprint = buildPaneActivityFingerprint(output);
       const now = Date.now();
 
