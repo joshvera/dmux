@@ -18,6 +18,7 @@ import {
 import type { PanePosition, WindowDimensions } from '../types.js';
 import {
   classifyTmuxCommand,
+  classifyTmuxCommandTarget,
   timeDmuxPerfAsync,
   timeDmuxPerfSync,
 } from '../utils/perf.js';
@@ -215,6 +216,8 @@ export class TmuxService {
       'tmux.command',
       {
         commandKind: classifyTmuxCommand(command),
+        source: 'tmux-service',
+        targetKind: classifyTmuxCommandTarget(command),
         sync: true,
       },
       () => {
@@ -255,6 +258,8 @@ export class TmuxService {
       'tmux.command',
       {
         commandKind: classifyTmuxCommand(command),
+        source: 'tmux-service',
+        targetKind: classifyTmuxCommandTarget(command),
         sync: false,
       },
       async () => {

@@ -63,6 +63,8 @@ describe('perfReport', () => {
       event({
         event: 'tmux.command',
         commandKind: 'list-panes',
+        source: 'tmux-service',
+        targetKind: 'server',
         durationMs: 180,
         sync: true,
       }),
@@ -203,6 +205,8 @@ describe('perfReport', () => {
       event({
         event: 'tmux.command',
         commandKind: 'list-panes',
+        source: 'tmux-service',
+        targetKind: 'server',
         durationMs: 30,
         sync: true,
         monotonicMs: 10,
@@ -210,6 +214,8 @@ describe('perfReport', () => {
       event({
         event: 'tmux.command',
         commandKind: 'display-message',
+        source: 'tmux-service',
+        targetKind: 'pane',
         durationMs: 90,
         sync: false,
         monotonicMs: 20,
@@ -272,9 +278,16 @@ describe('perfReport', () => {
 
     const instance = summary.instances[0];
     expect(instance.tmuxCommandBreakdown.map((breakdown) => breakdown.label)).toEqual([
-      'display-message/async',
-      'list-panes/sync',
+      'kind=display-message/sync=async/source=tmux-service/target=pane',
+      'kind=list-panes/sync=sync/source=tmux-service/target=server',
     ]);
+    expect(instance.tmuxCommandP95Outliers[0]?.label).toBe(
+      'kind=display-message/sync=async/source=tmux-service/target=pane'
+    );
+    expect(instance.tmuxCommandMaxOutliers[0]?.label).toBe(
+      'kind=display-message/sync=async/source=tmux-service/target=pane'
+    );
+    expect(instance.tmuxCommandRateOutliers).toHaveLength(2);
     expect(instance.stdoutWriteBytes.max).toBe(2000);
     expect(instance.stdoutBurstBytes100ms.max).toBe(3000);
     expect(instance.renderBurstCount100ms.max).toBe(2);
@@ -287,8 +300,17 @@ describe('perfReport', () => {
 
     const report = formatPerfReport(summary);
     expect(report).toContain('event-loop outliers >50ms: n=1 max=75.00ms');
-    expect(report).toContain('tmux command breakdown: display-message/async');
-    expect(report).toContain('list-panes/sync');
+    expect(report).toContain(
+      'tmux command breakdown: kind=display-message/sync=async/source=tmux-service/target=pane'
+    );
+    expect(report).toContain('kind=list-panes/sync=sync/source=tmux-service/target=server');
+    expect(report).toContain(
+      'tmux p95 outliers: kind=display-message/sync=async/source=tmux-service/target=pane'
+    );
+    expect(report).toContain(
+      'tmux max outliers: kind=display-message/sync=async/source=tmux-service/target=pane'
+    );
+    expect(report).toContain('tmux rate outliers:');
     expect(report).toContain('worker capture breakdown: claude/idle/pane-b');
     expect(report).toContain('stdout burst bytes/100ms: n=1 p50=3000.00B');
     expect(report).toContain('render burst count/100ms: n=1 p50=2.00');
@@ -296,101 +318,29 @@ describe('perfReport', () => {
     expect(report).toContain('orphaned handled key-to-render samples: 1');
   });
 
-  it('validates handled key-to-render samples by joining inputId to ui.input events', () => {
+
+  it('omits event-loop causal links when the nearest preceding event is from another pid', () => {
     const summary = summarizePerfEvents([
       event({
-        event: 'ui.input',
-        metadata: {
-          inputId: 'valid-input',
-          classification: 'handled',
-          visibleStateChanged: true,
-        },
+        event: 'tmux.command',
+        commandKind: 'send-keys',
+        source: 'tmux-service',
+        targetKind: 'pane',
+        durationMs: 120,
+        monotonicMs: 10,
+        pid: 456,
       }),
       event({
-        event: 'ui.key_to_render',
-        durationMs: 12,
-        metadata: { inputId: 'valid-input' },
-      }),
-      event({
-        event: 'ui.key_to_render',
-        durationMs: 14,
-        metadata: { inputId: 'valid-input' },
-      }),
-      event({
-        event: 'ui.input',
-        metadata: {
-          inputId: 'ignored-input',
-          classification: 'ignored',
-          visibleStateChanged: false,
-        },
-      }),
-      event({
-        event: 'ui.key_to_render',
-        durationMs: 16,
-        metadata: {
-          inputId: 'ignored-input',
-          classification: 'handled',
-          visibleStateChanged: true,
-        },
-      }),
-      event({
-        event: 'ui.key_to_render',
-        durationMs: 18,
-        metadata: { inputId: 'orphan-input' },
-      }),
-      event({
-        event: 'ui.key_to_render',
-        durationMs: 20,
-        metadata: { classification: 'handled', visibleStateChanged: true },
-      }),
-      event({
-        event: 'ui.key_to_render',
-        durationMs: Number.NaN,
-        metadata: { inputId: 'valid-input' },
-      }),
-      event({
-        event: 'ui.input',
-        metadata: {
-          inputId: 'duplicate-input',
-          classification: 'handled',
-          visibleStateChanged: true,
-        },
-      }),
-      event({
-        event: 'ui.input',
-        metadata: {
-          inputId: 'duplicate-input',
-          classification: 'handled',
-          visibleStateChanged: true,
-        },
-      }),
-      event({
-        event: 'ui.key_to_render',
-        durationMs: 22,
-        metadata: { inputId: 'duplicate-input' },
+        event: 'runtime.event_loop_lag',
+        durationMs: 90,
+        monotonicMs: 20,
+        pid: 123,
       }),
     ]);
-    const instance = summary.instances[0];
 
-    expect(instance.handledKeyToRender).toMatchObject({ count: 1, p50: 12 });
-    expect(instance.keyToRender.count).toBe(1);
-    expect(instance.keyToRenderExclusions).toEqual({
-      orphaned: 1,
-      mismatched: 1,
-      duplicateExcess: 2,
-      missingInputId: 1,
-      invalidDuration: 1,
-    });
-
-    const report = formatPerfReport(summary);
-    expect(report).toContain(
-      'excluded key-to-render: orphaned=1 mismatched=1 duplicate/excess=2 missing-input-id=1 invalid-duration=1'
-    );
-    expect(report).toContain('missing: handled visible key-to-render samples < 30');
-    expect(report).toContain('mismatched key-to-render samples: 1');
-    expect(report).toContain('duplicate/excess key-to-render samples: 2');
-    expect(report).toContain('key-to-render samples missing inputId: 1');
-    expect(report).toContain('key-to-render samples with invalid duration: 1');
+    expect(summary.instances[0].eventLoopOutliers.max).toEqual({ durationMs: 90 });
+    expect(formatPerfReport(summary)).toContain('event-loop outliers >50ms: n=1 max=90.00ms');
+    expect(formatPerfReport(summary)).not.toContain('nearest-before-max=');
   });
 
   it('keeps legacy raw key-to-render samples parseable without treating them as handled', () => {

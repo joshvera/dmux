@@ -3,12 +3,15 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  classifyDmuxPerfErrorKind,
   classifyTmuxCommand,
+  classifyTmuxCommandTarget,
   configureDmuxPerfMetadata,
   recordDmuxPerfEvent,
   recordDmuxPerfInput,
   recordDmuxPerfRender,
   resetDmuxPerfForTests,
+  timeDmuxPerfSync,
   writeDmuxPerfClientMarker,
 } from '../src/utils/perf.js';
 
@@ -244,6 +247,48 @@ describe('dmux perf logging', () => {
     expect(classifyTmuxCommand("tmux select-pane -t '%1'")).toBe('select-pane');
     expect(classifyTmuxCommand('tmux resize-window -x 120 -y 40')).toBe('resize');
     expect(classifyTmuxCommand("tmux paste-buffer -b 'dmux-test' -t '%1'")).toBe('buffer');
+  });
+
+  it('classifies tmux attribution metadata without storing raw command text or errors', () => {
+    expect(classifyTmuxCommandTarget("tmux send-keys -t '%1' Enter")).toBe('pane');
+    expect(classifyTmuxCommandTarget("tmux resize-window -x 120 -y 40")).toBe('window');
+    expect(classifyTmuxCommandTarget("tmux refresh-client")).toBe('client');
+    expect(classifyTmuxCommandTarget("tmux set-option -g status off")).toBe('global');
+    expect(classifyDmuxPerfErrorKind(new Error("can't find pane: %99"))).toBe('missing-target');
+    expect(
+      classifyDmuxPerfErrorKind(Object.assign(new Error('operation timeout'), { killed: true }))
+    ).toBe('timeout');
+  });
+
+  it('records failed tmux timings with coarse errorKind instead of raw error metadata', () => {
+    process.env.DMUX_PERF = '1';
+    process.env.DMUX_PERF_DIR = tempDir;
+    process.env.DMUX_PERF_RUN_ID = 'run-tmux-error';
+
+    expect(() => timeDmuxPerfSync(
+      'tmux.command',
+      {
+        commandKind: 'send-keys',
+        source: 'tmux-service',
+        targetKind: 'pane',
+        sync: true,
+      },
+      () => {
+        throw new Error("can't find pane: %99");
+      }
+    )).toThrow("can't find pane");
+
+    const tmuxEvent = readEvents(tempDir).find((event) => event.event === 'tmux.command');
+    expect(tmuxEvent).toMatchObject({
+      commandKind: 'send-keys',
+      source: 'tmux-service',
+      targetKind: 'pane',
+      sync: true,
+      success: false,
+      errorKind: 'missing-target',
+    });
+    expect(tmuxEvent?.metadata).toBeUndefined();
+    expect(JSON.stringify(tmuxEvent)).not.toContain('%99');
   });
 });
 

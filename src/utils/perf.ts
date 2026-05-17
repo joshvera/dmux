@@ -6,6 +6,39 @@ import * as path from 'path';
 import { performance } from 'perf_hooks';
 
 export type DmuxPerfLane = 'server-observed' | 'client-observed';
+export type DmuxPerfCommandKind =
+  | 'buffer'
+  | 'capture-pane'
+  | 'display-message'
+  | 'list-panes'
+  | 'list-windows'
+  | 'pane-lifecycle'
+  | 'refresh-client'
+  | 'resize'
+  | 'select-layout'
+  | 'select-pane'
+  | 'send-keys'
+  | 'set-option'
+  | 'show-option'
+  | 'other';
+export type DmuxPerfCommandSource = 'tmux-service' | 'perf-runtime' | 'unknown';
+export type DmuxPerfCommandTargetKind =
+  | 'buffer'
+  | 'client'
+  | 'global'
+  | 'pane'
+  | 'server'
+  | 'session'
+  | 'window'
+  | 'unknown';
+export type DmuxPerfErrorKind =
+  | 'exit'
+  | 'invalid-command'
+  | 'missing-target'
+  | 'not-found'
+  | 'permission-denied'
+  | 'timeout'
+  | 'unknown';
 
 export interface DmuxPerfMetadata {
   sessionName?: string;
@@ -26,7 +59,10 @@ export interface DmuxPerfEventFields {
   bytes?: number;
   paneId?: string;
   tmuxPaneId?: string;
-  commandKind?: string;
+  commandKind?: DmuxPerfCommandKind;
+  source?: DmuxPerfCommandSource;
+  targetKind?: DmuxPerfCommandTargetKind;
+  errorKind?: DmuxPerfErrorKind;
   sync?: boolean;
   success?: boolean;
   metadata?: Record<string, unknown>;
@@ -154,7 +190,7 @@ export function inferDmuxPerfTransport(): string {
   return 'local';
 }
 
-export function classifyTmuxCommand(command: string): string {
+export function classifyTmuxCommand(command: string): DmuxPerfCommandKind {
   if (/\bcapture-pane\b/.test(command)) return 'capture-pane';
   if (/\blist-panes\b/.test(command)) return 'list-panes';
   if (/\blist-windows\b/.test(command)) return 'list-windows';
@@ -169,6 +205,78 @@ export function classifyTmuxCommand(command: string): string {
   if (/\b(?:set-option|set-window-option|set)\b/.test(command)) return 'set-option';
   if (/\b(?:show-options|show)\b/.test(command)) return 'show-option';
   return 'other';
+}
+
+export function classifyTmuxCommandTarget(command: string): DmuxPerfCommandTargetKind {
+  const commandKind = classifyTmuxCommand(command);
+  if (commandKind === 'buffer') return 'buffer';
+  if (commandKind === 'refresh-client') return 'client';
+  if (commandKind === 'list-windows') return 'session';
+  if (commandKind === 'select-layout') return 'window';
+  if (commandKind === 'resize' && /\bresize-window\b/.test(command)) return 'window';
+  if (commandKind === 'pane-lifecycle' && /\bkill-window\b/.test(command)) return 'window';
+  if (commandKind === 'set-option' && /\s-g\b/.test(command)) return 'global';
+  if (
+    commandKind === 'show-option'
+    && /\bshow(?:-options)?\s+(?:[^|;&]*\s)?-g(?:v)?\b/.test(command)
+  ) {
+    return 'global';
+  }
+  if (/\b(?:attach-session|new-session|switch-client|has-session)\b/.test(command)) return 'session';
+  if (/\b(?:display-message|list-panes)\b/.test(command) && !/\s-t\s+/.test(command)) return 'server';
+  if (/\s-t\s+['"]?%/.test(command)) return 'pane';
+  if (/\s-t\s+['"]?@/.test(command)) return 'window';
+  if (/\s-t\s+/.test(command)) return 'unknown';
+  if (
+    commandKind === 'capture-pane'
+    || commandKind === 'send-keys'
+    || commandKind === 'select-pane'
+    || commandKind === 'pane-lifecycle'
+  ) {
+    return 'pane';
+  }
+  return 'server';
+}
+
+export function classifyDmuxPerfErrorKind(error: unknown): DmuxPerfErrorKind {
+  const message = String(error).toLowerCase();
+  const errorWithCode = error as {
+    code?: unknown;
+    status?: unknown;
+    signal?: unknown;
+    killed?: unknown;
+  };
+  if (
+    message.includes('timeout')
+    || errorWithCode.code === 'ETIMEDOUT'
+    || errorWithCode.killed === true
+  ) {
+    return 'timeout';
+  }
+  if (
+    message.includes('tmux not found')
+    || message.includes('command not found')
+    || errorWithCode.code === 'ENOENT'
+  ) {
+    return 'not-found';
+  }
+  if (message.includes('permission denied') || errorWithCode.code === 'EACCES') {
+    return 'permission-denied';
+  }
+  if (
+    message.includes("can't find")
+    || message.includes('no such session')
+    || message.includes('no session found')
+  ) {
+    return 'missing-target';
+  }
+  if (message.includes('invalid')) {
+    return 'invalid-command';
+  }
+  if (typeof errorWithCode.code === 'number' || typeof errorWithCode.status === 'number') {
+    return 'exit';
+  }
+  return 'unknown';
 }
 
 export function configureDmuxPerfMetadata(nextMetadata: DmuxPerfMetadata): void {
@@ -518,14 +626,7 @@ function buildTimingEventFields(
     ...fields,
     durationMs: performance.now() - startedAt,
     success,
-    ...(success
-      ? {}
-      : {
-          metadata: {
-            ...(fields.metadata || {}),
-            errorName: error instanceof Error ? error.name : 'unknown',
-          },
-        }),
+    ...(success ? {} : { errorKind: fields.errorKind || classifyDmuxPerfErrorKind(error) }),
   };
 }
 

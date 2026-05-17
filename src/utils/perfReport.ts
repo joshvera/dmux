@@ -80,6 +80,9 @@ export interface PerfInstanceSummary {
   eventLoopOutliers: EventLoopOutlierSummary;
   tmuxCommand: MetricStats;
   tmuxCommandBreakdown: MetricBreakdown[];
+  tmuxCommandP95Outliers: MetricBreakdown[];
+  tmuxCommandMaxOutliers: MetricBreakdown[];
+  tmuxCommandRateOutliers: MetricBreakdown[];
   workerCapture: MetricStats;
   workerCaptureBreakdown: MetricBreakdown[];
   renderCount: number;
@@ -252,6 +255,9 @@ export function formatPerfReport(summary: PerfReportSummary): string {
     lines.push(`  tmux commands: ${formatStats(instance.tmuxCommand)} (${formatNumber(instance.commandRatePerSecond)}/s)`);
     if (instance.tmuxCommandBreakdown.length > 0) {
       lines.push(`  tmux command breakdown: ${formatBreakdowns(instance.tmuxCommandBreakdown)}`);
+      lines.push(`  tmux p95 outliers: ${formatBreakdowns(instance.tmuxCommandP95Outliers)}`);
+      lines.push(`  tmux max outliers: ${formatBreakdowns(instance.tmuxCommandMaxOutliers)}`);
+      lines.push(`  tmux rate outliers: ${formatBreakdowns(instance.tmuxCommandRateOutliers)}`);
     }
     lines.push(`  worker capture: ${formatStats(instance.workerCapture)} (${formatNumber(instance.workerCaptureRatePerSecond)}/s)`);
     if (instance.workerCaptureBreakdown.length > 0) {
@@ -299,6 +305,9 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
   const eventLoopOutliers = summarizeEventLoopOutliers(serverEvents);
   const tmuxCommand = metricStats(serverEvents, 'tmux.command');
   const tmuxCommandBreakdown = commandBreakdownStats(serverEvents, durationSeconds);
+  const tmuxCommandP95Outliers = topBreakdowns(tmuxCommandBreakdown, 'p95');
+  const tmuxCommandMaxOutliers = topBreakdowns(tmuxCommandBreakdown, 'max');
+  const tmuxCommandRateOutliers = topBreakdowns(tmuxCommandBreakdown, 'rate');
   const workerCapture = metricStats(serverEvents, 'worker.capture');
   const workerCaptureBreakdown = workerCaptureBreakdownStats(serverEvents, durationSeconds);
   const renderCount = serverEvents
@@ -364,6 +373,9 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
     eventLoopOutliers,
     tmuxCommand,
     tmuxCommandBreakdown,
+    tmuxCommandP95Outliers,
+    tmuxCommandMaxOutliers,
+    tmuxCommandRateOutliers,
     workerCapture,
     workerCaptureBreakdown,
     renderCount,
@@ -465,7 +477,9 @@ function commandBreakdownStats(
 
       const commandKind = event.commandKind || 'unknown';
       const syncKind = event.sync === false ? 'async' : 'sync';
-      return `${commandKind}/${syncKind}`;
+      const source = event.source || 'unknown';
+      const targetKind = event.targetKind || 'unknown';
+      return `kind=${commandKind}/sync=${syncKind}/source=${source}/target=${targetKind}`;
     }
   );
 }
@@ -518,6 +532,24 @@ function breakdownStats(
         || right.stats.count - left.stats.count
         || left.label.localeCompare(right.label)
     );
+}
+
+function topBreakdowns(
+  breakdowns: MetricBreakdown[],
+  by: 'p95' | 'max' | 'rate'
+): MetricBreakdown[] {
+  return [...breakdowns]
+    .sort((left, right) => {
+      if (by === 'rate') {
+        return right.ratePerSecond - left.ratePerSecond
+          || (right.stats.max || 0) - (left.stats.max || 0)
+          || left.label.localeCompare(right.label);
+      }
+      return (right.stats[by] || 0) - (left.stats[by] || 0)
+        || right.ratePerSecond - left.ratePerSecond
+        || left.label.localeCompare(right.label);
+    })
+    .slice(0, 3);
 }
 
 function durationStats(values: number[]): MetricStats {
@@ -813,7 +845,8 @@ function findPrecedingSignificantEvent(
 ): DmuxPerfJsonEvent | undefined {
   return events
     .filter((event) =>
-      event.monotonicMs < target.monotonicMs
+      event.pid === target.pid
+        && event.monotonicMs < target.monotonicMs
         && event.event !== 'runtime.event_loop_lag'
         && event.event !== 'runtime.host_snapshot'
         && event.event !== 'perf.metadata'
@@ -823,7 +856,9 @@ function findPrecedingSignificantEvent(
 
 function formatEventLabel(event: DmuxPerfJsonEvent): string {
   if (event.event === 'tmux.command') {
-    return `${event.event}:${event.commandKind || 'unknown'}/${event.sync === false ? 'async' : 'sync'}`;
+    const syncKind = event.sync === false ? 'async' : 'sync';
+    return `${event.event}:kind=${event.commandKind || 'unknown'}/sync=${syncKind}`
+      + `/source=${event.source || 'unknown'}/target=${event.targetKind || 'unknown'}`;
   }
   if (event.event === 'ui.stdout_write') {
     return `${event.event}:${formatInteger(event.bytes)}B`;
