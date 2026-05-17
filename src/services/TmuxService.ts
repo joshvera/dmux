@@ -216,6 +216,7 @@ export class TmuxService {
       {
         commandKind: classifyTmuxCommand(command),
         sync: true,
+        metadata: buildTmuxCommandMetadata(command, true),
       },
       () => {
         try {
@@ -256,6 +257,7 @@ export class TmuxService {
       {
         commandKind: classifyTmuxCommand(command),
         sync: false,
+        metadata: buildTmuxCommandMetadata(command, false),
       },
       async () => {
         try {
@@ -1773,4 +1775,29 @@ export class TmuxService {
       return '';
     }
   }
+}
+
+function buildTmuxCommandMetadata(command: string, sync: boolean): Record<string, unknown> {
+  return {
+    commandKind: classifyTmuxCommand(command),
+    sync,
+    source: 'dmux-service',
+    targetKind: inferTmuxTargetKind(command),
+  };
+}
+
+function inferTmuxTargetKind(command: string): 'pane' | 'window' | 'session' | 'server' | 'unknown' {
+  if (/\b(?:capture-pane|send-keys|select-pane|resize-pane|split-window|join-pane)\b/.test(command)) {
+    return 'pane';
+  }
+  if (/\b(?:list-windows|kill-window|resize-window|select-layout)\b/.test(command)) {
+    return 'window';
+  }
+  if (/\b(?:new-session|switch-client|attach-session)\b/.test(command)) {
+    return 'session';
+  }
+  if (/\b(?:list-panes|display-message|refresh-client|set-option|show-options|show)\b/.test(command)) {
+    return 'server';
+  }
+  return 'unknown';
 }

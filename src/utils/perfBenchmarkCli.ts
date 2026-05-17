@@ -2,7 +2,7 @@
 import { randomUUID } from 'crypto';
 import { createInterface } from 'readline/promises';
 import { pathToFileURL } from 'url';
-import { writeDmuxPerfClientMarker } from './perf.js';
+import { writeDmuxPerfClientInputWindow, writeDmuxPerfClientMarker } from './perf.js';
 import { runTerminalRoundtripProbe } from './perfProbe.js';
 
 async function main(): Promise<void> {
@@ -74,7 +74,7 @@ function writeMarker(args: string[]): void {
   console.log(`Wrote client marker: ${filePath}`);
 }
 
-async function runCollectClient(args: string[]): Promise<void> {
+export async function runCollectClient(args: string[]): Promise<void> {
   const runId = readRequiredOption(args, '--run-id');
   const instanceLabel = readOption(args, '--instance');
   const transport = readOption(args, '--transport');
@@ -82,6 +82,9 @@ async function runCollectClient(args: string[]): Promise<void> {
   const iterations = readPositiveIntegerOption(args, '--iterations', 10);
   const timeoutMs = readPositiveIntegerOption(args, '--timeout-ms', 1000);
   const durationMs = readOptionalPositiveIntegerOption(args, '--duration-ms');
+  if (durationMs === undefined && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+    throw new Error('collect-client requires --duration-ms when stdin/stdout are noninteractive');
+  }
 
   try {
     const beforeProbe = await runTerminalRoundtripProbe({
@@ -93,6 +96,7 @@ async function runCollectClient(args: string[]): Promise<void> {
     });
     console.log(`Wrote pre-window terminal RTT probe events: ${beforeProbe.filePath}`);
 
+    const windowStartedAt = new Date();
     const startPath = writeDmuxPerfClientMarker({
       runId,
       marker: `${label}-start`,
@@ -103,6 +107,7 @@ async function runCollectClient(args: string[]): Promise<void> {
 
     await waitForClientWindow(durationMs);
 
+    const windowStoppedAt = new Date();
     const stopPath = writeDmuxPerfClientMarker({
       runId,
       marker: `${label}-stop`,
@@ -119,6 +124,20 @@ async function runCollectClient(args: string[]): Promise<void> {
       timeoutMs,
     });
     console.log(`Wrote post-window terminal RTT probe events: ${afterProbe.filePath}`);
+
+    const combinedResults = [...beforeProbe.results, ...afterProbe.results];
+    const inputWindowPath = writeDmuxPerfClientInputWindow({
+      runId,
+      instanceLabel,
+      transport,
+      label,
+      startedAt: windowStartedAt.toISOString(),
+      stoppedAt: windowStoppedAt.toISOString(),
+      durationMs: Math.max(0, windowStoppedAt.getTime() - windowStartedAt.getTime()),
+      dsrSupported: beforeProbe.supported || afterProbe.supported,
+      dsrResults: countProbeResults(combinedResults),
+    });
+    console.log(`Wrote client input window: ${inputWindowPath}`);
   } finally {
     releaseProbeStdin();
   }
@@ -209,8 +228,7 @@ async function waitForClientWindow(durationMs: number | undefined): Promise<void
   }
 
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.log('No interactive TTY or --duration-ms provided; client sample window closed immediately.');
-    return;
+    throw new Error('collect-client requires --duration-ms when stdin/stdout are noninteractive');
   }
 
   const readline = createInterface({

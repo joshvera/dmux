@@ -35,6 +35,15 @@ export interface EventLoopOutlier {
   precedingDeltaMs?: number;
 }
 
+export interface KeyToRenderExclusionCounts {
+  orphan: number;
+  mismatched: number;
+  duplicateInput: number;
+  duplicateRender: number;
+  missingInputId: number;
+  invalidDuration: number;
+}
+
 export interface InputClassificationCounts {
   handled: number;
   ignored: number;
@@ -85,7 +94,9 @@ export interface PerfInstanceSummary {
   workerCaptureRatePerSecond: number;
   handledVisibleInputCount: number;
   orphanedKeyToRenderCount: number;
+  keyToRenderExclusions: KeyToRenderExclusionCounts;
   clientMarkers: string[];
+  clientInputWindows: ClientInputWindowSummary[];
   metadata: PerfMetadataSummary;
   likelyBottleneck: string;
   missing: string[];
@@ -112,6 +123,18 @@ export interface PerfMetadataSummary {
   hostLoad1?: number;
   hostFreeMem?: number;
   hostTotalMem?: number;
+}
+
+export interface ClientInputWindowSummary {
+  label: string;
+  durationMs: number;
+  handledVisibleInputCount: number;
+  matchedKeyToRenderCount: number;
+  renderCount: number;
+  dsrSupported: boolean;
+  dsrSuccessCount: number;
+  dsrTimeoutCount: number;
+  dsrErrorCount: number;
 }
 
 interface EventGroupKey {
@@ -230,6 +253,9 @@ export function formatPerfReport(summary: PerfReportSummary): string {
     lines.push(`  handled visible inputs: ${instance.handledVisibleInputCount}`);
     lines.push(`  handled key-to-render: ${formatStats(instance.handledKeyToRender)}`);
     lines.push(`  legacy raw key-to-render: ${formatStats(instance.legacyKeyToRender)}`);
+    if (hasKeyToRenderExclusions(instance.keyToRenderExclusions)) {
+      lines.push(`  excluded key-to-render: ${formatKeyToRenderExclusions(instance.keyToRenderExclusions)}`);
+    }
     if (instance.orphanedKeyToRenderCount > 0) {
       lines.push(`  orphaned key-to-render: ${instance.orphanedKeyToRenderCount}`);
     }
@@ -250,6 +276,9 @@ export function formatPerfReport(summary: PerfReportSummary): string {
     lines.push(`  stdout burst bytes/100ms: ${formatValueStats(instance.stdoutBurstBytes100ms, 'B')}`);
     lines.push(`  render burst count/100ms: ${formatValueStats(instance.renderBurstCount100ms, '')}`);
     lines.push(`  client markers: ${instance.clientMarkers.length === 0 ? 'none' : instance.clientMarkers.join(', ')}`);
+    if (instance.clientInputWindows.length > 0) {
+      lines.push(`  client input windows: ${formatClientInputWindows(instance.clientInputWindows)}`);
+    }
     lines.push(`  likely bottleneck: ${instance.likelyBottleneck}`);
     if (instance.missing.length > 0) {
       lines.push(`  missing: ${instance.missing.join(', ')}`);
@@ -272,8 +301,9 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
   const durationSeconds = getDurationSeconds(events);
   const serverEvents = events.filter((event) => event.lane !== 'client-observed');
   const clientEvents = events.filter((event) => event.lane === 'client-observed');
-  const handledKeyToRender = eventDurationStats(serverEvents, isHandledVisibleKeyToRender);
-  const legacyKeyToRender = eventDurationStats(serverEvents, isLegacyRawKeyToRender);
+  const keyToRenderAnalysis = analyzeKeyToRender(serverEvents);
+  const handledKeyToRender = keyToRenderAnalysis.handledKeyToRender;
+  const legacyKeyToRender = keyToRenderAnalysis.legacyKeyToRender;
   const inputClassifications = countInputClassifications(serverEvents);
   const terminalRoundtripEvents = events.filter((event) => event.event === 'client.terminal_roundtrip');
   const terminalRoundtrip = eventDurationStats(
@@ -313,11 +343,12 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
   const commandCount = serverEvents.filter((event) => event.event === 'tmux.command').length;
   const workerCaptureCount = serverEvents.filter((event) => event.event === 'worker.capture').length;
   const handledVisibleInputCount = countHandledVisibleInputs(serverEvents);
-  const orphanedKeyToRenderCount = countOrphanedKeyToRender(serverEvents);
+  const orphanedKeyToRenderCount = keyToRenderAnalysis.exclusions.orphan;
   const clientMarkers = clientEvents
     .filter((event) => event.event === 'client.marker')
     .map((event) => readStringMetadata(event, 'marker'))
     .filter((value): value is string => value !== undefined);
+  const clientInputWindows = summarizeClientInputWindows(clientEvents);
   const metadata = summarizeMetadata(events);
   const missing = collectMissingMetrics({
     handledKeyToRender,
@@ -326,9 +357,11 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
     tmuxCommand,
     workerCapture,
     terminalRoundtrip,
+    clientInputWindowCount: clientInputWindows.length,
     clientMarkerCount: clientMarkers.length,
     handledVisibleInputCount,
     orphanedKeyToRenderCount,
+    keyToRenderExclusions: keyToRenderAnalysis.exclusions,
     metadata,
   });
 
@@ -363,7 +396,9 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
     workerCaptureRatePerSecond: rate(workerCaptureCount, durationSeconds),
     handledVisibleInputCount,
     orphanedKeyToRenderCount,
+    keyToRenderExclusions: keyToRenderAnalysis.exclusions,
     clientMarkers,
+    clientInputWindows,
     metadata,
     likelyBottleneck: inferLikelyBottleneck({
       handledKeyToRender,
@@ -450,7 +485,23 @@ function commandBreakdownStats(
 
       const commandKind = event.commandKind || 'unknown';
       const syncKind = event.sync === false ? 'async' : 'sync';
-      return `${commandKind}/${syncKind}`;
+      const parts = [`${commandKind}/${syncKind}`];
+      const source = readStringMetadata(event, 'source');
+      const targetKind = readStringMetadata(event, 'targetKind');
+      if (source !== undefined) {
+        parts.push(`source=${source}`);
+      }
+      if (targetKind !== undefined) {
+        parts.push(`target=${targetKind}`);
+      }
+      if (typeof event.success === 'boolean') {
+        parts.push(`success=${event.success ? 'true' : 'false'}`);
+      }
+      const errorKind = readStringMetadata(event, 'errorKind');
+      if (errorKind !== undefined) {
+        parts.push(`error=${errorKind}`);
+      }
+      return parts.join('/');
     }
   );
 }
@@ -564,8 +615,104 @@ function readBooleanMetadata(event: DmuxPerfJsonEvent, key: string): boolean | u
   return undefined;
 }
 
+function readNumberMetadata(event: DmuxPerfJsonEvent, key: string): number | undefined {
+  const value = event.metadata?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
 function hasMetadataKey(event: DmuxPerfJsonEvent, key: string): boolean {
   return event.metadata ? Object.prototype.hasOwnProperty.call(event.metadata, key) : false;
+}
+
+function analyzeKeyToRender(events: DmuxPerfJsonEvent[]): {
+  handledKeyToRender: MetricStats;
+  legacyKeyToRender: MetricStats;
+  exclusions: KeyToRenderExclusionCounts;
+} {
+  const inputEventsById = new Map<string, DmuxPerfJsonEvent[]>();
+  for (const event of events) {
+    if (event.event !== 'ui.input') {
+      continue;
+    }
+
+    const inputId = readStringMetadata(event, 'inputId');
+    if (inputId === undefined) {
+      continue;
+    }
+
+    const group = inputEventsById.get(inputId) || [];
+    group.push(event);
+    inputEventsById.set(inputId, group);
+  }
+
+  const seenKeyToRenderInputIds = new Set<string>();
+  const handledDurations: number[] = [];
+  const legacyDurations: number[] = [];
+  const exclusions: KeyToRenderExclusionCounts = {
+    orphan: 0,
+    mismatched: 0,
+    duplicateInput: 0,
+    duplicateRender: 0,
+    missingInputId: 0,
+    invalidDuration: 0,
+  };
+
+  for (const event of events) {
+    if (event.event !== 'ui.key_to_render') {
+      continue;
+    }
+
+    if (isLegacyRawKeyToRender(event)) {
+      if (typeof event.durationMs === 'number' && Number.isFinite(event.durationMs)) {
+        legacyDurations.push(event.durationMs);
+      }
+      continue;
+    }
+
+    if (typeof event.durationMs !== 'number' || !Number.isFinite(event.durationMs)) {
+      exclusions.invalidDuration += 1;
+      continue;
+    }
+
+    const inputId = readStringMetadata(event, 'inputId');
+    if (inputId === undefined) {
+      exclusions.missingInputId += 1;
+      continue;
+    }
+
+    const inputEvents = inputEventsById.get(inputId);
+    if (inputEvents === undefined) {
+      exclusions.orphan += 1;
+      continue;
+    }
+    if (inputEvents.length !== 1) {
+      exclusions.duplicateInput += 1;
+      continue;
+    }
+
+    const inputEvent = inputEvents[0];
+    if (
+      readStringMetadata(inputEvent, 'classification') !== 'handled'
+      || readBooleanMetadata(inputEvent, 'visibleStateChanged') !== true
+    ) {
+      exclusions.mismatched += 1;
+      continue;
+    }
+
+    if (seenKeyToRenderInputIds.has(inputId)) {
+      exclusions.duplicateRender += 1;
+      continue;
+    }
+
+    seenKeyToRenderInputIds.add(inputId);
+    handledDurations.push(event.durationMs);
+  }
+
+  return {
+    handledKeyToRender: durationStats(handledDurations),
+    legacyKeyToRender: durationStats(legacyDurations),
+    exclusions,
+  };
 }
 
 function isHandledVisibleKeyToRender(event: DmuxPerfJsonEvent): boolean {
@@ -671,6 +818,30 @@ function countTerminalRoundtripResults(events: DmuxPerfJsonEvent[]): TerminalRou
   return counts;
 }
 
+function summarizeClientInputWindows(events: DmuxPerfJsonEvent[]): ClientInputWindowSummary[] {
+  return events
+    .filter((event) => event.event === 'client.input_window')
+    .map((event) => ({
+      label: readStringMetadata(event, 'label') || 'unknown',
+      durationMs: typeof event.durationMs === 'number' && Number.isFinite(event.durationMs)
+        ? event.durationMs
+        : 0,
+      handledVisibleInputCount: readNumberMetadata(event, 'handledVisibleInputCount') || 0,
+      matchedKeyToRenderCount: readNumberMetadata(event, 'matchedKeyToRenderCount') || 0,
+      renderCount: readNumberMetadata(event, 'renderCount') || 0,
+      dsrSupported: readBooleanMetadata(event, 'dsrSupported') === true,
+      dsrSuccessCount: readNumberMetadata(event, 'dsrSuccessCount')
+        ?? readNumberMetadata(event, 'dsrSuccess')
+        ?? 0,
+      dsrTimeoutCount: readNumberMetadata(event, 'dsrTimeoutCount')
+        ?? readNumberMetadata(event, 'dsrTimeout')
+        ?? 0,
+      dsrErrorCount: readNumberMetadata(event, 'dsrErrorCount')
+        ?? readNumberMetadata(event, 'dsrError')
+        ?? 0,
+    }));
+}
+
 function readTerminalRoundtripResult(event: DmuxPerfJsonEvent): keyof TerminalRoundtripResults {
   const result = readStringMetadata(event, 'result');
   if (result === 'success' || result === 'timeout' || result === 'error') {
@@ -741,7 +912,8 @@ function findPrecedingSignificantEvent(
 ): DmuxPerfJsonEvent | undefined {
   return events
     .filter((event) =>
-      event.monotonicMs < target.monotonicMs
+      event.pid === target.pid
+        && event.monotonicMs < target.monotonicMs
         && event.event !== 'runtime.event_loop_lag'
         && event.event !== 'runtime.host_snapshot'
         && event.event !== 'perf.metadata'
@@ -766,9 +938,11 @@ function collectMissingMetrics(input: {
   tmuxCommand: MetricStats;
   workerCapture: MetricStats;
   terminalRoundtrip: MetricStats;
+  clientInputWindowCount: number;
   clientMarkerCount: number;
   handledVisibleInputCount: number;
   orphanedKeyToRenderCount: number;
+  keyToRenderExclusions: KeyToRenderExclusionCounts;
   metadata: PerfMetadataSummary;
 }): string[] {
   const missing: string[] = [];
@@ -782,10 +956,15 @@ function collectMissingMetrics(input: {
   if (input.tmuxCommand.count === 0) missing.push('tmux command timings');
   if (input.workerCapture.count === 0) missing.push('worker capture timings');
   if (input.terminalRoundtrip.count === 0) missing.push('terminal roundtrip timings');
+  if (input.clientInputWindowCount === 0) missing.push('client input window');
   if (input.clientMarkerCount === 0) missing.push('client-observed markers');
   if (input.orphanedKeyToRenderCount > 0) {
     missing.push(`orphaned handled key-to-render samples: ${input.orphanedKeyToRenderCount}`);
   }
+  if (input.keyToRenderExclusions.mismatched > 0) missing.push(`mismatched key-to-render samples: ${input.keyToRenderExclusions.mismatched}`);
+  if ((input.keyToRenderExclusions.duplicateInput + input.keyToRenderExclusions.duplicateRender) > 0) missing.push(`duplicate key-to-render samples: ${input.keyToRenderExclusions.duplicateInput + input.keyToRenderExclusions.duplicateRender}`);
+  if (input.keyToRenderExclusions.missingInputId > 0) missing.push(`missing-input-id key-to-render samples: ${input.keyToRenderExclusions.missingInputId}`);
+  if (input.keyToRenderExclusions.invalidDuration > 0) missing.push(`invalid-duration key-to-render samples: ${input.keyToRenderExclusions.invalidDuration}`);
   if (
     input.handledVisibleInputCount > 0
     && input.handledKeyToRender.count > input.handledVisibleInputCount
@@ -908,6 +1087,21 @@ function formatInputClassifications(counts: InputClassificationCounts): string {
   ].join(' ');
 }
 
+function hasKeyToRenderExclusions(counts: KeyToRenderExclusionCounts): boolean {
+  return Object.values(counts).some((count) => count > 0);
+}
+
+function formatKeyToRenderExclusions(counts: KeyToRenderExclusionCounts): string {
+  return [
+    `orphan=${counts.orphan}`,
+    `mismatched=${counts.mismatched}`,
+    `duplicate-input=${counts.duplicateInput}`,
+    `duplicate-render=${counts.duplicateRender}`,
+    `missing-input-id=${counts.missingInputId}`,
+    `invalid-duration=${counts.invalidDuration}`,
+  ].join(' ');
+}
+
 function formatTerminalRoundtripResults(results: TerminalRoundtripResults): string {
   return [
     `success=${results.success}`,
@@ -915,6 +1109,14 @@ function formatTerminalRoundtripResults(results: TerminalRoundtripResults): stri
     `error=${results.error}`,
     `unknown=${results.unknown}`,
   ].join(' ');
+}
+
+function formatClientInputWindows(windows: ClientInputWindowSummary[]): string {
+  return windows
+    .map((window) =>
+      `${window.label} ${formatNumber(window.durationMs)}ms inputs=${window.handledVisibleInputCount} matchedKeyToRender=${window.matchedKeyToRenderCount} renders=${window.renderCount} dsr=${window.dsrSupported ? 'supported' : 'unsupported'} success=${window.dsrSuccessCount} timeout=${window.dsrTimeoutCount} error=${window.dsrErrorCount}`
+    )
+    .join('; ');
 }
 
 function formatEventLoopOutliers(summary: EventLoopOutlierSummary): string {

@@ -316,6 +316,196 @@ describe('perfReport', () => {
     expect(report).toContain('missing: handled visible key-to-render samples < 30, only legacy raw key-to-render samples found');
   });
 
+  it('joins handled key-to-render samples to exactly one matching inputId and reports exclusions', () => {
+    const summary = summarizePerfEvents([
+      event({
+        event: 'ui.input',
+        metadata: {
+          inputId: 'valid-input',
+          classification: 'handled',
+          visibleStateChanged: true,
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 11,
+        metadata: {
+          inputId: 'valid-input',
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 12,
+        metadata: {
+          inputId: 'valid-input',
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 13,
+        metadata: {
+          inputId: 'orphan-input',
+        },
+      }),
+      event({
+        event: 'ui.input',
+        metadata: {
+          inputId: 'ignored-input',
+          classification: 'ignored',
+          visibleStateChanged: false,
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 14,
+        metadata: {
+          inputId: 'ignored-input',
+        },
+      }),
+      event({
+        event: 'ui.input',
+        metadata: {
+          inputId: 'duplicate-input',
+          classification: 'handled',
+          visibleStateChanged: true,
+        },
+      }),
+      event({
+        event: 'ui.input',
+        metadata: {
+          inputId: 'duplicate-input',
+          classification: 'handled',
+          visibleStateChanged: true,
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 15,
+        metadata: {
+          inputId: 'duplicate-input',
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 16,
+        metadata: {
+          classification: 'handled',
+          visibleStateChanged: true,
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: Number.NaN,
+        metadata: {
+          inputId: 'valid-input',
+        },
+      }),
+      event({ event: 'ui.key_to_render', durationMs: 40 }),
+    ]);
+    const instance = summary.instances[0];
+
+    expect(instance.handledKeyToRender).toMatchObject({
+      count: 1,
+      max: 11,
+    });
+    expect(instance.legacyKeyToRender.count).toBe(1);
+
+    const report = formatPerfReport(summary);
+    expect(report).toContain('handled key-to-render: n=1');
+    expect(report).toContain('legacy raw key-to-render: n=1');
+    expect(report).toContain(
+      'excluded key-to-render: orphan=1 mismatched=1 duplicate-input=1 duplicate-render=1 missing-input-id=1 invalid-duration=1'
+    );
+  });
+
+  it('does not link event-loop outliers to events from a different process monotonic clock', () => {
+    const summary = summarizePerfEvents([
+      event({
+        event: 'tmux.command',
+        commandKind: 'display-message',
+        durationMs: 40,
+        monotonicMs: 90,
+        pid: 100,
+      }),
+      event({
+        event: 'runtime.event_loop_lag',
+        durationMs: 75,
+        monotonicMs: 100,
+        pid: 200,
+      }),
+    ]);
+    const instance = summary.instances[0];
+
+    expect(instance.eventLoopOutliers.max).toEqual({
+      durationMs: 75,
+    });
+    expect(formatPerfReport(summary)).not.toContain('nearest-before-max=');
+  });
+
+  it('includes controlled tmux command metadata in report breakdowns', () => {
+    const summary = summarizePerfEvents([
+      event({
+        event: 'tmux.command',
+        commandKind: 'display-message',
+        durationMs: 80,
+        sync: false,
+        success: false,
+        metadata: {
+          source: 'focus-detection',
+          targetKind: 'pane',
+          errorKind: 'timeout',
+        },
+      }),
+    ]);
+    const instance = summary.instances[0];
+
+    expect(instance.tmuxCommandBreakdown[0]?.label).toBe(
+      'display-message/async/source=focus-detection/target=pane/success=false/error=timeout'
+    );
+    expect(formatPerfReport(summary)).toContain(
+      'tmux command breakdown: display-message/async/source=focus-detection/target=pane/success=false/error=timeout n=1'
+    );
+  });
+
+  it('summarizes client input windows even when terminal DSR is unsupported', () => {
+    const summary = summarizePerfEvents([
+      event({
+        event: 'client.terminal_roundtrip',
+        lane: 'client-observed',
+        durationMs: 0,
+        metadata: {
+          probe: 'terminal-dsr',
+          iteration: 1,
+          result: 'error',
+          errorKind: 'unsupported-tty',
+        },
+      }),
+      event({
+        event: 'client.input_window',
+        lane: 'client-observed',
+        durationMs: 250,
+        metadata: {
+          label: 'navigation',
+          startedAt: '2026-05-17T00:00:00.000Z',
+          stoppedAt: '2026-05-17T00:00:00.250Z',
+          handledVisibleInputCount: 3,
+          matchedKeyToRenderCount: 2,
+          renderCount: 4,
+          dsrSupported: false,
+          dsrSuccessCount: 0,
+          dsrTimeoutCount: 0,
+          dsrErrorCount: 1,
+        },
+      }),
+    ]);
+
+    const report = formatPerfReport(summary);
+    expect(report).toContain(
+      'client input windows: navigation 250.00ms inputs=3 matchedKeyToRender=2 renders=4 dsr=unsupported success=0 timeout=0 error=1'
+    );
+    expect(report).toContain('terminal roundtrip: n=0 (success=0 timeout=0 error=1 unknown=0)');
+  });
+
   it('prints client marker commands for both overlapping instances', () => {
     const guide = buildPerfBenchmarkGuide('guide-run', 'eternal-terminal');
 
