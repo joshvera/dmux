@@ -921,14 +921,10 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
   const presentPaneFromSidebar = async (targetPane: DmuxPane) => {
     try {
-      await activatePaneForCurrentPresentation(targetPane, {
-        activatePane: false,
-      })
+      await activatePaneForCurrentPresentation(targetPane)
     } catch (error: any) {
       setStatusMessage(`Failed to view pane: ${error?.message || String(error)}`)
       setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_LONG)
-    } finally {
-      await restoreSidebarFocusAfterCommand()
     }
   }
 
@@ -976,7 +972,8 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     const shouldVerifyControlFocus =
-      getActiveSurface() !== "control" || isControlPaneSelectionPending()
+      (getActiveSurface() !== "control" || isControlPaneSelectionPending())
+      && selectedIndex >= panes.length
 
     if (isTmuxSession() && controlPaneId && shouldVerifyControlFocus) {
       try {
@@ -992,10 +989,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
             setSelectedIndex(resolvedIndex)
           }
 
-          const resolvedAction = getProjectActionByIndex(projectActionItems, resolvedIndex)
-          return resolvedAction
-            ? { kind: "project-action", action: resolvedAction }
-            : { kind: "none" }
+          return { kind: "none" }
         }
       } catch {
         // Best effort. If tmux cannot report focus, keep the existing selection behavior.

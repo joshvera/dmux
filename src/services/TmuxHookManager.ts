@@ -28,15 +28,29 @@ export interface HookStatus {
   };
 }
 
+interface TmuxHookEntry {
+  hookName: keyof typeof HOOK_CONFIG;
+  index: number | null;
+  target: string;
+  command: string;
+}
+
 /**
  * Hook configuration - maps tmux hook names to our events
  */
 const HOOK_CONFIG = {
   'after-split-window': 'pane-created',
-  'pane-exited': 'pane-closed',
+  'after-kill-pane': 'pane-closed',
   'client-resized': 'pane-resized',
   'after-select-pane': 'pane-focus-changed',
 } as const;
+
+const MANAGED_HOOK_NAMES = Object.keys(HOOK_CONFIG) as Array<keyof typeof HOOK_CONFIG>;
+const DMUX_HOOK_MARKER = '# dmux-hook';
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 
 /**
  * TmuxHookManager singleton
@@ -111,33 +125,17 @@ export class TmuxHookManager extends EventEmitter {
     };
 
     try {
-      // Check each hook by trying to show it
-      const checkHook = async (hookName: string): Promise<boolean> => {
-        try {
-          const result = await execAsync(
-            `tmux show-hooks -t '${this.sessionName}' 2>/dev/null | grep -q '${hookName}'`,
-            { silent: true, timeout: 2000 }
-          );
-          return true;
-        } catch {
-          return false;
-        }
-      };
+      const entries = await this.readHookEntries();
 
-      // Check all hooks in parallel
-      const [afterSplit, paneExit, clientResize, selectPane] = await Promise.all([
-        checkHook('after-split-window'),
-        checkHook('pane-exited'),
-        checkHook('client-resized'),
-        checkHook('after-select-pane'),
-      ]);
+      hooks.afterSplitWindow = this.hasCurrentDmuxHook(entries, 'after-split-window');
+      hooks.paneExited = this.hasCurrentDmuxHook(entries, 'after-kill-pane');
+      hooks.clientResized = this.hasCurrentDmuxHook(entries, 'client-resized');
+      hooks.afterSelectPane = this.hasCurrentDmuxHook(entries, 'after-select-pane');
 
-      hooks.afterSplitWindow = afterSplit;
-      hooks.paneExited = paneExit;
-      hooks.clientResized = clientResize;
-      hooks.afterSelectPane = selectPane;
-
-      const installed = afterSplit && paneExit && clientResize && selectPane;
+      const installed = hooks.afterSplitWindow
+        && hooks.paneExited
+        && hooks.clientResized
+        && hooks.afterSelectPane;
 
       return { installed, hooks };
     } catch (error) {
@@ -153,12 +151,10 @@ export class TmuxHookManager extends EventEmitter {
     if (!this.sessionName) return false;
 
     try {
-      // Quick check - just look for our signature hook
-      await execAsync(
-        `tmux show-hooks -t '${this.sessionName}' 2>/dev/null | grep -q 'dmux-hook'`,
-        { silent: true, timeout: 1000 }
+      const entries = await this.readHookEntries(1000);
+      return MANAGED_HOOK_NAMES.every((hookName) =>
+        this.hasCurrentDmuxHook(entries, hookName)
       );
-      return true;
     } catch {
       return false;
     }
@@ -174,6 +170,18 @@ export class TmuxHookManager extends EventEmitter {
     }
 
     try {
+      const existingEntries = await this.readHookEntries();
+      const staleDmuxEntries = existingEntries.filter((entry) =>
+        this.isStaleDmuxHook(entry)
+      );
+
+      for (const entry of staleDmuxEntries) {
+        await execAsync(
+          `tmux set-hook -u -t ${shellQuote(this.sessionName)} ${shellQuote(entry.target)}`,
+          { timeout: 2000 }
+        );
+      }
+
       // Create hook commands that send SIGUSR2 to this process
       // We add a comment marker so we can identify our hooks later
       const paneExitedHookCommand = buildPaneExitedHookCommandForSession(
@@ -184,20 +192,38 @@ export class TmuxHookManager extends EventEmitter {
         this.sessionName,
         this.pid
       );
-      const hookCommands = [
+      const hookCommands: Array<{ hookName: keyof typeof HOOK_CONFIG; command: string }> = [
         // Pane split (new pane created)
-        `tmux set-hook -t '${this.sessionName}' after-split-window 'run-shell "kill -USR2 ${this.pid} 2>/dev/null || true # dmux-hook"'`,
+        {
+          hookName: 'after-split-window',
+          command: `run-shell "kill -USR2 ${this.pid} 2>/dev/null || true # dmux-hook"`,
+        },
         // Pane closed (includes control-pane recovery if needed)
-        `tmux set-hook -t '${this.sessionName}' pane-exited '${paneExitedHookCommand}'`,
+        {
+          hookName: 'after-kill-pane',
+          command: paneExitedHookCommand,
+        },
         // Window/client resized
-        `tmux set-hook -t '${this.sessionName}' client-resized 'run-shell "kill -USR2 ${this.pid} 2>/dev/null || true # dmux-hook"'`,
+        {
+          hookName: 'client-resized',
+          command: `run-shell "kill -USR2 ${this.pid} 2>/dev/null || true # dmux-hook"`,
+        },
         // Pane focus changed
-        `tmux set-hook -t '${this.sessionName}' after-select-pane '${paneFocusHookCommand}'`,
+        {
+          hookName: 'after-select-pane',
+          command: paneFocusHookCommand,
+        },
       ];
 
-      // Install all hooks
-      for (const cmd of hookCommands) {
-        await execAsync(cmd, { timeout: 2000 });
+      for (const hookCommand of hookCommands) {
+        if (this.hasCurrentDmuxHook(existingEntries, hookCommand.hookName)) {
+          continue;
+        }
+
+        await execAsync(
+          `tmux set-hook -a -t ${shellQuote(this.sessionName)} ${hookCommand.hookName} ${shellQuote(hookCommand.command)}`,
+          { timeout: 2000 }
+        );
       }
 
       this.hooksInstalled = true;
@@ -216,16 +242,18 @@ export class TmuxHookManager extends EventEmitter {
     if (!this.sessionName) return false;
 
     try {
-      const unsetCommands = [
-        `tmux set-hook -u -t '${this.sessionName}' after-split-window`,
-        `tmux set-hook -u -t '${this.sessionName}' pane-exited`,
-        `tmux set-hook -u -t '${this.sessionName}' client-resized`,
-        `tmux set-hook -u -t '${this.sessionName}' after-select-pane`,
-      ];
+      const removableDmuxEntries = (await this.readHookEntries()).filter((entry) =>
+        this.isCurrentDmuxHook(entry) || this.isStaleDmuxHook(entry)
+      );
 
       // Try to unset each hook (ignore errors - hook might not exist)
       await Promise.all(
-        unsetCommands.map(cmd => execAsync(cmd, { silent: true, timeout: 2000 }).catch(() => {}))
+        removableDmuxEntries.map((entry) =>
+          execAsync(
+            `tmux set-hook -u -t ${shellQuote(this.sessionName)} ${shellQuote(entry.target)}`,
+            { silent: true, timeout: 2000 }
+          ).catch(() => {})
+        )
       );
 
       this.hooksInstalled = false;
@@ -242,6 +270,96 @@ export class TmuxHookManager extends EventEmitter {
    */
   isActive(): boolean {
     return this.hooksInstalled;
+  }
+
+  private async readHookEntries(timeout = 2000): Promise<TmuxHookEntry[]> {
+    const output = await execAsync(
+      `tmux show-hooks -t ${shellQuote(this.sessionName)} 2>/dev/null`,
+      { silent: true, timeout }
+    );
+
+    return output
+      .split('\n')
+      .map((line) => this.parseHookEntry(line))
+      .filter((entry): entry is TmuxHookEntry => entry !== null);
+  }
+
+  private parseHookEntry(line: string): TmuxHookEntry | null {
+    const match = line.match(/^([a-z-]+)(?:\[(\d+)])?\s+(.+)$/);
+    if (!match) {
+      return null;
+    }
+
+    const hookName = match[1];
+    if (!this.isManagedHookName(hookName)) {
+      return null;
+    }
+
+    const index = match[2] === undefined ? null : Number(match[2]);
+    const target = index === null ? hookName : `${hookName}[${index}]`;
+
+    return {
+      hookName,
+      index,
+      target,
+      command: match[3],
+    };
+  }
+
+  private isManagedHookName(hookName: string): hookName is keyof typeof HOOK_CONFIG {
+    return MANAGED_HOOK_NAMES.includes(hookName as keyof typeof HOOK_CONFIG);
+  }
+
+  private isDmuxHook(command: string): boolean {
+    return command.includes(DMUX_HOOK_MARKER);
+  }
+
+  private extractDmuxHookPid(command: string): number | null {
+    if (!this.isDmuxHook(command)) {
+      return null;
+    }
+
+    const match = command.match(/\bkill\s+-USR2\s+(\d+)\b/);
+    if (!match) {
+      return null;
+    }
+
+    return Number(match[1]);
+  }
+
+  private isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return this.isPermissionError(error);
+    }
+  }
+
+  private isPermissionError(error: unknown): boolean {
+    return typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && error.code === 'EPERM';
+  }
+
+  private isCurrentDmuxHook(entry: TmuxHookEntry): boolean {
+    const hookPid = this.extractDmuxHookPid(entry.command);
+    return hookPid === this.pid && this.isProcessAlive(hookPid);
+  }
+
+  private isStaleDmuxHook(entry: TmuxHookEntry): boolean {
+    const hookPid = this.extractDmuxHookPid(entry.command);
+    return hookPid !== null && hookPid !== this.pid && !this.isProcessAlive(hookPid);
+  }
+
+  private hasCurrentDmuxHook(
+    entries: TmuxHookEntry[],
+    hookName: keyof typeof HOOK_CONFIG
+  ): boolean {
+    return entries.some((entry) =>
+      entry.hookName === hookName && this.isCurrentDmuxHook(entry)
+    );
   }
 
   /**

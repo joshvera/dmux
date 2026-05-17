@@ -1032,7 +1032,7 @@ describe("useInputHandling focus mode", () => {
     unmount()
   })
 
-  it("shows a visible grid pane on Enter without leaving the sidebar", async () => {
+  it("selects a visible grid pane on Enter", async () => {
     const popupManager = {
       launchKebabMenuPopup: eventFn(() => undefined),
     }
@@ -1057,13 +1057,14 @@ describe("useInputHandling focus mode", () => {
 
     expectNoEvents(popupManager.launchKebabMenuPopup)
     expectEvent(setSelectedIndex, 1)
-    expect(tmuxState.selectedPaneIds).not.toContain("%2")
-    expectSidebarFocusRestored()
+    expect(tmuxState.selectedPaneIds).toContain("%2")
+    expect(tmuxState.selectedPaneId).toBe("%2")
+    expect(tmuxState.selectedPaneIds).not.toContain("%0")
 
     unmount()
   })
 
-  it("reveals a hidden grid pane on Enter while keeping sidebar focus", async () => {
+  it("reveals and selects a hidden grid pane on Enter", async () => {
     let currentPanes = [pane("1", { hidden: true }), pane("2")]
     const popupManager = {
       launchKebabMenuPopup: eventFn(() => undefined),
@@ -1102,13 +1103,14 @@ describe("useInputHandling focus mode", () => {
     ])
     expect(loadPanes.events.length).toBeGreaterThan(0)
     expectEvent(setSelectedIndex, 0)
-    expect(tmuxState.selectedPaneIds).not.toContain("%1")
-    expectSidebarFocusRestored()
+    expect(tmuxState.selectedPaneIds).toContain("%1")
+    expect(tmuxState.selectedPaneId).toBe("%1")
+    expect(tmuxState.selectedPaneIds).not.toContain("%0")
 
     unmount()
   })
 
-  it("does not steal focus when Enter presents a pane in focus mode", async () => {
+  it("selects a pane on Enter in focus mode", async () => {
     const popupManager = {
       launchKebabMenuPopup: eventFn(() => undefined),
     }
@@ -1130,8 +1132,9 @@ describe("useInputHandling focus mode", () => {
     await sleep(80)
 
     expectNoEvents(popupManager.launchKebabMenuPopup)
-    expect(tmuxState.selectedPaneIds).not.toContain("%2")
-    expectSidebarFocusRestored()
+    expect(tmuxState.selectedPaneIds).toContain("%2")
+    expect(tmuxState.selectedPaneId).toBe("%2")
+    expect(tmuxState.selectedPaneIds).not.toContain("%0")
 
     unmount()
   })
@@ -1720,7 +1723,7 @@ describe("useInputHandling focus mode", () => {
     unmount()
   })
 
-  it("re-resolves stale pane selection before Enter acts from the control pane", async () => {
+  it("uses the visible pane selection for Enter after returning to the control pane", async () => {
     const popupManager = {
       launchNewPanePopup: eventFn(async () => ({ prompt: "from control focus" })),
       launchKebabMenuPopup: eventFn(() => undefined),
@@ -1752,20 +1755,17 @@ describe("useInputHandling focus mode", () => {
     stdin.write("\r")
     await sleep(80)
 
-    expect(tmuxState.activePaneIdLookups).toBe(1)
-    expectEvent(setSelectedIndex, 1)
-    expectEvent(popupManager.launchNewPanePopup, "/repo")
-    expectEvent(
-      handlePaneCreationWithAgent,
-      { prompt: "from control focus" },
-      "/repo"
-    )
+    expect(tmuxState.activePaneIdLookups).toBe(0)
+    expect(tmuxState.selectedPaneIds).toContain("%1")
+    expectEvent(setSelectedIndex, 0)
+    expectNoEvents(popupManager.launchNewPanePopup)
+    expectNoEvents(handlePaneCreationWithAgent)
     expectNoEvents(popupManager.launchKebabMenuPopup)
 
     unmount()
   })
 
-  it("keeps re-resolving stale Enter while control focus normalization is pending", async () => {
+  it("does not launch a project action while a visible pane selection is pending", async () => {
     const popupManager = {
       launchNewPanePopup: eventFn(async () => ({ prompt: "pending control focus" })),
       launchKebabMenuPopup: eventFn(() => undefined),
@@ -1798,14 +1798,11 @@ describe("useInputHandling focus mode", () => {
     stdin.write("\r")
     await sleep(80)
 
-    expect(tmuxState.activePaneIdLookups).toBe(1)
-    expectEvent(setSelectedIndex, 1)
-    expectEvent(popupManager.launchNewPanePopup, "/repo")
-    expectEvent(
-      handlePaneCreationWithAgent,
-      { prompt: "pending control focus" },
-      "/repo"
-    )
+    expect(tmuxState.activePaneIdLookups).toBe(0)
+    expect(tmuxState.selectedPaneIds).toContain("%1")
+    expectEvent(setSelectedIndex, 0)
+    expectNoEvents(popupManager.launchNewPanePopup)
+    expectNoEvents(handlePaneCreationWithAgent)
     expectNoEvents(popupManager.launchKebabMenuPopup)
 
     unmount()
@@ -1876,7 +1873,8 @@ describe("useInputHandling focus mode", () => {
     expectNoEvents(popupManager.launchKebabMenuPopup)
     expectNoEvents(popupManager.launchNewPanePopup)
     expectNoEvents(handlePaneCreationWithAgent)
-    expectSidebarFocusRestored()
+    expect(tmuxState.selectedPaneIds).toContain("%1")
+    expect(tmuxState.selectedPaneId).toBe("%1")
 
     renderResult.unmount()
   })

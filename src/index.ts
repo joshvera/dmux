@@ -38,10 +38,6 @@ import {
   getSidebarProjectColorTheme,
 } from './utils/sidebarProjects.js';
 import {
-  buildPaneExitedHookCommandForSession,
-  buildPaneFocusHookCommandForSession,
-} from './utils/tmuxHookCommands.js';
-import {
   buildRemotePaneActionBindingCommands,
   buildRemotePaneActionCleanupCommands,
   clearRemotePaneActions,
@@ -80,6 +76,14 @@ import { scheduleStartupKeyTableNormalization } from './utils/startupKeyTableNor
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
+
+function escapeRegex(value: string): string {
+  return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 
 interface ExistingSessionContext {
   sessionName: string;
@@ -292,8 +296,6 @@ class Dmux {
     // Set up hooks for this session (if in tmux)
     if (inTmux) {
       this.setupResizeHook(sessionNameForCurrentTmux);
-      this.setupPaneSplitHook(sessionNameForCurrentTmux);
-      this.setupPaneFocusHook(sessionNameForCurrentTmux);
     }
 
     if (!inTmux) {
@@ -1358,76 +1360,52 @@ class Dmux {
       // Set up session-specific hook that sends SIGUSR1 to dmux process on resize
       // This works inside tmux where normal SIGWINCH may not propagate
       const pid = process.pid;
-      execSync(`tmux set-hook -t '${sessionName}' client-resized 'run-shell "kill -USR1 ${pid} 2>/dev/null || true"'`, { stdio: 'pipe' });
+      this.cleanupMarkedHookEntries(sessionName, 'client-resized', '# dmux-resize-hook');
+      execSync(
+        `tmux set-hook -a -t ${shellQuote(sessionName)} client-resized ${shellQuote(`run-shell "kill -USR1 ${pid} 2>/dev/null || true # dmux-resize-hook"`)}`,
+        { stdio: 'pipe' }
+      );
       // LogService.getInstance().debug(`Set up resize hook for session ${this.sessionName}`, 'Setup');
     } catch (error) {
       LogService.getInstance().warn('Failed to set up resize hook', 'Setup');
     }
   }
 
-  private setupPaneSplitHook(sessionName: string = this.sessionName) {
-    try {
-      // Set up hooks that send SIGUSR2 to dmux process for pane events
-      // This allows immediate detection of pane changes
-      const pid = process.pid;
-      const paneExitedHookCommand = buildPaneExitedHookCommandForSession(pid, sessionName);
-
-      // Detect manually created panes via Ctrl+b %
-      execSync(`tmux set-hook -t '${sessionName}' after-split-window 'run-shell "kill -USR2 ${pid} 2>/dev/null || true # dmux-hook"'`, { stdio: 'pipe' });
-
-      // Detect pane closures via Ctrl+b x or process exit.
-      // If the control pane is closed, this also recreates a replacement pane.
-      execSync(`tmux set-hook -t '${sessionName}' pane-exited '${paneExitedHookCommand}'`, { stdio: 'pipe' });
-
-      // LogService.getInstance().debug(`Set up pane detection hooks for session ${this.sessionName}`, 'Setup');
-    } catch (error) {
-      LogService.getInstance().warn('Failed to set up pane hooks', 'Setup');
-    }
-  }
-
-  private setupPaneFocusHook(sessionName: string = this.sessionName) {
-    try {
-      const pid = process.pid;
-      const paneFocusHookCommand = buildPaneFocusHookCommandForSession(
-        sessionName,
-        pid
-      );
-      execSync(
-        `tmux set-hook -t '${sessionName}' after-select-pane '${paneFocusHookCommand}'`,
-        { stdio: 'pipe' }
-      );
-    } catch (error) {
-      LogService.getInstance().warn('Failed to set up pane focus hook', 'Setup');
-    }
-  }
-
   private cleanupResizeHook(sessionName: string = this.getCurrentTmuxSessionName() || this.sessionName) {
     try {
-      // Remove session-specific hook
-      execSync(`tmux set-hook -u -t '${sessionName}' client-resized`, { stdio: 'pipe' });
+      this.cleanupMarkedHookEntries(sessionName, 'client-resized', '# dmux-resize-hook');
       LogService.getInstance().debug('Cleaned up resize hook', 'Setup');
     } catch {
       // Ignore cleanup errors
     }
   }
 
-  private cleanupPaneSplitHook(sessionName: string = this.getCurrentTmuxSessionName() || this.sessionName) {
-    try {
-      // Remove pane hooks
-      execSync(`tmux set-hook -u -t '${sessionName}' after-split-window`, { stdio: 'pipe' });
-      execSync(`tmux set-hook -u -t '${sessionName}' pane-exited`, { stdio: 'pipe' });
-      LogService.getInstance().debug('Cleaned up pane hooks', 'Setup');
-    } catch {
-      // Ignore cleanup errors
-    }
-  }
+  private cleanupMarkedHookEntries(
+    sessionName: string,
+    hookName: string,
+    marker: string
+  ): void {
+    const hookOutput = execSync(`tmux show-hooks -t ${shellQuote(sessionName)} 2>/dev/null`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    const hookTargetPattern = new RegExp(
+      `^(${escapeRegex(hookName)}(?:\\[\\d+])?)\\s+`
+    );
 
-  private cleanupPaneFocusHook(sessionName: string = this.getCurrentTmuxSessionName() || this.sessionName) {
-    try {
-      execSync(`tmux set-hook -u -t '${sessionName}' after-select-pane`, { stdio: 'pipe' });
-      LogService.getInstance().debug('Cleaned up pane focus hook', 'Setup');
-    } catch {
-      // Ignore cleanup errors
+    for (const line of hookOutput.split('\n')) {
+      if (!line.includes(marker)) {
+        continue;
+      }
+
+      const match = line.match(hookTargetPattern);
+      if (!match) {
+        continue;
+      }
+
+      execSync(`tmux set-hook -u -t ${shellQuote(sessionName)} ${shellQuote(match[1])}`, {
+        stdio: 'pipe',
+      });
     }
   }
 
@@ -1446,8 +1424,6 @@ class Dmux {
       // Clean up hooks
       if (process.env.TMUX) {
         this.cleanupResizeHook();
-        this.cleanupPaneSplitHook();
-        this.cleanupPaneFocusHook();
         this.clearRemotePaneModeIndicators();
         this.cleanupRemotePaneActionBindings();
         this.cleanupSessionRuntimeMetadata();
