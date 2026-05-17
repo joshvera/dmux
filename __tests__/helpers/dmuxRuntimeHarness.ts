@@ -608,6 +608,10 @@ export class DmuxRuntimeHarness {
     await fsp.mkdir(this.artifactDir, { recursive: true })
     await fsp.mkdir(this.wrapperDir, { recursive: true })
     await fsp.mkdir(this.env.HOME!, { recursive: true })
+    await fsp.writeFile(
+      path.join(this.env.HOME!, ".dmux.global.json"),
+      JSON.stringify({ useTmuxHooks: false }, null, 2)
+    )
     await fsp.writeFile(path.join(this.env.HOME!, ".zshrc"), "# dmux e2e\n")
     await fsp.writeFile(path.join(this.env.HOME!, ".tmux.conf"), "# dmux e2e\n")
     await this.clientHarness.setup()
@@ -834,13 +838,12 @@ export class DmuxRuntimeHarness {
         return (
           text.includes("[t]erminal")
           || text.includes("[n]ew agent")
-          || text.includes("[Setup] Setting initial control pane ID")
         )
       },
       20000,
       "dmux control pane to become interactive"
     )
-    await sleep(500)
+    await sleep(1500)
   }
 
   async readControlPaneCapture(): Promise<string> {
@@ -891,7 +894,8 @@ export class DmuxRuntimeHarness {
     if (!controlPaneId) {
       throw new Error("dmux control pane is unavailable")
     }
-    await this.sendPaneInput(controlPaneId, input)
+    await this.selectPaneDirect(controlPaneId, { preserveZoom: true })
+    await this.sendClientInput(input)
   }
 
   async sendPaneCommand(target: string, command: string): Promise<void> {
@@ -997,8 +1001,12 @@ export class DmuxRuntimeHarness {
       `${shellQuote(this.dmuxExecutablePath)} --remote-pane-action m >/dev/null 2>&1`
     )
     await this.waitForClientLog("Menu:", 10000, afterOffset)
-    await this.waitForClientLog("Enter or hotkey select", 10000, afterOffset)
+    await this.waitForClientLog("Enter or hotkey to select", 10000, afterOffset)
     await sleep(200)
+  }
+
+  async openFocusNavigatorFromActivePane(): Promise<void> {
+    await this.openPaneMenuFromActivePane()
   }
 
   async markClientLog(): Promise<number> {

@@ -33,7 +33,7 @@ describe.sequential("dmux runtime harness", () => {
       await harness.sendControlInput("t")
       await harness.waitForPaneCount(repoA, 1)
 
-      await harness.openPaneMenuFromActivePane()
+      await harness.openFocusNavigatorFromActivePane()
 
       await harness.sendClientInput("Escape")
     })
