@@ -296,6 +296,103 @@ describe('perfReport', () => {
     expect(report).toContain('orphaned handled key-to-render samples: 1');
   });
 
+  it('validates handled key-to-render samples by joining inputId to ui.input events', () => {
+    const summary = summarizePerfEvents([
+      event({
+        event: 'ui.input',
+        metadata: {
+          inputId: 'valid-input',
+          classification: 'handled',
+          visibleStateChanged: true,
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 12,
+        metadata: { inputId: 'valid-input' },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 14,
+        metadata: { inputId: 'valid-input' },
+      }),
+      event({
+        event: 'ui.input',
+        metadata: {
+          inputId: 'ignored-input',
+          classification: 'ignored',
+          visibleStateChanged: false,
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 16,
+        metadata: {
+          inputId: 'ignored-input',
+          classification: 'handled',
+          visibleStateChanged: true,
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 18,
+        metadata: { inputId: 'orphan-input' },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 20,
+        metadata: { classification: 'handled', visibleStateChanged: true },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: Number.NaN,
+        metadata: { inputId: 'valid-input' },
+      }),
+      event({
+        event: 'ui.input',
+        metadata: {
+          inputId: 'duplicate-input',
+          classification: 'handled',
+          visibleStateChanged: true,
+        },
+      }),
+      event({
+        event: 'ui.input',
+        metadata: {
+          inputId: 'duplicate-input',
+          classification: 'handled',
+          visibleStateChanged: true,
+        },
+      }),
+      event({
+        event: 'ui.key_to_render',
+        durationMs: 22,
+        metadata: { inputId: 'duplicate-input' },
+      }),
+    ]);
+    const instance = summary.instances[0];
+
+    expect(instance.handledKeyToRender).toMatchObject({ count: 1, p50: 12 });
+    expect(instance.keyToRender.count).toBe(1);
+    expect(instance.keyToRenderExclusions).toEqual({
+      orphaned: 1,
+      mismatched: 1,
+      duplicateExcess: 2,
+      missingInputId: 1,
+      invalidDuration: 1,
+    });
+
+    const report = formatPerfReport(summary);
+    expect(report).toContain(
+      'excluded key-to-render: orphaned=1 mismatched=1 duplicate/excess=2 missing-input-id=1 invalid-duration=1'
+    );
+    expect(report).toContain('missing: handled visible key-to-render samples < 30');
+    expect(report).toContain('mismatched key-to-render samples: 1');
+    expect(report).toContain('duplicate/excess key-to-render samples: 2');
+    expect(report).toContain('key-to-render samples missing inputId: 1');
+    expect(report).toContain('key-to-render samples with invalid duration: 1');
+  });
+
   it('keeps legacy raw key-to-render samples parseable without treating them as handled', () => {
     const summary = summarizePerfEvents([
       event({ event: 'ui.key_to_render', durationMs: 10 }),
