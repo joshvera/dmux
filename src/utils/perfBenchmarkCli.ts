@@ -2,8 +2,8 @@
 import { randomUUID } from 'crypto';
 import { createInterface } from 'readline/promises';
 import { pathToFileURL } from 'url';
-import { writeDmuxPerfClientMarker } from './perf.js';
-import { runTerminalRoundtripProbe, writeClientInputWindowEvent } from './perfProbe.js';
+import { writeDmuxPerfClientInputWindow, writeDmuxPerfClientMarker } from './perf.js';
+import { runTerminalRoundtripProbe } from './perfProbe.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -82,7 +82,9 @@ export async function runCollectClient(args: string[]): Promise<void> {
   const iterations = readPositiveIntegerOption(args, '--iterations', 10);
   const timeoutMs = readPositiveIntegerOption(args, '--timeout-ms', 1000);
   const durationMs = readOptionalPositiveIntegerOption(args, '--duration-ms');
-  requireInteractiveWindowGuard(durationMs);
+  if (durationMs === undefined && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+    throw new Error('collect-client requires --duration-ms when stdin/stdout are noninteractive');
+  }
 
   try {
     const beforeProbe = await runTerminalRoundtripProbe({
@@ -94,6 +96,7 @@ export async function runCollectClient(args: string[]): Promise<void> {
     });
     console.log(`Wrote pre-window terminal RTT probe events: ${beforeProbe.filePath}`);
 
+    const windowStartedAt = new Date();
     const startPath = writeDmuxPerfClientMarker({
       runId,
       marker: `${label}-start`,
@@ -105,7 +108,7 @@ export async function runCollectClient(args: string[]): Promise<void> {
 
     await waitForClientWindow(durationMs, label);
 
-    const stoppedAt = new Date();
+    const windowStoppedAt = new Date();
     const stopPath = writeDmuxPerfClientMarker({
       runId,
       marker: `${label}-stop`,
@@ -123,17 +126,19 @@ export async function runCollectClient(args: string[]): Promise<void> {
     });
     console.log(`Wrote post-window terminal RTT probe events: ${afterProbe.filePath}`);
 
-    const windowPath = writeClientInputWindowEvent({
+    const combinedResults = [...beforeProbe.results, ...afterProbe.results];
+    const inputWindowPath = writeDmuxPerfClientInputWindow({
       runId,
       instanceLabel,
       transport,
       label,
-      startedAt,
-      stoppedAt,
-      preProbe: beforeProbe,
-      postProbe: afterProbe,
+      startedAt: windowStartedAt.toISOString(),
+      stoppedAt: windowStoppedAt.toISOString(),
+      durationMs: Math.max(0, windowStoppedAt.getTime() - windowStartedAt.getTime()),
+      dsrSupported: beforeProbe.supported || afterProbe.supported,
+      dsrResults: countProbeResults(combinedResults),
     });
-    console.log(`Wrote client input window event: ${windowPath}`);
+    console.log(`Wrote client input window: ${inputWindowPath}`);
   } finally {
     releaseProbeStdin();
   }
@@ -222,11 +227,8 @@ function requireInteractiveWindowGuard(durationMs: number | undefined): void {
   }
 }
 
-async function waitForClientWindow(durationMs: number | undefined, label: string): Promise<void> {
-  if (durationMs !== undefined) {
-    console.log(`Client input window "${label}" open for ${durationMs}ms.`);
-    await new Promise((resolve) => setTimeout(resolve, durationMs));
-    return;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('collect-client requires --duration-ms when stdin/stdout are noninteractive');
   }
 
   const readline = createInterface({

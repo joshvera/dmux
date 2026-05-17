@@ -570,6 +570,55 @@ export function writeDmuxPerfClientMarker(options: {
   return filePath;
 }
 
+export function writeDmuxPerfClientInputWindow(options: {
+  runId: string;
+  label: string;
+  startedAt: string;
+  stoppedAt: string;
+  durationMs: number;
+  instanceLabel?: string;
+  transport?: string;
+  handledVisibleInputCount?: number;
+  matchedKeyToRenderCount?: number;
+  renderCount?: number;
+  dsrSupported: boolean;
+  dsrResults: { success: number; timeout: number; error: number };
+}): string {
+  const filePath = path.join(
+    getDmuxPerfDir(),
+    `dmux-client-${sanitizePathSegment(options.runId)}-${Date.now()}.jsonl`
+  );
+
+  writePerfEvent(
+    'client.input_window',
+    {
+      lane: 'client-observed',
+      durationMs: options.durationMs,
+      count: 1,
+      metadata: {
+        label: options.label,
+        startedAt: options.startedAt,
+        stoppedAt: options.stoppedAt,
+        handledVisibleInputCount: options.handledVisibleInputCount || 0,
+        matchedKeyToRenderCount: options.matchedKeyToRenderCount || 0,
+        renderCount: options.renderCount || 0,
+        dsrSupported: options.dsrSupported,
+        dsrSuccess: options.dsrResults.success,
+        dsrTimeout: options.dsrResults.timeout,
+        dsrError: options.dsrResults.error,
+      },
+    },
+    filePath,
+    {
+      runId: options.runId,
+      instanceLabel: options.instanceLabel,
+      transport: options.transport || inferDmuxPerfTransport(),
+    }
+  );
+
+  return filePath;
+}
+
 export function resetDmuxPerfForTests(): void {
   cachedRunId = undefined;
   cachedLogPath = undefined;
