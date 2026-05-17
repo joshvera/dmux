@@ -16,6 +16,7 @@ const STALE_PANE_ID = "%999"
 const PROMPT =
   "Let's review the SOTA of the wiggum pattern online and compare it to our repo"
 const PROMPT_PREVIEW = `${PROMPT.substring(0, 50)}...`
+const SHELL_USABLE_SENTINEL = "__DMUX_RESTORE_SHELL_OK__"
 
 function buildSeedPane(project: RuntimeProject, worktreePath: string): DmuxPane {
   return {
@@ -114,9 +115,13 @@ async function assertRestoredPaneIsUsable(
   expect(capture).not.toContain("quote>")
 
   await harness.selectPaneDirect(paneId, { preserveZoom: true })
-  await harness.openFocusNavigatorFromActivePane()
-  await harness.sendClientInput("Escape")
-  await sleep(200)
+  await harness.sendPaneCommand(paneId, `printf '${SHELL_USABLE_SENTINEL}\\n'`)
+  await waitForPaneCapture(
+    harness,
+    paneId,
+    (value) => value.includes(SHELL_USABLE_SENTINEL),
+    `restored pane ${paneId} to accept a follow-up shell command`
+  )
 }
 
 async function withFreshRuntimeHarness(

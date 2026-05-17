@@ -7,6 +7,7 @@ const tmuxServiceMock = vi.hoisted(() => ({
   setPaneTitle: vi.fn(async () => {}),
   sendKeys: vi.fn(async () => {}),
   sendShellCommand: vi.fn(async () => {}),
+  sendShellCommandAndEnter: vi.fn(async () => {}),
   sendTmuxKeys: vi.fn(async () => {}),
   selectLayout: vi.fn(async () => {}),
   refreshClient: vi.fn(async () => {}),
@@ -116,5 +117,79 @@ describe('pane restoration', () => {
       )
     );
     expect(tmuxServiceMock.sendTmuxKeys).toHaveBeenCalledWith('%9', 'Enter');
+  });
+
+  it('restores missing panes with shell-quoted banner and cd commands', async () => {
+    const { recreateMissingPanes } = await import('../src/hooks/usePaneLoading.js');
+    const worktreePath = `/repo/o'clock/.dmux/worktrees/feature-codex`;
+    const prompt = `Let's debug quoted restore behavior`;
+    const pane: DmuxPane = {
+      id: 'dmux-1',
+      slug: 'feature-codex',
+      prompt,
+      paneId: '%2',
+      worktreePath,
+      projectRoot: '/repo',
+    };
+
+    await recreateMissingPanes([pane], '/repo/.dmux/dmux.config.json');
+
+    expect(tmuxServiceMock.sendKeys).not.toHaveBeenCalledWith(
+      '%9',
+      expect.stringContaining("echo '# Original prompt: Let's")
+    );
+    expect(tmuxServiceMock.sendKeys).not.toHaveBeenCalledWith(
+      '%9',
+      expect.stringContaining(`cd ${worktreePath}`)
+    );
+    expect(tmuxServiceMock.sendShellCommandAndEnter).toHaveBeenCalledWith(
+      '%9',
+      `printf '%s\\n' ${shellQuote('# Pane restored: feature-codex')}`
+    );
+    expect(tmuxServiceMock.sendShellCommandAndEnter).toHaveBeenCalledWith(
+      '%9',
+      `printf '%s\\n' ${shellQuote(`# Original prompt: ${prompt}...`)}`
+    );
+    expect(tmuxServiceMock.sendShellCommandAndEnter).toHaveBeenCalledWith(
+      '%9',
+      `cd ${shellQuote(worktreePath)}`
+    );
+  });
+
+  it('restores killed panes with shell-quoted banner and cd commands', async () => {
+    const { recreateKilledWorktreePanes } = await import('../src/hooks/usePaneLoading.js');
+    const worktreePath = `/repo/o'clock/.dmux/worktrees/feature-codex`;
+    const prompt = `Let's debug quoted restore behavior`;
+    const pane: DmuxPane = {
+      id: 'dmux-1',
+      slug: 'feature-codex',
+      prompt,
+      paneId: '%2',
+      worktreePath,
+      projectRoot: '/repo',
+    };
+
+    await recreateKilledWorktreePanes([pane], [], '/repo/.dmux/dmux.config.json');
+
+    expect(tmuxServiceMock.sendKeys).not.toHaveBeenCalledWith(
+      '%9',
+      expect.stringContaining("echo '# Original prompt: Let's")
+    );
+    expect(tmuxServiceMock.sendKeys).not.toHaveBeenCalledWith(
+      '%9',
+      expect.stringContaining(`cd ${worktreePath}`)
+    );
+    expect(tmuxServiceMock.sendShellCommandAndEnter).toHaveBeenCalledWith(
+      '%9',
+      `printf '%s\\n' ${shellQuote('# Pane restored: feature-codex')}`
+    );
+    expect(tmuxServiceMock.sendShellCommandAndEnter).toHaveBeenCalledWith(
+      '%9',
+      `printf '%s\\n' ${shellQuote(`# Original prompt: ${prompt}...`)}`
+    );
+    expect(tmuxServiceMock.sendShellCommandAndEnter).toHaveBeenCalledWith(
+      '%9',
+      `cd ${shellQuote(worktreePath)}`
+    );
   });
 });
