@@ -16,7 +16,7 @@ export function render() {
         <tr><td><kbd>t</kbd></td><td>Create a terminal pane (no agent, just a shell in a worktree)</td></tr>
         <tr><td><kbd>p</kbd></td><td>Create a pane in another attached project</td></tr>
         <tr><td><kbd>Alt+Shift+M</kbd></td><td>Open the pane menu for the focused tmux pane</td></tr>
-        <tr><td><kbd>Enter</kbd></td><td>Show the selected pane while keeping focus in dmux</td></tr>
+        <tr><td><kbd>Enter</kbd></td><td>Jump to the selected pane</td></tr>
         <tr><td><kbd>j</kbd></td><td>Jump to the selected pane (switch tmux focus)</td></tr>
         <tr><td><kbd>m</kbd></td><td>Open the kebab menu for the selected pane</td></tr>
         <tr><td><kbd>x</kbd></td><td>Close the selected pane</td></tr>

@@ -3,7 +3,6 @@ import {
   getProjectActionByIndex,
   type ProjectActionItem,
 } from './projectActions.js';
-import { getPaneProjectRoot } from './paneProject.js';
 import { sameSidebarProjectRoot } from './sidebarProjects.js';
 
 export function resolveControlPaneSelection(
@@ -17,14 +16,14 @@ export function resolveControlPaneSelection(
   }
 
   const selectedPane = panes[selectedIndex];
-  const targetProjectRoot = selectedPane
-    ? getPaneProjectRoot(selectedPane, fallbackProjectRoot)
-    : fallbackProjectRoot;
+  if (selectedPane) {
+    return selectedIndex;
+  }
 
   const projectNewAgentAction = actionItems.find(
     (action) =>
       action.kind === 'new-agent' &&
-      sameSidebarProjectRoot(action.projectRoot, targetProjectRoot)
+      sameSidebarProjectRoot(action.projectRoot, fallbackProjectRoot)
   );
   if (projectNewAgentAction) {
     return projectNewAgentAction.index;

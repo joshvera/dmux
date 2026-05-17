@@ -70,7 +70,7 @@ dmux can use default branch behavior or let you override branch details when cre
 |-----|--------|
 | `n` | New pane (worktree + agent) |
 | `t` | New terminal pane |
-| `Enter` | Show selected pane while keeping focus in dmux |
+| `Enter` | Jump to selected pane |
 | `j` | Jump to pane |
 | `m` | Open pane menu |
 | `f` | Browse files in selected pane's worktree |

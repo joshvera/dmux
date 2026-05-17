@@ -40,7 +40,7 @@ describe('resolveControlPaneSelection', () => {
     expect(resolveControlPaneSelection(2, [pane('1')], actions, '/repo')).toBe(2);
   });
 
-  it('moves stale pane selection to the pane project action', () => {
+  it('preserves a valid pane selection when focus returns to the control pane', () => {
     expect(
       resolveControlPaneSelection(
         1,
@@ -48,13 +48,13 @@ describe('resolveControlPaneSelection', () => {
         actions,
         '/repo'
       )
-    ).toBe(3);
+    ).toBe(1);
   });
 
   it('falls back to the first new-agent action', () => {
     expect(
       resolveControlPaneSelection(
-        0,
+        9,
         [pane('1', '/missing')],
         actions,
         '/repo'
@@ -62,10 +62,25 @@ describe('resolveControlPaneSelection', () => {
     ).toBe(2);
   });
 
-  it('marks work-to-control normalization as pending when it changes selection', () => {
+  it('does not mark a valid pane selection as pending on work-to-control focus return', () => {
     expect(
       resolveControlPaneFocusSelection(
         0,
+        [pane('1')],
+        actions,
+        '/repo',
+        false
+      )
+    ).toEqual({
+      selectedIndex: 0,
+      selectionPending: false,
+    });
+  });
+
+  it('marks invalid selection reconciliation as pending when it changes selection', () => {
+    expect(
+      resolveControlPaneFocusSelection(
+        9,
         [pane('1')],
         actions,
         '/repo',
