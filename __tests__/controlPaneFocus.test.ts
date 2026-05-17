@@ -51,6 +51,21 @@ describe('resolveControlPaneSelection', () => {
     ).toBe(1);
   });
 
+  it('keeps the previously focused pane selected when empty sidebar space is clicked', () => {
+    expect(
+      resolveControlPaneFocusSelection(
+        0,
+        [pane('1', '/repo')],
+        actions,
+        '/repo',
+        false
+      )
+    ).toEqual({
+      selectedIndex: 0,
+      selectionPending: false,
+    });
+  });
+
   it('falls back to the first new-agent action', () => {
     expect(
       resolveControlPaneSelection(
