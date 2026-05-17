@@ -43,6 +43,25 @@ export interface TerminalRoundtripProbeRun {
   supported: boolean;
 }
 
+export interface ClientInputWindowEventOptions {
+  runId: string;
+  instanceLabel?: string;
+  transport?: string;
+  label: string;
+  startedAt: Date;
+  stoppedAt: Date;
+  preProbe?: TerminalRoundtripProbeRun;
+  postProbe?: TerminalRoundtripProbeRun;
+  perfDir?: string;
+  filePath?: string;
+}
+
+export interface ClientInputWindowSummary {
+  handledVisibleInputCount: number;
+  matchedKeyToRenderCount: number;
+  renderCount: number;
+}
+
 export interface TerminalDsrRoundtripOptions {
   input?: TerminalInput;
   output?: TerminalOutput;
@@ -273,10 +292,240 @@ export function writeTerminalRoundtripEvent(options: TerminalRoundtripEventOptio
   return filePath;
 }
 
+export function writeClientInputWindowEvent(options: ClientInputWindowEventOptions): string {
+  const transport = options.transport || inferDmuxPerfTransport();
+  const filePath = options.filePath || buildClientInputWindowLogPath(options.runId);
+  const summary = summarizeClientInputWindow({
+    runId: options.runId,
+    instanceLabel: options.instanceLabel,
+    transport,
+    startedAt: options.startedAt,
+    stoppedAt: options.stoppedAt,
+    perfDir: options.perfDir,
+  });
+  const dsrCounts = countDsrProbeResults([options.preProbe, options.postProbe]);
+  const dsrSupportCounts = countDsrProbeSupport([options.preProbe, options.postProbe]);
+  const payload: DmuxPerfJsonEvent = {
+    timestamp: new Date().toISOString(),
+    monotonicMs: performance.now(),
+    runId: options.runId,
+    pid: process.pid,
+    event: 'client.input_window',
+    lane: 'client-observed',
+    durationMs: Math.max(0, options.stoppedAt.getTime() - options.startedAt.getTime()),
+    count: 1,
+    instanceLabel: options.instanceLabel,
+    transport,
+    metadata: {
+      label: options.label,
+      startedAt: options.startedAt.toISOString(),
+      stoppedAt: options.stoppedAt.toISOString(),
+      handledVisibleInputCount: summary.handledVisibleInputCount,
+      matchedKeyToRenderCount: summary.matchedKeyToRenderCount,
+      renderCount: summary.renderCount,
+      dsrPreSupported: options.preProbe?.supported === true,
+      dsrPostSupported: options.postProbe?.supported === true,
+      dsrSupportedCount: dsrSupportCounts.supported,
+      dsrUnsupportedCount: dsrSupportCounts.unsupported,
+      dsrSuccessCount: dsrCounts.success,
+      dsrTimeoutCount: dsrCounts.timeout,
+      dsrErrorCount: dsrCounts.error,
+    },
+  };
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
+  return filePath;
+}
+
+export function summarizeClientInputWindow(options: {
+  runId: string;
+  instanceLabel?: string;
+  transport?: string;
+  startedAt: Date;
+  stoppedAt: Date;
+  perfDir?: string;
+}): ClientInputWindowSummary {
+  const startedAtMs = options.startedAt.getTime();
+  const stoppedAtMs = options.stoppedAt.getTime();
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(stoppedAtMs) || stoppedAtMs < startedAtMs) {
+    return emptyClientInputWindowSummary();
+  }
+
+  const events = readPerfEventsForRun(options.perfDir || getDmuxPerfDir(), options.runId)
+    .filter((event) =>
+      event.runId === options.runId
+        && (options.instanceLabel === undefined || event.instanceLabel === options.instanceLabel)
+        && (options.transport === undefined || event.transport === options.transport)
+        && isEventInWallClockWindow(event, startedAtMs, stoppedAtMs)
+    );
+  const handledVisibleInputIds = new Set<string>();
+  let handledVisibleInputCount = 0;
+  let renderCount = 0;
+
+  for (const event of events) {
+    if (event.event === 'ui.input' && isHandledVisibleInput(event)) {
+      handledVisibleInputCount += event.count || 1;
+      const inputId = readStringMetadata(event, 'inputId');
+      if (inputId) {
+        handledVisibleInputIds.add(inputId);
+      }
+    } else if (event.event === 'ui.render') {
+      renderCount += event.count || 1;
+    }
+  }
+
+  const matchedKeyToRenderIds = new Set<string>();
+  for (const event of events) {
+    if (event.event !== 'ui.key_to_render') {
+      continue;
+    }
+    const inputId = readStringMetadata(event, 'inputId');
+    if (inputId && handledVisibleInputIds.has(inputId)) {
+      matchedKeyToRenderIds.add(inputId);
+    }
+  }
+
+  return {
+    handledVisibleInputCount,
+    matchedKeyToRenderCount: matchedKeyToRenderIds.size,
+    renderCount,
+  };
+}
+
 export function buildTerminalRoundtripLogPath(runId: string): string {
   return path.join(
     getDmuxPerfDir(),
     `dmux-client-${sanitizePathSegment(runId)}-${Date.now()}-${randomUUID().slice(0, 8)}.jsonl`
+  );
+}
+
+export function buildClientInputWindowLogPath(runId: string): string {
+  return path.join(
+    getDmuxPerfDir(),
+    `dmux-client-${sanitizePathSegment(runId)}-${Date.now()}-${randomUUID().slice(0, 8)}.jsonl`
+  );
+}
+
+function emptyClientInputWindowSummary(): ClientInputWindowSummary {
+  return {
+    handledVisibleInputCount: 0,
+    matchedKeyToRenderCount: 0,
+    renderCount: 0,
+  };
+}
+
+function readPerfEventsForRun(perfDir: string, runId: string): DmuxPerfJsonEvent[] {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(perfDir);
+  } catch {
+    return [];
+  }
+
+  const events: DmuxPerfJsonEvent[] = [];
+  const sanitizedRunId = sanitizePathSegment(runId);
+  const perfLogRunId = runId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  for (const entry of entries) {
+    if (
+      !entry.endsWith('.jsonl')
+      || (!entry.includes(runId) && !entry.includes(sanitizedRunId) && !entry.includes(perfLogRunId))
+    ) {
+      continue;
+    }
+
+    try {
+      const content = fs.readFileSync(path.join(perfDir, entry), 'utf8');
+      for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        const event = JSON.parse(trimmed) as unknown;
+        if (isPerfJsonEvent(event)) {
+          events.push(event);
+        }
+      }
+    } catch {
+      // Client evidence should degrade to an empty summary instead of failing collection.
+    }
+  }
+  return events;
+}
+
+function isPerfJsonEvent(value: unknown): value is DmuxPerfJsonEvent {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Partial<DmuxPerfJsonEvent>;
+  return typeof candidate.event === 'string' && typeof candidate.runId === 'string';
+}
+
+function isEventInWallClockWindow(
+  event: DmuxPerfJsonEvent,
+  startedAtMs: number,
+  stoppedAtMs: number
+): boolean {
+  const timestampMs = Date.parse(event.timestamp);
+  return Number.isFinite(timestampMs) && timestampMs >= startedAtMs && timestampMs <= stoppedAtMs;
+}
+
+function isHandledVisibleInput(event: DmuxPerfJsonEvent): boolean {
+  return readStringMetadata(event, 'classification') === 'handled'
+    && readBooleanMetadata(event, 'visibleStateChanged') === true;
+}
+
+function readStringMetadata(event: DmuxPerfJsonEvent, key: string): string | undefined {
+  const value = event.metadata?.[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function readBooleanMetadata(event: DmuxPerfJsonEvent, key: string): boolean | undefined {
+  const value = event.metadata?.[key];
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  return undefined;
+}
+
+function countDsrProbeResults(
+  probes: Array<TerminalRoundtripProbeRun | undefined>
+): Record<TerminalRoundtripResult, number> {
+  const counts: Record<TerminalRoundtripResult, number> = {
+    success: 0,
+    timeout: 0,
+    error: 0,
+  };
+  for (const probe of probes) {
+    for (const result of probe?.results || []) {
+      counts[result.result] += 1;
+    }
+  }
+  return counts;
+}
+
+function countDsrProbeSupport(
+  probes: Array<TerminalRoundtripProbeRun | undefined>
+): { supported: number; unsupported: number } {
+  return probes.reduce(
+    (counts, probe) => {
+      if (!probe) {
+        return counts;
+      }
+      if (probe.supported) {
+        counts.supported += 1;
+      } else {
+        counts.unsupported += 1;
+      }
+      return counts;
+    },
+    { supported: 0, unsupported: 0 }
   );
 }
 

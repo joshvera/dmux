@@ -6,6 +6,8 @@ import {
   createDsrParser,
   runTerminalDsrRoundtrip,
   runTerminalRoundtripProbe,
+  summarizeClientInputWindow,
+  writeClientInputWindowEvent,
   writeTerminalRoundtripEvent,
   type SignalTarget,
   type TerminalDataListener,
@@ -162,6 +164,134 @@ describe('perfProbe', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('summarizes transport-visible input windows with matched key-to-render counts', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dmux-perf-window-test-'));
+    try {
+      const logPath = path.join(tempDir, 'dmux-run-window-123.jsonl');
+      const startedAt = new Date('2026-05-17T10:00:00.000Z');
+      const stoppedAt = new Date('2026-05-17T10:00:01.000Z');
+      writeJsonl(logPath, [
+        event({
+          timestamp: '2026-05-17T09:59:59.999Z',
+          event: 'ui.input',
+          runId: 'run-window',
+          metadata: {
+            inputId: 'too-early',
+            classification: 'handled',
+            visibleStateChanged: true,
+          },
+        }),
+        event({
+          timestamp: '2026-05-17T10:00:00.100Z',
+          event: 'ui.input',
+          runId: 'run-window',
+          metadata: {
+            inputId: 'input-1',
+            classification: 'handled',
+            visibleStateChanged: true,
+          },
+        }),
+        event({
+          timestamp: '2026-05-17T10:00:00.200Z',
+          event: 'ui.key_to_render',
+          runId: 'run-window',
+          durationMs: 20,
+          metadata: {
+            inputId: 'input-1',
+            classification: 'handled',
+            visibleStateChanged: true,
+          },
+        }),
+        event({
+          timestamp: '2026-05-17T10:00:00.300Z',
+          event: 'ui.key_to_render',
+          runId: 'run-window',
+          durationMs: 30,
+          metadata: {
+            inputId: 'orphan',
+            classification: 'handled',
+            visibleStateChanged: true,
+          },
+        }),
+        event({
+          timestamp: '2026-05-17T10:00:00.400Z',
+          event: 'ui.render',
+          runId: 'run-window',
+          count: 2,
+        }),
+      ]);
+
+      expect(
+        summarizeClientInputWindow({
+          runId: 'run-window',
+          instanceLabel: 'instance-a',
+          transport: 'ssh',
+          startedAt,
+          stoppedAt,
+          perfDir: tempDir,
+        })
+      ).toEqual({
+        handledVisibleInputCount: 1,
+        matchedKeyToRenderCount: 1,
+        renderCount: 2,
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes client input window events when DSR is unsupported', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dmux-perf-window-test-'));
+    try {
+      const filePath = path.join(tempDir, 'window.jsonl');
+      const writtenPath = writeClientInputWindowEvent({
+        runId: 'run-window',
+        instanceLabel: 'instance-a',
+        transport: 'local',
+        label: 'navigation',
+        startedAt: new Date('2026-05-17T10:00:00.000Z'),
+        stoppedAt: new Date('2026-05-17T10:00:00.125Z'),
+        perfDir: tempDir,
+        filePath,
+        preProbe: {
+          filePath: path.join(tempDir, 'pre.jsonl'),
+          supported: false,
+          results: [{ result: 'error', durationMs: 0, errorKind: 'unsupported-tty' }],
+        },
+        postProbe: {
+          filePath: path.join(tempDir, 'post.jsonl'),
+          supported: false,
+          results: [{ result: 'timeout', durationMs: 1000 }],
+        },
+      });
+
+      expect(writtenPath).toBe(filePath);
+      expect(readEvents(filePath)).toContainEqual(
+        expect.objectContaining({
+          event: 'client.input_window',
+          lane: 'client-observed',
+          durationMs: 125,
+          metadata: expect.objectContaining({
+            label: 'navigation',
+            startedAt: '2026-05-17T10:00:00.000Z',
+            stoppedAt: '2026-05-17T10:00:00.125Z',
+            handledVisibleInputCount: 0,
+            matchedKeyToRenderCount: 0,
+            renderCount: 0,
+            dsrPreSupported: false,
+            dsrPostSupported: false,
+            dsrSupportedCount: 0,
+            dsrUnsupportedCount: 2,
+            dsrErrorCount: 1,
+            dsrTimeoutCount: 1,
+          }),
+        })
+      );
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 class FakeInput {
@@ -289,4 +419,22 @@ function readEvents(filePath: string): Array<Record<string, unknown>> {
     .split('\n')
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function writeJsonl(filePath: string, events: Array<Record<string, unknown>>): void {
+  fs.writeFileSync(filePath, `${events.map((item) => JSON.stringify(item)).join('\n')}\n`, 'utf8');
+}
+
+function event(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    timestamp: '2026-05-17T10:00:00.000Z',
+    monotonicMs: 1,
+    runId: 'run-window',
+    pid: 123,
+    event: 'ui.render',
+    lane: 'server-observed',
+    instanceLabel: 'instance-a',
+    transport: 'ssh',
+    ...overrides,
+  };
 }

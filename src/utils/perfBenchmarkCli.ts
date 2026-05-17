@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { createInterface } from 'readline/promises';
 import { pathToFileURL } from 'url';
 import { writeDmuxPerfClientMarker } from './perf.js';
-import { runTerminalRoundtripProbe } from './perfProbe.js';
+import { runTerminalRoundtripProbe, writeClientInputWindowEvent } from './perfProbe.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -74,7 +74,7 @@ function writeMarker(args: string[]): void {
   console.log(`Wrote client marker: ${filePath}`);
 }
 
-async function runCollectClient(args: string[]): Promise<void> {
+export async function runCollectClient(args: string[]): Promise<void> {
   const runId = readRequiredOption(args, '--run-id');
   const instanceLabel = readOption(args, '--instance');
   const transport = readOption(args, '--transport');
@@ -82,6 +82,7 @@ async function runCollectClient(args: string[]): Promise<void> {
   const iterations = readPositiveIntegerOption(args, '--iterations', 10);
   const timeoutMs = readPositiveIntegerOption(args, '--timeout-ms', 1000);
   const durationMs = readOptionalPositiveIntegerOption(args, '--duration-ms');
+  requireInteractiveWindowGuard(durationMs);
 
   try {
     const beforeProbe = await runTerminalRoundtripProbe({
@@ -99,10 +100,12 @@ async function runCollectClient(args: string[]): Promise<void> {
       instanceLabel,
       transport,
     });
+    const startedAt = new Date();
     console.log(`Wrote client marker: ${startPath}`);
 
-    await waitForClientWindow(durationMs);
+    await waitForClientWindow(durationMs, label);
 
+    const stoppedAt = new Date();
     const stopPath = writeDmuxPerfClientMarker({
       runId,
       marker: `${label}-stop`,
@@ -119,6 +122,18 @@ async function runCollectClient(args: string[]): Promise<void> {
       timeoutMs,
     });
     console.log(`Wrote post-window terminal RTT probe events: ${afterProbe.filePath}`);
+
+    const windowPath = writeClientInputWindowEvent({
+      runId,
+      instanceLabel,
+      transport,
+      label,
+      startedAt,
+      stoppedAt,
+      preProbe: beforeProbe,
+      postProbe: afterProbe,
+    });
+    console.log(`Wrote client input window event: ${windowPath}`);
   } finally {
     releaseProbeStdin();
   }
@@ -201,15 +216,16 @@ function readOptionalPositiveIntegerOption(args: string[], name: string): number
   return value;
 }
 
-async function waitForClientWindow(durationMs: number | undefined): Promise<void> {
-  if (durationMs !== undefined) {
-    console.log(`Client sample window open for ${durationMs}ms.`);
-    await new Promise((resolve) => setTimeout(resolve, durationMs));
-    return;
+function requireInteractiveWindowGuard(durationMs: number | undefined): void {
+  if (durationMs === undefined && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+    throw new Error('perf:collect-client requires --duration-ms when stdin/stdout are noninteractive');
   }
+}
 
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.log('No interactive TTY or --duration-ms provided; client sample window closed immediately.');
+async function waitForClientWindow(durationMs: number | undefined, label: string): Promise<void> {
+  if (durationMs !== undefined) {
+    console.log(`Client input window "${label}" open for ${durationMs}ms.`);
+    await new Promise((resolve) => setTimeout(resolve, durationMs));
     return;
   }
 
@@ -218,7 +234,7 @@ async function waitForClientWindow(durationMs: number | undefined): Promise<void
     output: process.stdout,
   });
   try {
-    await readline.question('Client sample window open. Navigate dmux now, then press Enter to stop. ');
+    await readline.question(`Client input window "${label}" open. Navigate dmux now, then press Enter to stop. `);
   } finally {
     readline.close();
   }
