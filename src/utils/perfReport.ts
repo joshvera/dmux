@@ -505,12 +505,18 @@ function commandBreakdownStats(
 
       const commandKind = event.commandKind || 'unknown';
       const syncKind = event.sync === false ? 'async' : 'sync';
-      const parts = [
-        `${commandKind}/${syncKind}`,
-        `source=${readStringMetadata(event, 'source') || 'unknown'}`,
-        `target=${readStringMetadata(event, 'targetKind') || 'unknown'}`,
-        `success=${event.success === false ? 'false' : 'true'}`,
-      ];
+      const parts = [`${commandKind}/${syncKind}`];
+      const source = readStringMetadata(event, 'source');
+      const targetKind = readStringMetadata(event, 'targetKind');
+      if (source !== undefined) {
+        parts.push(`source=${source}`);
+      }
+      if (targetKind !== undefined) {
+        parts.push(`target=${targetKind}`);
+      }
+      if (typeof event.success === 'boolean') {
+        parts.push(`success=${event.success ? 'true' : 'false'}`);
+      }
       const errorKind = readStringMetadata(event, 'errorKind');
       if (errorKind !== undefined) {
         parts.push(`error=${errorKind}`);
