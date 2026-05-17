@@ -116,6 +116,7 @@ import { getPaneTmuxDisplayTitle } from "./utils/paneTitle.js"
 import { resolveControlPaneFocusSelection } from "./utils/controlPaneFocus.js"
 import {
   configureDmuxPerfMetadata,
+  normalizeDmuxPerfKeyKind,
   patchDmuxPerfWritable,
   recordDmuxPerfInput,
   recordDmuxPerfRender,
@@ -1584,31 +1585,70 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   useInput(
     (input, key) => {
       if (!showHooksPrompt) return
-      recordDmuxPerfInput()
+      const inputSpan = recordDmuxPerfInput({
+        surface: "hooks-prompt",
+        keyKind: normalizeDmuxPerfKeyKind(input, key),
+      })
+      const classifyHooksInput = (
+        classification: "handled" | "noop",
+        reason: string,
+        visibleStateChanged: boolean
+      ) => {
+        inputSpan.classify({
+          classification,
+          reason,
+          actionKind: "hooks-prompt",
+          visibleStateChanged,
+        })
+        if (classification === "handled" && visibleStateChanged) {
+          inputSpan.armKeyToRender()
+        }
+      }
 
-      if (key.upArrow || input === 'k') {
-        setHooksPromptIndex(Math.max(0, hooksPromptIndex - 1))
-      } else if (key.downArrow || input === 'j') {
-        setHooksPromptIndex(Math.min(1, hooksPromptIndex + 1))
-      } else if (input === 'y') {
-        // Yes - install hooks
-        setShowHooksPrompt(false)
-        setUseHooks(true)
-        settingsManager.updateSetting('useTmuxHooks', true, 'global')
-        refreshDmuxSettings()
-      } else if (input === 'n') {
-        // No - use polling
-        setShowHooksPrompt(false)
-        setUseHooks(false)
-        settingsManager.updateSetting('useTmuxHooks', false, 'global')
-        refreshDmuxSettings()
-      } else if (key.return) {
-        // Select current option
-        setShowHooksPrompt(false)
-        const selected = hooksPromptIndex === 0
-        setUseHooks(selected)
-        settingsManager.updateSetting('useTmuxHooks', selected, 'global')
-        refreshDmuxSettings()
+      try {
+        if (key.upArrow || input === 'k') {
+          const nextIndex = Math.max(0, hooksPromptIndex - 1)
+          classifyHooksInput(
+            nextIndex === hooksPromptIndex ? "noop" : "handled",
+            nextIndex === hooksPromptIndex ? "hooks-prompt-up-boundary" : "hooks-prompt-up",
+            nextIndex !== hooksPromptIndex
+          )
+          setHooksPromptIndex(nextIndex)
+        } else if (key.downArrow || input === 'j') {
+          const nextIndex = Math.min(1, hooksPromptIndex + 1)
+          classifyHooksInput(
+            nextIndex === hooksPromptIndex ? "noop" : "handled",
+            nextIndex === hooksPromptIndex ? "hooks-prompt-down-boundary" : "hooks-prompt-down",
+            nextIndex !== hooksPromptIndex
+          )
+          setHooksPromptIndex(nextIndex)
+        } else if (input === 'y') {
+          // Yes - install hooks
+          classifyHooksInput("handled", "hooks-prompt-enable", true)
+          setShowHooksPrompt(false)
+          setUseHooks(true)
+          settingsManager.updateSetting('useTmuxHooks', true, 'global')
+          refreshDmuxSettings()
+        } else if (input === 'n') {
+          // No - use polling
+          classifyHooksInput("handled", "hooks-prompt-disable", true)
+          setShowHooksPrompt(false)
+          setUseHooks(false)
+          settingsManager.updateSetting('useTmuxHooks', false, 'global')
+          refreshDmuxSettings()
+        } else if (key.return) {
+          // Select current option
+          classifyHooksInput("handled", "hooks-prompt-return", true)
+          setShowHooksPrompt(false)
+          const selected = hooksPromptIndex === 0
+          setUseHooks(selected)
+          settingsManager.updateSetting('useTmuxHooks', selected, 'global')
+          refreshDmuxSettings()
+        } else {
+          classifyHooksInput("noop", "hooks-prompt-unmatched", false)
+        }
+      } finally {
+        inputSpan.finish()
       }
     },
     { isActive: showHooksPrompt }

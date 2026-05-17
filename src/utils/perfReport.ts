@@ -16,6 +16,39 @@ export interface MetricStats {
   max?: number;
 }
 
+export interface MetricBreakdown {
+  label: string;
+  stats: MetricStats;
+  ratePerSecond: number;
+}
+
+export interface EventLoopOutlierSummary {
+  thresholdMs: number;
+  count: number;
+  max?: EventLoopOutlier;
+}
+
+export interface EventLoopOutlier {
+  durationMs: number;
+  precedingEvent?: string;
+  precedingDurationMs?: number;
+  precedingDeltaMs?: number;
+}
+
+export interface InputClassificationCounts {
+  handled: number;
+  ignored: number;
+  noop: number;
+  unhandled: number;
+}
+
+export interface TerminalRoundtripResults {
+  success: number;
+  timeout: number;
+  error: number;
+  unknown: number;
+}
+
 export interface PerfInstanceSummary {
   runId: string;
   instanceLabel: string;
@@ -24,16 +57,34 @@ export interface PerfInstanceSummary {
   serverEventCount: number;
   clientEventCount: number;
   durationSeconds: number;
+  /**
+   * Handled-visible key-to-render latency. Kept under the old field name so
+   * existing callers continue to compile while reports stop mixing legacy raw
+   * samples into the attribution metric.
+   */
   keyToRender: MetricStats;
+  handledKeyToRender: MetricStats;
+  legacyKeyToRender: MetricStats;
+  inputClassifications: InputClassificationCounts;
+  terminalRoundtrip: MetricStats;
+  terminalRoundtripResults: TerminalRoundtripResults;
   eventLoopLag: MetricStats;
+  eventLoopOutliers: EventLoopOutlierSummary;
   tmuxCommand: MetricStats;
+  tmuxCommandBreakdown: MetricBreakdown[];
   workerCapture: MetricStats;
+  workerCaptureBreakdown: MetricBreakdown[];
   renderCount: number;
   renderPerSecond: number;
   stdoutBytes: number;
   stdoutBytesPerSecond: number;
+  stdoutWriteBytes: MetricStats;
+  stdoutBurstBytes100ms: MetricStats;
+  renderBurstCount100ms: MetricStats;
   commandRatePerSecond: number;
   workerCaptureRatePerSecond: number;
+  handledVisibleInputCount: number;
+  orphanedKeyToRenderCount: number;
   clientMarkers: string[];
   metadata: PerfMetadataSummary;
   likelyBottleneck: string;
@@ -175,12 +226,29 @@ export function formatPerfReport(summary: PerfReportSummary): string {
     lines.push(`  metadata: session=${instance.metadata.sessionName || 'n/a'} project=${instance.metadata.projectRootHash || 'n/a'} panes=${formatInteger(instance.metadata.paneCount)} workers=${formatInteger(instance.metadata.workerCount)} terminal=${instance.metadata.terminalApp || 'n/a'} tmuxPid=${formatInteger(instance.metadata.tmuxServerPid)}`);
     lines.push(`  host: snapshots=${instance.metadata.hostSnapshotCount} dmuxRss=${formatBytes(instance.metadata.processRss)} heap=${formatBytes(instance.metadata.processHeapUsed)} tmuxCpu=${formatPercent(instance.metadata.tmuxServerCpuPercent)} tmuxRss=${formatKilobytes(instance.metadata.tmuxServerRssKb)} load1=${formatNumber(instance.metadata.hostLoad1)}`);
     lines.push(`  window: ${formatNumber(instance.durationSeconds)}s`);
-    lines.push(`  key-to-render: ${formatStats(instance.keyToRender)}`);
+    lines.push(`  input classifications: ${formatInputClassifications(instance.inputClassifications)}`);
+    lines.push(`  handled visible inputs: ${instance.handledVisibleInputCount}`);
+    lines.push(`  handled key-to-render: ${formatStats(instance.handledKeyToRender)}`);
+    lines.push(`  legacy raw key-to-render: ${formatStats(instance.legacyKeyToRender)}`);
+    if (instance.orphanedKeyToRenderCount > 0) {
+      lines.push(`  orphaned key-to-render: ${instance.orphanedKeyToRenderCount}`);
+    }
+    lines.push(`  terminal roundtrip: ${formatStats(instance.terminalRoundtrip)} (${formatTerminalRoundtripResults(instance.terminalRoundtripResults)})`);
     lines.push(`  event-loop lag: ${formatStats(instance.eventLoopLag)}`);
+    lines.push(`  event-loop outliers >${instance.eventLoopOutliers.thresholdMs}ms: ${formatEventLoopOutliers(instance.eventLoopOutliers)}`);
     lines.push(`  tmux commands: ${formatStats(instance.tmuxCommand)} (${formatNumber(instance.commandRatePerSecond)}/s)`);
+    if (instance.tmuxCommandBreakdown.length > 0) {
+      lines.push(`  tmux command breakdown: ${formatBreakdowns(instance.tmuxCommandBreakdown)}`);
+    }
     lines.push(`  worker capture: ${formatStats(instance.workerCapture)} (${formatNumber(instance.workerCaptureRatePerSecond)}/s)`);
+    if (instance.workerCaptureBreakdown.length > 0) {
+      lines.push(`  worker capture breakdown: ${formatBreakdowns(instance.workerCaptureBreakdown)}`);
+    }
     lines.push(`  renders: ${instance.renderCount} (${formatNumber(instance.renderPerSecond)}/s)`);
     lines.push(`  stdout bytes: ${instance.stdoutBytes} (${formatNumber(instance.stdoutBytesPerSecond)}/s, approximate)`);
+    lines.push(`  stdout write bytes: ${formatValueStats(instance.stdoutWriteBytes, 'B')}`);
+    lines.push(`  stdout burst bytes/100ms: ${formatValueStats(instance.stdoutBurstBytes100ms, 'B')}`);
+    lines.push(`  render burst count/100ms: ${formatValueStats(instance.renderBurstCount100ms, '')}`);
     lines.push(`  client markers: ${instance.clientMarkers.length === 0 ? 'none' : instance.clientMarkers.join(', ')}`);
     lines.push(`  likely bottleneck: ${instance.likelyBottleneck}`);
     if (instance.missing.length > 0) {
@@ -204,29 +272,63 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
   const durationSeconds = getDurationSeconds(events);
   const serverEvents = events.filter((event) => event.lane !== 'client-observed');
   const clientEvents = events.filter((event) => event.lane === 'client-observed');
-  const keyToRender = metricStats(serverEvents, 'ui.key_to_render');
+  const handledKeyToRender = eventDurationStats(serverEvents, isHandledVisibleKeyToRender);
+  const legacyKeyToRender = eventDurationStats(serverEvents, isLegacyRawKeyToRender);
+  const inputClassifications = countInputClassifications(serverEvents);
+  const terminalRoundtripEvents = events.filter((event) => event.event === 'client.terminal_roundtrip');
+  const terminalRoundtrip = eventDurationStats(
+    terminalRoundtripEvents,
+    isTerminalRoundtripStatsSample
+  );
+  const terminalRoundtripResults = countTerminalRoundtripResults(terminalRoundtripEvents);
   const eventLoopLag = metricStats(serverEvents, 'runtime.event_loop_lag');
+  const eventLoopOutliers = summarizeEventLoopOutliers(serverEvents);
   const tmuxCommand = metricStats(serverEvents, 'tmux.command');
+  const tmuxCommandBreakdown = commandBreakdownStats(serverEvents, durationSeconds);
   const workerCapture = metricStats(serverEvents, 'worker.capture');
+  const workerCaptureBreakdown = workerCaptureBreakdownStats(serverEvents, durationSeconds);
   const renderCount = serverEvents
     .filter((event) => event.event === 'ui.render')
     .reduce((total, event) => total + (event.count || 1), 0);
   const stdoutBytes = serverEvents
     .filter((event) => event.event === 'ui.stdout_write')
     .reduce((total, event) => total + (event.bytes || 0), 0);
+  const stdoutWriteBytes = valueStats(
+    serverEvents,
+    (event) => event.event === 'ui.stdout_write',
+    (event) => event.bytes
+  );
+  const stdoutBurstBytes100ms = bucketValueStats(
+    serverEvents,
+    100,
+    (event) => event.event === 'ui.stdout_write',
+    (event) => event.bytes || 0
+  );
+  const renderBurstCount100ms = bucketValueStats(
+    serverEvents,
+    100,
+    (event) => event.event === 'ui.render',
+    (event) => event.count || 1
+  );
   const commandCount = serverEvents.filter((event) => event.event === 'tmux.command').length;
   const workerCaptureCount = serverEvents.filter((event) => event.event === 'worker.capture').length;
+  const handledVisibleInputCount = countHandledVisibleInputs(serverEvents);
+  const orphanedKeyToRenderCount = countOrphanedKeyToRender(serverEvents);
   const clientMarkers = clientEvents
     .filter((event) => event.event === 'client.marker')
     .map((event) => readStringMetadata(event, 'marker'))
     .filter((value): value is string => value !== undefined);
   const metadata = summarizeMetadata(events);
   const missing = collectMissingMetrics({
-    keyToRender,
+    handledKeyToRender,
+    legacyKeyToRender,
     eventLoopLag,
     tmuxCommand,
     workerCapture,
+    terminalRoundtrip,
     clientMarkerCount: clientMarkers.length,
+    handledVisibleInputCount,
+    orphanedKeyToRenderCount,
     metadata,
   });
 
@@ -238,20 +340,34 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
     serverEventCount: serverEvents.length,
     clientEventCount: clientEvents.length,
     durationSeconds,
-    keyToRender,
+    keyToRender: handledKeyToRender,
+    handledKeyToRender,
+    legacyKeyToRender,
+    inputClassifications,
+    terminalRoundtrip,
+    terminalRoundtripResults,
     eventLoopLag,
+    eventLoopOutliers,
     tmuxCommand,
+    tmuxCommandBreakdown,
     workerCapture,
+    workerCaptureBreakdown,
     renderCount,
     renderPerSecond: rate(renderCount, durationSeconds),
     stdoutBytes,
     stdoutBytesPerSecond: rate(stdoutBytes, durationSeconds),
+    stdoutWriteBytes,
+    stdoutBurstBytes100ms,
+    renderBurstCount100ms,
     commandRatePerSecond: rate(commandCount, durationSeconds),
     workerCaptureRatePerSecond: rate(workerCaptureCount, durationSeconds),
+    handledVisibleInputCount,
+    orphanedKeyToRenderCount,
     clientMarkers,
     metadata,
     likelyBottleneck: inferLikelyBottleneck({
-      keyToRender,
+      handledKeyToRender,
+      legacyKeyToRender,
       eventLoopLag,
       tmuxCommand,
       workerCapture,
@@ -275,12 +391,118 @@ function makeGroupKey(key: EventGroupKey): string {
 }
 
 function metricStats(events: DmuxPerfJsonEvent[], eventName: string): MetricStats {
+  return eventDurationStats(events, (event) => event.event === eventName);
+}
+
+function eventDurationStats(
+  events: DmuxPerfJsonEvent[],
+  predicate: (event: DmuxPerfJsonEvent) => boolean
+): MetricStats {
   return durationStats(
     events
-      .filter((event) => event.event === eventName)
+      .filter(predicate)
       .map((event) => event.durationMs)
       .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
   );
+}
+
+function valueStats(
+  events: DmuxPerfJsonEvent[],
+  predicate: (event: DmuxPerfJsonEvent) => boolean,
+  readValue: (event: DmuxPerfJsonEvent) => number | undefined
+): MetricStats {
+  return durationStats(
+    events
+      .filter(predicate)
+      .map(readValue)
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+  );
+}
+
+function bucketValueStats(
+  events: DmuxPerfJsonEvent[],
+  bucketMs: number,
+  predicate: (event: DmuxPerfJsonEvent) => boolean,
+  readValue: (event: DmuxPerfJsonEvent) => number
+): MetricStats {
+  const buckets = new Map<number, number>();
+  for (const event of events) {
+    if (!predicate(event) || !Number.isFinite(event.monotonicMs)) {
+      continue;
+    }
+    const bucket = Math.floor(event.monotonicMs / bucketMs);
+    buckets.set(bucket, (buckets.get(bucket) || 0) + readValue(event));
+  }
+  return durationStats(Array.from(buckets.values()));
+}
+
+function commandBreakdownStats(
+  events: DmuxPerfJsonEvent[],
+  durationSeconds: number
+): MetricBreakdown[] {
+  return breakdownStats(
+    events,
+    durationSeconds,
+    (event) => {
+      if (event.event !== 'tmux.command') {
+        return undefined;
+      }
+
+      const commandKind = event.commandKind || 'unknown';
+      const syncKind = event.sync === false ? 'async' : 'sync';
+      return `${commandKind}/${syncKind}`;
+    }
+  );
+}
+
+function workerCaptureBreakdownStats(
+  events: DmuxPerfJsonEvent[],
+  durationSeconds: number
+): MetricBreakdown[] {
+  return breakdownStats(
+    events,
+    durationSeconds,
+    (event) => {
+      if (event.event !== 'worker.capture') {
+        return undefined;
+      }
+
+      const agent = readStringMetadata(event, 'agent') || 'unknown-agent';
+      const statusBefore = readStringMetadata(event, 'statusBefore') || 'unknown-status';
+      const pane = event.paneId || event.tmuxPaneId || 'unknown-pane';
+      return `${agent}/${statusBefore}/${pane}`;
+    }
+  );
+}
+
+function breakdownStats(
+  events: DmuxPerfJsonEvent[],
+  durationSeconds: number,
+  getLabel: (event: DmuxPerfJsonEvent) => string | undefined
+): MetricBreakdown[] {
+  const groups = new Map<string, DmuxPerfJsonEvent[]>();
+  for (const event of events) {
+    const label = getLabel(event);
+    if (!label) {
+      continue;
+    }
+
+    const group = groups.get(label) || [];
+    group.push(event);
+    groups.set(label, group);
+  }
+
+  return Array.from(groups.entries())
+    .map(([label, group]) => ({
+      label,
+      stats: eventDurationStats(group, () => true),
+      ratePerSecond: rate(group.length, durationSeconds),
+    }))
+    .sort((left, right) =>
+      (right.stats.max || 0) - (left.stats.max || 0)
+        || right.stats.count - left.stats.count
+        || left.label.localeCompare(right.label)
+    );
 }
 
 function durationStats(values: number[]): MetricStats {
@@ -328,20 +550,248 @@ function readStringMetadata(event: DmuxPerfJsonEvent, key: string): string | und
   return typeof value === 'string' ? value : undefined;
 }
 
+function readBooleanMetadata(event: DmuxPerfJsonEvent, key: string): boolean | undefined {
+  const value = event.metadata?.[key];
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  return undefined;
+}
+
+function hasMetadataKey(event: DmuxPerfJsonEvent, key: string): boolean {
+  return event.metadata ? Object.prototype.hasOwnProperty.call(event.metadata, key) : false;
+}
+
+function isHandledVisibleKeyToRender(event: DmuxPerfJsonEvent): boolean {
+  if (event.event !== 'ui.key_to_render') {
+    return false;
+  }
+
+  const classification = readStringMetadata(event, 'classification');
+  const visibleStateChanged = readBooleanMetadata(event, 'visibleStateChanged');
+  const inputId = readStringMetadata(event, 'inputId');
+
+  if (classification !== undefined && classification !== 'handled') {
+    return false;
+  }
+  if (visibleStateChanged !== undefined && visibleStateChanged !== true) {
+    return false;
+  }
+  if (classification === 'handled' && visibleStateChanged === true) {
+    return true;
+  }
+
+  // New logs may only attach inputId because ui.key_to_render is emitted only
+  // for handled visible-state-changing spans. Old raw logs have no inputId.
+  return inputId !== undefined;
+}
+
+function isLegacyRawKeyToRender(event: DmuxPerfJsonEvent): boolean {
+  if (event.event !== 'ui.key_to_render') {
+    return false;
+  }
+
+  return !hasMetadataKey(event, 'inputId')
+    && !hasMetadataKey(event, 'classification')
+    && !hasMetadataKey(event, 'visibleStateChanged');
+}
+
+function countHandledVisibleInputs(events: DmuxPerfJsonEvent[]): number {
+  return events
+    .filter((event) =>
+      event.event === 'ui.input'
+        && readStringMetadata(event, 'classification') === 'handled'
+        && readBooleanMetadata(event, 'visibleStateChanged') === true
+    )
+    .reduce((total, event) => total + (event.count || 1), 0);
+}
+
+function countOrphanedKeyToRender(events: DmuxPerfJsonEvent[]): number {
+  const inputIds = new Set(
+    events
+      .filter((event) => event.event === 'ui.input')
+      .map((event) => readStringMetadata(event, 'inputId'))
+      .filter((value): value is string => value !== undefined)
+  );
+
+  return events
+    .filter(isHandledVisibleKeyToRender)
+    .map((event) => readStringMetadata(event, 'inputId'))
+    .filter((inputId) => inputId !== undefined && !inputIds.has(inputId))
+    .length;
+}
+
+function countInputClassifications(events: DmuxPerfJsonEvent[]): InputClassificationCounts {
+  const counts: InputClassificationCounts = {
+    handled: 0,
+    ignored: 0,
+    noop: 0,
+    unhandled: 0,
+  };
+
+  for (const event of events) {
+    if (event.event !== 'ui.input') {
+      continue;
+    }
+
+    const classification = readStringMetadata(event, 'classification');
+    if (
+      classification === 'handled'
+      || classification === 'ignored'
+      || classification === 'noop'
+      || classification === 'unhandled'
+    ) {
+      counts[classification] += event.count || 1;
+    } else {
+      counts.unhandled += event.count || 1;
+    }
+  }
+
+  return counts;
+}
+
+function countTerminalRoundtripResults(events: DmuxPerfJsonEvent[]): TerminalRoundtripResults {
+  const counts: TerminalRoundtripResults = {
+    success: 0,
+    timeout: 0,
+    error: 0,
+    unknown: 0,
+  };
+
+  for (const event of events) {
+    counts[readTerminalRoundtripResult(event)] += 1;
+  }
+
+  return counts;
+}
+
+function readTerminalRoundtripResult(event: DmuxPerfJsonEvent): keyof TerminalRoundtripResults {
+  const result = readStringMetadata(event, 'result');
+  if (result === 'success' || result === 'timeout' || result === 'error') {
+    return result;
+  }
+
+  const status = readStringMetadata(event, 'status');
+  if (status === 'success' || status === 'timeout' || status === 'error') {
+    return status;
+  }
+
+  if (event.success === true) {
+    return 'success';
+  }
+  if (event.success === false) {
+    return 'error';
+  }
+
+  return 'unknown';
+}
+
+function isTerminalRoundtripStatsSample(event: DmuxPerfJsonEvent): boolean {
+  if (event.event !== 'client.terminal_roundtrip') {
+    return false;
+  }
+
+  const result = readTerminalRoundtripResult(event);
+  return result === 'success' || result === 'unknown';
+}
+
+function summarizeEventLoopOutliers(
+  events: DmuxPerfJsonEvent[],
+  thresholdMs = 50
+): EventLoopOutlierSummary {
+  const outliers = events
+    .filter((event) =>
+      event.event === 'runtime.event_loop_lag'
+        && typeof event.durationMs === 'number'
+        && event.durationMs > thresholdMs
+    )
+    .sort((left, right) => (right.durationMs || 0) - (left.durationMs || 0));
+
+  const maxEvent = outliers[0];
+  if (!maxEvent || typeof maxEvent.durationMs !== 'number') {
+    return { thresholdMs, count: 0 };
+  }
+
+  const precedingEvent = findPrecedingSignificantEvent(events, maxEvent);
+  return {
+    thresholdMs,
+    count: outliers.length,
+    max: {
+      durationMs: maxEvent.durationMs,
+      ...(precedingEvent
+        ? {
+            precedingEvent: formatEventLabel(precedingEvent),
+            precedingDurationMs: precedingEvent.durationMs,
+            precedingDeltaMs: Math.max(0, maxEvent.monotonicMs - precedingEvent.monotonicMs),
+          }
+        : {}),
+    },
+  };
+}
+
+function findPrecedingSignificantEvent(
+  events: DmuxPerfJsonEvent[],
+  target: DmuxPerfJsonEvent
+): DmuxPerfJsonEvent | undefined {
+  return events
+    .filter((event) =>
+      event.monotonicMs < target.monotonicMs
+        && event.event !== 'runtime.event_loop_lag'
+        && event.event !== 'runtime.host_snapshot'
+        && event.event !== 'perf.metadata'
+    )
+    .sort((left, right) => right.monotonicMs - left.monotonicMs)[0];
+}
+
+function formatEventLabel(event: DmuxPerfJsonEvent): string {
+  if (event.event === 'tmux.command') {
+    return `${event.event}:${event.commandKind || 'unknown'}/${event.sync === false ? 'async' : 'sync'}`;
+  }
+  if (event.event === 'ui.stdout_write') {
+    return `${event.event}:${formatInteger(event.bytes)}B`;
+  }
+  return event.event;
+}
+
 function collectMissingMetrics(input: {
-  keyToRender: MetricStats;
+  handledKeyToRender: MetricStats;
+  legacyKeyToRender: MetricStats;
   eventLoopLag: MetricStats;
   tmuxCommand: MetricStats;
   workerCapture: MetricStats;
+  terminalRoundtrip: MetricStats;
   clientMarkerCount: number;
+  handledVisibleInputCount: number;
+  orphanedKeyToRenderCount: number;
   metadata: PerfMetadataSummary;
 }): string[] {
   const missing: string[] = [];
-  if (input.keyToRender.count < 30) missing.push('key-to-render samples < 30');
+  if (input.handledKeyToRender.count < 30) {
+    missing.push('handled visible key-to-render samples < 30');
+  }
+  if (input.handledKeyToRender.count === 0 && input.legacyKeyToRender.count > 0) {
+    missing.push('only legacy raw key-to-render samples found');
+  }
   if (input.eventLoopLag.count === 0) missing.push('event-loop lag');
   if (input.tmuxCommand.count === 0) missing.push('tmux command timings');
   if (input.workerCapture.count === 0) missing.push('worker capture timings');
+  if (input.terminalRoundtrip.count === 0) missing.push('terminal roundtrip timings');
   if (input.clientMarkerCount === 0) missing.push('client-observed markers');
+  if (input.orphanedKeyToRenderCount > 0) {
+    missing.push(`orphaned handled key-to-render samples: ${input.orphanedKeyToRenderCount}`);
+  }
+  if (
+    input.handledVisibleInputCount > 0
+    && input.handledKeyToRender.count > input.handledVisibleInputCount
+  ) {
+    missing.push('handled key-to-render samples exceed handled visible inputs');
+  }
   if (input.metadata.paneCount === undefined) missing.push('pane count metadata');
   if (input.metadata.workerCount === undefined) missing.push('worker count metadata');
   if (input.metadata.tmuxServerPid === undefined) missing.push('tmux server pid');
@@ -410,18 +860,22 @@ function readNumber(record: Record<string, unknown> | undefined, key: string): n
 }
 
 function inferLikelyBottleneck(input: {
-  keyToRender: MetricStats;
+  handledKeyToRender: MetricStats;
+  legacyKeyToRender: MetricStats;
   eventLoopLag: MetricStats;
   tmuxCommand: MetricStats;
   workerCapture: MetricStats;
   stdoutBytesPerSecond: number;
   renderPerSecond: number;
 }): string {
-  if (input.keyToRender.count < 30) {
-    return 'inconclusive: fewer than 30 key-to-render samples';
+  if (input.handledKeyToRender.count < 30) {
+    if (input.handledKeyToRender.count === 0 && input.legacyKeyToRender.count > 0) {
+      return 'inconclusive: only legacy raw key-to-render samples found';
+    }
+    return 'inconclusive: fewer than 30 handled visible key-to-render samples';
   }
 
-  const keyP95 = input.keyToRender.p95 || 0;
+  const keyP95 = input.handledKeyToRender.p95 || 0;
   const reasons: string[] = [];
   if ((input.eventLoopLag.p95 || 0) > Math.max(50, keyP95 * 0.5)) {
     reasons.push('ui/event-loop blocked');
@@ -445,6 +899,54 @@ function inferLikelyBottleneck(input: {
   return `mixed: ${reasons.join(', ')}`;
 }
 
+function formatInputClassifications(counts: InputClassificationCounts): string {
+  return [
+    `handled=${counts.handled}`,
+    `ignored=${counts.ignored}`,
+    `noop=${counts.noop}`,
+    `unhandled=${counts.unhandled}`,
+  ].join(' ');
+}
+
+function formatTerminalRoundtripResults(results: TerminalRoundtripResults): string {
+  return [
+    `success=${results.success}`,
+    `timeout=${results.timeout}`,
+    `error=${results.error}`,
+    `unknown=${results.unknown}`,
+  ].join(' ');
+}
+
+function formatEventLoopOutliers(summary: EventLoopOutlierSummary): string {
+  if (summary.count === 0 || !summary.max) {
+    return 'n=0';
+  }
+
+  const parts = [
+    `n=${summary.count}`,
+    `max=${formatNumber(summary.max.durationMs)}ms`,
+  ];
+  if (summary.max.precedingEvent) {
+    parts.push(`nearest-before-max=${summary.max.precedingEvent}`);
+  }
+  if (summary.max.precedingDurationMs !== undefined) {
+    parts.push(`preceding-duration=${formatNumber(summary.max.precedingDurationMs)}ms`);
+  }
+  if (summary.max.precedingDeltaMs !== undefined) {
+    parts.push(`delta=${formatNumber(summary.max.precedingDeltaMs)}ms`);
+  }
+  return parts.join(' ');
+}
+
+function formatBreakdowns(breakdowns: MetricBreakdown[]): string {
+  return breakdowns
+    .slice(0, 6)
+    .map((breakdown) =>
+      `${breakdown.label} ${formatStats(breakdown.stats)} (${formatNumber(breakdown.ratePerSecond)}/s)`
+    )
+    .join('; ');
+}
+
 function formatStats(stats: MetricStats): string {
   if (stats.count === 0) {
     return 'n=0';
@@ -455,6 +957,20 @@ function formatStats(stats: MetricStats): string {
     `p50=${formatNumber(stats.p50)}ms`,
     `p95=${formatNumber(stats.p95)}ms`,
     `max=${formatNumber(stats.max)}ms`,
+  ].join(' ');
+}
+
+function formatValueStats(stats: MetricStats, unit: string): string {
+  if (stats.count === 0) {
+    return 'n=0';
+  }
+
+  const suffix = unit ? unit : '';
+  return [
+    `n=${stats.count}`,
+    `p50=${formatNumber(stats.p50)}${suffix}`,
+    `p95=${formatNumber(stats.p95)}${suffix}`,
+    `max=${formatNumber(stats.max)}${suffix}`,
   ].join(' ');
 }
 

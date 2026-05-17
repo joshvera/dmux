@@ -37,11 +37,11 @@ export class SpacerManager {
    * Finds the spacer pane ID if it exists
    * @returns Spacer pane ID or null if not found
    */
-  findSpacerPane(): string | null {
+  async findSpacerPane(): Promise<string | null> {
     try {
-      const allPanes = this.tmuxService.getAllPaneIdsSync();
+      const allPanes = await this.tmuxService.getAllPaneIds();
       for (const paneId of allPanes) {
-        const title = this.tmuxService.getPaneTitleSync(paneId);
+        const title = await this.tmuxService.getPaneTitle(paneId);
         if (title === SPACER_PANE_TITLE) {
           return paneId;
         }
@@ -63,11 +63,11 @@ export class SpacerManager {
    * CRITICAL FIX: Added validation that the target pane exists before attempting to split.
    * This prevents crashes when the pane list becomes stale during rapid resize/pane operations.
    */
-  createSpacerPane(lastContentPaneId: string): string {
+  async createSpacerPane(lastContentPaneId: string): Promise<string> {
     try {
       // CRITICAL FIX: Verify the target pane exists before trying to split from it
       // This prevents "can't find pane" errors during rapid operations
-      const allPanes = this.tmuxService.getAllPaneIdsSync();
+      const allPanes = await this.tmuxService.getAllPaneIds();
       if (!allPanes.includes(lastContentPaneId)) {
         throw new Error(`Target pane ${lastContentPaneId} no longer exists`);
       }
@@ -75,31 +75,31 @@ export class SpacerManager {
       // Store the currently active pane
       let originalPaneId: string;
       try {
-        originalPaneId = this.tmuxService.getCurrentPaneIdSync();
+        originalPaneId = await this.tmuxService.getCurrentPaneId();
       } catch {
         // If we can't get current pane, use the last content pane as fallback
         originalPaneId = lastContentPaneId;
       }
 
       // Switch to the last content pane
-      this.tmuxService.selectPaneSync(lastContentPaneId);
+      await this.tmuxService.selectPane(lastContentPaneId);
 
       // Create a new pane running our spacer-pane script (just dots, no ASCII art)
       // This will split from the currently active pane (the last content pane)
       const scriptPath = resolveDistPath('spacer-pane.js');
 
-      const newPaneId = this.tmuxService.splitPaneSync({
+      const newPaneId = await this.tmuxService.splitPane({
         command: `node '${scriptPath}'`
       });
 
       // Set the pane title to identify it as a spacer
-      this.tmuxService.setPaneTitleSync(newPaneId, SPACER_PANE_TITLE);
+      await this.tmuxService.setPaneTitle(newPaneId, SPACER_PANE_TITLE);
 
       // Return focus to the originally active pane (if it still exists)
       try {
-        const currentPanes = this.tmuxService.getAllPaneIdsSync();
+        const currentPanes = await this.tmuxService.getAllPaneIds();
         if (currentPanes.includes(originalPaneId)) {
-          this.tmuxService.selectPaneSync(originalPaneId);
+          await this.tmuxService.selectPane(originalPaneId);
         }
       } catch {
         // Ignore errors restoring focus - non-critical
@@ -120,9 +120,9 @@ export class SpacerManager {
    * Destroys a spacer pane by ID
    * @param spacerId - The pane ID to destroy
    */
-  destroySpacerPane(spacerId: string): void {
+  async destroySpacerPane(spacerId: string): Promise<void> {
     try {
-      this.tmuxService.killPaneSync(spacerId);
+      await this.tmuxService.killPane(spacerId);
       // LogService.getInstance().debug(`Destroyed spacer pane: ${spacerId}`, 'Layout');
     } catch (error) {
       // LogService.getInstance().debug(`Failed to destroy spacer pane: ${error}`, 'Layout');

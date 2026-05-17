@@ -32,22 +32,22 @@ export class TmuxLayoutApplier {
    * @param width - Desired window width in cells
    * @param height - Desired terminal height in cells (will subtract status bar)
    */
-  setWindowDimensions(width: number, height: number): void {
+  async setWindowDimensions(width: number, height: number): Promise<void> {
     try {
       // Subtract status bar height from the provided terminal height
-      const statusBarHeight = this.tmuxService.getStatusBarHeightSync();
+      const statusBarHeight = await this.tmuxService.getStatusBarHeight();
       const windowHeight = height - statusBarHeight;
 
       // Check if dimensions have actually changed
-      const currentDims = this.tmuxService.getWindowDimensionsSync();
+      const currentDims = await this.tmuxService.getWindowDimensions();
       if (currentDims.width === width && currentDims.height === windowHeight) {
         // Dimensions already correct, skip resize to prevent loops
         return;
       }
 
       // Use manual mode to constrain width, but also set height to match terminal
-      this.tmuxService.setWindowOptionSync('window-size', 'manual');
-      this.tmuxService.resizeWindowSync({ width, height: windowHeight });
+      await this.tmuxService.setWindowOption('window-size', 'manual');
+      await this.tmuxService.resizeWindow({ width, height: windowHeight });
     } catch (error) {
       // Log but don't fail - some tmux versions may not support this
       LogService.getInstance().warn(
@@ -71,17 +71,18 @@ export class TmuxLayoutApplier {
    * @param layout - Calculated layout configuration
    * @param terminalHeight - Terminal height in cells
    */
-  applyPaneLayout(
+  async applyPaneLayout(
     controlPaneId: string,
     contentPaneIds: string[],
     layout: LayoutConfiguration,
-    terminalHeight: number
-  ): void {
+    terminalHeight: number,
+    options?: { spacerPaneId?: string | null }
+  ): Promise<void> {
     const numContentPanes = contentPaneIds.length;
 
     if (numContentPanes === 0) {
       // No content panes, just resize sidebar
-      this.resizeControlPane(controlPaneId);
+      await this.resizeControlPane(controlPaneId);
       return;
     }
 
@@ -95,28 +96,33 @@ export class TmuxLayoutApplier {
         layout.windowWidth,
         terminalHeight,
         layout.cols,
-        this.config.MAX_COMFORTABLE_WIDTH
+        this.config.MAX_COMFORTABLE_WIDTH,
+        {
+          lastPaneIsSpacer:
+            options?.spacerPaneId != null &&
+            contentPaneIds[contentPaneIds.length - 1] === options.spacerPaneId,
+        }
       );
 
       if (layoutString) {
         // Log pane state right before applying layout
         this.logPaneState();
 
-        // selectLayoutSync returns false on failure (doesn't throw)
-        const success = this.tmuxService.selectLayoutSync(layoutString);
-        if (!success) {
+        try {
+          await this.tmuxService.selectLayout(layoutString);
+        } catch {
           // LogService.getInstance().debug('Layout application failed, using fallback', 'Layout');
           // Fallback to main-vertical if custom layout fails
-          this.applyMainVerticalFallback();
+          await this.applyMainVerticalFallback();
         }
       } else {
         // Empty layout string - fallback to main-vertical
         // LogService.getInstance().debug('Empty layout string, using main-vertical fallback', 'Layout');
-        this.applyMainVerticalFallback();
+        await this.applyMainVerticalFallback();
       }
     } catch (error) {
       // Fallback: just resize sidebar
-      this.resizeControlPane(controlPaneId);
+      await this.resizeControlPane(controlPaneId);
     }
   }
 
@@ -124,9 +130,9 @@ export class TmuxLayoutApplier {
    * Resizes the control pane (sidebar) to configured width
    * Used as ultimate fallback when layout application fails
    */
-  private resizeControlPane(controlPaneId: string): void {
+  private async resizeControlPane(controlPaneId: string): Promise<void> {
     try {
-      this.tmuxService.resizePaneSync(controlPaneId, {
+      await this.tmuxService.resizePane(controlPaneId, {
         width: this.config.SIDEBAR_WIDTH
       });
     } catch (error) {
@@ -143,10 +149,10 @@ export class TmuxLayoutApplier {
    * Applies main-vertical layout as fallback
    * Used when custom layout string generation or application fails
    */
-  private applyMainVerticalFallback(): void {
+  private async applyMainVerticalFallback(): Promise<void> {
     try {
-      this.tmuxService.setWindowOptionSync('main-pane-width', String(this.config.SIDEBAR_WIDTH));
-      this.tmuxService.selectLayoutSync('main-vertical');
+      await this.tmuxService.setWindowOption('main-pane-width', String(this.config.SIDEBAR_WIDTH));
+      await this.tmuxService.selectLayout('main-vertical');
       // LogService.getInstance().debug('Fell back to main-vertical layout', 'Layout');
     } catch (error) {
       LogService.getInstance().error(`Main-vertical fallback failed: ${error}`, 'Layout');

@@ -60,6 +60,8 @@
     "dev:docs": "pnpm --filter dmux-docs run dev",
     "perf:guide": "tsx src/utils/perfBenchmarkCli.ts guide",
     "perf:mark": "tsx src/utils/perfBenchmarkCli.ts marker",
+    "perf:probe": "tsx src/utils/perfBenchmarkCli.ts probe",
+    "perf:collect-client": "tsx src/utils/perfBenchmarkCli.ts collect-client",
     "perf:report": "tsx src/utils/perfReportCli.ts",
     "prepack": "pnpm run build:macos-helper",
     "start": "node dist/index.js",

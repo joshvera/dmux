@@ -92,6 +92,7 @@ function isPermanentError(error: unknown): boolean {
 export class TmuxService {
   private static instance: TmuxService;
   private logger = LogService.getInstance();
+  private listPanesLinesInflight = new Map<string, Promise<string[]>>();
 
   private constructor() {}
 
@@ -142,6 +143,54 @@ export class TmuxService {
           );
           await sleep(delay);
         }
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async executeWithRetryAsync<T>(
+    operation: () => Promise<T>,
+    strategy: RetryStrategy = RetryStrategy.IDEMPOTENT,
+    context?: string
+  ): Promise<T> {
+    const config = RETRY_CONFIGS[strategy];
+
+    if (config.maxRetries === 0) {
+      return operation();
+    }
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+
+        if (isPermanentError(error)) {
+          this.logger.debug(
+            `Permanent error detected${context ? ` (${context})` : ''}, not retrying`,
+            'error',
+            error instanceof Error ? error.message : String(error)
+          );
+          throw error;
+        }
+
+        if (attempt === config.maxRetries) {
+          this.logger.debug(
+            `All retries exhausted${context ? ` (${context})` : ''}`,
+            'error',
+            error instanceof Error ? error.message : String(error)
+          );
+          throw error;
+        }
+
+        const delay = Math.min(config.baseDelay * (attempt + 1), config.maxDelay);
+        this.logger.debug(
+          `Retry attempt ${attempt + 1}/${config.maxRetries}${context ? ` (${context})` : ''}, waiting ${delay}ms`,
+          'debug'
+        );
+        await sleep(delay);
       }
     }
 
@@ -225,34 +274,55 @@ export class TmuxService {
     );
   }
 
-  private listPanesLines(
+  private async listPanesLinesNonBlocking(
     format: string,
     scope: PaneListScope = 'window'
-  ): string[] {
-    if (scope === 'window') {
-      const output = this.execute(`tmux list-panes -F '${format}'`);
-      return output.split('\n').filter((line) => line.trim());
+  ): Promise<string[]> {
+    const cacheKey = `${scope}\0${format}`;
+    const existing = this.listPanesLinesInflight.get(cacheKey);
+    if (existing) {
+      return existing;
     }
 
-    const currentSession = this.execute(`tmux display-message -p "#{session_name}"`);
-    const output = this.execute(`tmux list-panes -a -F '#{session_name}|${format}'`);
+    const request = (async () => {
+      if (scope === 'window') {
+        const output = await this.executeNonBlocking(`tmux list-panes -F '${format}'`);
+        return output.split('\n').filter((line) => line.trim());
+      }
 
-    return output
-      .split('\n')
-      .filter((line) => line.trim())
-      .flatMap((line) => {
-        const delimiterIndex = line.indexOf('|');
-        if (delimiterIndex === -1) {
-          return [];
-        }
+      const currentSession = await this.executeNonBlocking(
+        `tmux display-message -p "#{session_name}"`
+      );
+      const output = await this.executeNonBlocking(
+        `tmux list-panes -a -F '#{session_name}|${format}'`
+      );
 
-        const sessionName = line.slice(0, delimiterIndex);
-        if (sessionName !== currentSession) {
-          return [];
-        }
+      return output
+        .split('\n')
+        .filter((line) => line.trim())
+        .flatMap((line) => {
+          const delimiterIndex = line.indexOf('|');
+          if (delimiterIndex === -1) {
+            return [];
+          }
 
-        return [line.slice(delimiterIndex + 1)];
-      });
+          const sessionName = line.slice(0, delimiterIndex);
+          if (sessionName !== currentSession) {
+            return [];
+          }
+
+          return [line.slice(delimiterIndex + 1)];
+        });
+    })();
+
+    this.listPanesLinesInflight.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      if (this.listPanesLinesInflight.get(cacheKey) === request) {
+        this.listPanesLinesInflight.delete(cacheKey);
+      }
+    }
   }
 
   // ===== BATCHED QUERIES (Performance optimization) =====
@@ -345,9 +415,9 @@ export class TmuxService {
    * Get current pane ID
    */
   async getCurrentPaneId(): Promise<string> {
-    return this.executeWithRetry(
-      () => {
-        return this.execute('tmux display-message -p "#{pane_id}"');
+    return this.executeWithRetryAsync(
+      async () => {
+        return this.executeNonBlocking('tmux display-message -p "#{pane_id}"');
       },
       RetryStrategy.IDEMPOTENT,
       'getCurrentPaneId'
@@ -388,9 +458,9 @@ export class TmuxService {
    * reflects tmux focus changes after this process was launched.
    */
   async getActivePaneId(scope: PaneListScope = 'window'): Promise<string | null> {
-    return this.executeWithRetry(
-      () => {
-        const lines = this.listPanesLines('#{pane_id} #{pane_active}', scope);
+    return this.executeWithRetryAsync(
+      async () => {
+        const lines = await this.listPanesLinesNonBlocking('#{pane_id} #{pane_active}', scope);
         const activeLine = lines.find((line) => line.endsWith(' 1'));
         return activeLine ? activeLine.split(' ')[0] : null;
       },
@@ -403,9 +473,9 @@ export class TmuxService {
    * Get current window ID
    */
   async getCurrentWindowId(): Promise<string> {
-    return this.executeWithRetry(
-      () => {
-        return this.execute('tmux display-message -p "#{window_id}"');
+    return this.executeWithRetryAsync(
+      async () => {
+        return this.executeNonBlocking('tmux display-message -p "#{window_id}"');
       },
       RetryStrategy.IDEMPOTENT,
       'getCurrentWindowId'
@@ -416,9 +486,9 @@ export class TmuxService {
    * Get the window ID for a specific pane
    */
   async getPaneWindowId(paneId: string): Promise<string> {
-    return this.executeWithRetry(
-      () => {
-        return this.execute(`tmux display-message -t '${paneId}' -p '#{window_id}'`);
+    return this.executeWithRetryAsync(
+      async () => {
+        return this.executeNonBlocking(`tmux display-message -t '${paneId}' -p '#{window_id}'`);
       },
       RetryStrategy.IDEMPOTENT,
       `getPaneWindowId(${paneId})`
@@ -429,9 +499,9 @@ export class TmuxService {
    * Get current window dimensions
    */
   async getWindowDimensions(): Promise<WindowDimensions> {
-    return this.executeWithRetry(
-      () => {
-        const output = this.execute(
+    return this.executeWithRetryAsync(
+      async () => {
+        const output = await this.executeNonBlocking(
           'tmux display-message -p "#{window_width} #{window_height}"'
         );
         const [width, height] = output.split(' ').map(n => parseInt(n, 10));
@@ -445,17 +515,18 @@ export class TmuxService {
   /**
    * Get current terminal (client) dimensions
    */
-  async getTerminalDimensions(): Promise<WindowDimensions> {
-    return this.executeWithRetry(
-      () => {
-        const output = this.execute(
-          'tmux display-message -p "#{client_width} #{client_height}"'
+  async getTerminalDimensions(targetPaneId?: string): Promise<WindowDimensions> {
+    return this.executeWithRetryAsync(
+      async () => {
+        const target = targetPaneId ? ` -t '${targetPaneId}'` : '';
+        const output = await this.executeNonBlocking(
+          `tmux display-message${target} -p "#{client_width} #{client_height}"`
         );
         const [width, height] = output.split(' ').map(n => parseInt(n, 10));
         return { width, height };
       },
       RetryStrategy.IDEMPOTENT,
-      'getTerminalDimensions'
+      targetPaneId ? `getTerminalDimensions(${targetPaneId})` : 'getTerminalDimensions'
     );
   }
 
@@ -463,12 +534,26 @@ export class TmuxService {
    * Get all pane IDs in current window
    */
   async getAllPaneIds(scope: PaneListScope = 'window'): Promise<string[]> {
-    return this.executeWithRetry(
-      () => {
-        return this.listPanesLines('#{pane_id}', scope);
+    return this.executeWithRetryAsync(
+      async () => {
+        return this.listPanesLinesNonBlocking('#{pane_id}', scope);
       },
       RetryStrategy.IDEMPOTENT,
       `getAllPaneIds(${scope})`
+    );
+  }
+
+  /**
+   * List panes with a tmux format string.
+   */
+  async listPanes(format: string = '#{pane_id}=#{pane_index}', scope: PaneListScope = 'window'): Promise<string> {
+    return this.executeWithRetryAsync(
+      async () => {
+        const lines = await this.listPanesLinesNonBlocking(format, scope);
+        return lines.join('\n');
+      },
+      RetryStrategy.IDEMPOTENT,
+      `listPanes(${scope})`
     );
   }
 
@@ -487,25 +572,54 @@ export class TmuxService {
   }
 
   /**
+   * Get status bar height in lines.
+   */
+  async getStatusBarHeight(): Promise<number> {
+    return this.executeWithRetryAsync(
+      async () => {
+        const statusEnabled = (await this.executeNonBlocking(
+          'tmux display-message -p "#{status}"'
+        )).trim();
+        if (statusEnabled !== 'on') {
+          return 0;
+        }
+
+        const statusFormats = await this.executeNonBlocking(
+          'tmux show-options -gv status-format'
+        );
+        return statusFormats.split('\n').filter(line => line.trim()).length;
+      },
+      RetryStrategy.IDEMPOTENT,
+      'getStatusBarHeight'
+    ).catch(() => {
+      this.logger.debug('Failed to get status bar height, assuming 0', 'TmuxService');
+      return 0;
+    });
+  }
+
+  /**
    * Get pane positions for all panes
    */
   async getPanePositions(): Promise<PanePosition[]> {
-    return this.executeWithRetry(
-      () => {
-        const output = this.execute(
+    return this.executeWithRetryAsync(
+      async () => {
+        const output = await this.executeNonBlocking(
           `tmux list-panes -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height}'`
         );
 
-        return output.split('\n').map(line => {
-          const [paneId, left, top, width, height] = line.split(' ');
-          return {
-            paneId,
-            left: parseInt(left, 10),
-            top: parseInt(top, 10),
-            width: parseInt(width, 10),
-            height: parseInt(height, 10),
-          };
-        });
+        return output
+          .split('\n')
+          .filter(line => line.trim())
+          .map(line => {
+            const [paneId, left, top, width, height] = line.split(' ');
+            return {
+              paneId,
+              left: parseInt(left, 10),
+              top: parseInt(top, 10),
+              width: parseInt(width, 10),
+              height: parseInt(height, 10),
+            };
+          });
       },
       RetryStrategy.IDEMPOTENT,
       'getPanePositions'
@@ -516,9 +630,9 @@ export class TmuxService {
    * Get pane title
    */
   async getPaneTitle(paneId: string): Promise<string> {
-    return this.executeWithRetry(
-      () => {
-        return this.execute(
+    return this.executeWithRetryAsync(
+      async () => {
+        return this.executeNonBlocking(
           `tmux display-message -t '${paneId}' -p '#{pane_title}'`
         );
       },
@@ -552,10 +666,12 @@ export class TmuxService {
    */
   async paneExists(paneId: string): Promise<boolean> {
     try {
-      const result = await this.executeWithRetry(
-        () => {
-          const output = this.execute(`tmux display-message -t '${paneId}' -p '#{pane_id}'`, { silent: true });
-          return output;
+      const result = await this.executeWithRetryAsync(
+        async () => {
+          return this.executeNonBlocking(
+            `tmux display-message -t '${paneId}' -p '#{pane_id}'`,
+            { silent: true }
+          );
         },
         RetryStrategy.FAST,
         `paneExists(${paneId})`
@@ -605,8 +721,8 @@ export class TmuxService {
     command?: string;
     preserveZoom?: boolean;
   } = {}): Promise<string> {
-    return this.executeWithRetry(
-      () => {
+    return this.executeWithRetryAsync(
+      async () => {
         let cmd = 'tmux split-window -h -P -F \'#{pane_id}\'';
         if (options.preserveZoom) {
           cmd += ' -Z';
@@ -622,7 +738,7 @@ export class TmuxService {
           cmd += ` "${options.command}"`;
         }
 
-        return this.execute(cmd);
+        return this.executeNonBlocking(cmd);
       },
       RetryStrategy.FAST, // UI operation, fast retry
       'splitPane'
@@ -633,13 +749,13 @@ export class TmuxService {
    * Resize a pane
    */
   async resizePane(paneId: string, dimensions: { width?: number; height?: number }): Promise<void> {
-    await this.executeWithRetry(
-      () => {
+    await this.executeWithRetryAsync(
+      async () => {
         if (dimensions.width !== undefined) {
-          this.execute(`tmux resize-pane -t '${paneId}' -x ${dimensions.width}`);
+          await this.executeNonBlocking(`tmux resize-pane -t '${paneId}' -x ${dimensions.width}`);
         }
         if (dimensions.height !== undefined) {
-          this.execute(`tmux resize-pane -t '${paneId}' -y ${dimensions.height}`);
+          await this.executeNonBlocking(`tmux resize-pane -t '${paneId}' -y ${dimensions.height}`);
         }
       },
       RetryStrategy.FAST,
@@ -651,9 +767,9 @@ export class TmuxService {
    * Resize window
    */
   async resizeWindow(dimensions: { width: number; height: number }): Promise<void> {
-    await this.executeWithRetry(
-      () => {
-        this.execute(`tmux resize-window -x ${dimensions.width} -y ${dimensions.height}`);
+    await this.executeWithRetryAsync(
+      async () => {
+        await this.executeNonBlocking(`tmux resize-window -x ${dimensions.width} -y ${dimensions.height}`);
       },
       RetryStrategy.FAST,
       'resizeWindow'
@@ -664,9 +780,9 @@ export class TmuxService {
    * Select a layout string
    */
   async selectLayout(layoutString: string): Promise<void> {
-    await this.executeWithRetry(
-      () => {
-        this.execute(`tmux select-layout '${layoutString}'`);
+    await this.executeWithRetryAsync(
+      async () => {
+        await this.executeNonBlocking(`tmux select-layout '${layoutString}'`);
       },
       RetryStrategy.FAST,
       'selectLayout'
@@ -677,9 +793,9 @@ export class TmuxService {
    * Set pane title
    */
   async setPaneTitle(paneId: string, title: string): Promise<void> {
-    await this.executeWithRetry(
-      () => {
-        this.execute(`tmux select-pane -t '${paneId}' -T '${title}'`);
+    await this.executeWithRetryAsync(
+      async () => {
+        await this.executeNonBlocking(`tmux select-pane -t '${paneId}' -T '${title}'`);
       },
       RetryStrategy.FAST,
       `setPaneTitle(${paneId})`
@@ -690,9 +806,9 @@ export class TmuxService {
    * Select a pane (make it active)
    */
   async selectPane(paneId: string): Promise<void> {
-    await this.executeWithRetry(
-      () => {
-        this.execute(`tmux select-pane -t '${paneId}'`);
+    await this.executeWithRetryAsync(
+      async () => {
+        await this.executeNonBlocking(`tmux select-pane -t '${paneId}'`);
       },
       RetryStrategy.FAST,
       `selectPane(${paneId})`
@@ -992,9 +1108,9 @@ export class TmuxService {
    */
   async refreshClient(): Promise<void> {
     try {
-      await this.executeWithRetry(
-        () => {
-          this.execute('tmux refresh-client', { silent: true });
+      await this.executeWithRetryAsync(
+        async () => {
+          await this.executeNonBlocking('tmux refresh-client', { silent: true });
         },
         RetryStrategy.FAST,
         'refreshClient'
@@ -1055,9 +1171,9 @@ export class TmuxService {
    */
   async killPane(paneId: string): Promise<void> {
     try {
-      await this.executeWithRetry(
-        () => {
-          this.execute(`tmux kill-pane -t '${paneId}'`);
+      await this.executeWithRetryAsync(
+        async () => {
+          await this.executeNonBlocking(`tmux kill-pane -t '${paneId}'`);
         },
         RetryStrategy.NONE, // Destructive operation
         `killPane(${paneId})`
@@ -1071,6 +1187,23 @@ export class TmuxService {
       }
       // Re-throw other errors
       throw error;
+    }
+  }
+
+  /**
+   * Set a window option.
+   */
+  async setWindowOption(option: string, value: string): Promise<void> {
+    try {
+      await this.executeWithRetryAsync(
+        async () => {
+          await this.executeNonBlocking(`tmux set-window-option ${option} ${value}`, { silent: true });
+        },
+        RetryStrategy.FAST,
+        `setWindowOption(${option})`
+      );
+    } catch (error) {
+      this.logger.warn(`Failed to set window option ${option}`, 'TmuxService');
     }
   }
 

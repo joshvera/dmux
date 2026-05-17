@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { randomUUID } from 'crypto';
+import { createInterface } from 'readline/promises';
 import { pathToFileURL } from 'url';
 import { writeDmuxPerfClientMarker } from './perf.js';
+import { runTerminalRoundtripProbe } from './perfProbe.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -9,6 +11,16 @@ async function main(): Promise<void> {
 
   if (command === 'marker') {
     writeMarker(args.slice(1));
+    return;
+  }
+
+  if (command === 'probe') {
+    await runProbe(args.slice(1));
+    return;
+  }
+
+  if (command === 'collect-client') {
+    await runCollectClient(args.slice(1));
     return;
   }
 
@@ -33,6 +45,11 @@ export function buildPerfBenchmarkGuide(runId: string, transport: string): strin
     '',
     'Manual client markers, run near the client-observed navigation window:',
     '  Start both windows before navigating so instance-a and instance-b overlap.',
+    'Terminal/transport RTT probes, run from the same transport class before and after navigation windows:',
+    `  pnpm perf:probe -- --run-id ${runId} --instance instance-a --transport ${transport} --iterations 50 --timeout-ms 1000`,
+    `  pnpm perf:probe -- --run-id ${runId} --instance instance-b --transport ${transport} --iterations 50 --timeout-ms 1000`,
+    `  pnpm perf:collect-client -- --run-id ${runId} --instance instance-a --transport ${transport} --label navigation`,
+    '',
     `  pnpm perf:mark -- --run-id ${runId} --instance instance-a --transport ${transport} --label navigation-start`,
     `  pnpm perf:mark -- --run-id ${runId} --instance instance-b --transport ${transport} --label navigation-start`,
     `  pnpm perf:mark -- --run-id ${runId} --instance instance-a --transport ${transport} --label navigation-stop`,
@@ -57,6 +74,93 @@ function writeMarker(args: string[]): void {
   console.log(`Wrote client marker: ${filePath}`);
 }
 
+async function runCollectClient(args: string[]): Promise<void> {
+  const runId = readRequiredOption(args, '--run-id');
+  const instanceLabel = readOption(args, '--instance');
+  const transport = readOption(args, '--transport');
+  const label = readOption(args, '--label') || 'navigation';
+  const iterations = readPositiveIntegerOption(args, '--iterations', 10);
+  const timeoutMs = readPositiveIntegerOption(args, '--timeout-ms', 1000);
+  const durationMs = readOptionalPositiveIntegerOption(args, '--duration-ms');
+
+  try {
+    const beforeProbe = await runTerminalRoundtripProbe({
+      runId,
+      instanceLabel,
+      transport,
+      iterations,
+      timeoutMs,
+    });
+    console.log(`Wrote pre-window terminal RTT probe events: ${beforeProbe.filePath}`);
+
+    const startPath = writeDmuxPerfClientMarker({
+      runId,
+      marker: `${label}-start`,
+      instanceLabel,
+      transport,
+    });
+    console.log(`Wrote client marker: ${startPath}`);
+
+    await waitForClientWindow(durationMs);
+
+    const stopPath = writeDmuxPerfClientMarker({
+      runId,
+      marker: `${label}-stop`,
+      instanceLabel,
+      transport,
+    });
+    console.log(`Wrote client marker: ${stopPath}`);
+
+    const afterProbe = await runTerminalRoundtripProbe({
+      runId,
+      instanceLabel,
+      transport,
+      iterations,
+      timeoutMs,
+    });
+    console.log(`Wrote post-window terminal RTT probe events: ${afterProbe.filePath}`);
+  } finally {
+    releaseProbeStdin();
+  }
+}
+
+async function runProbe(args: string[]): Promise<void> {
+  try {
+    const runId = readRequiredOption(args, '--run-id');
+    const instanceLabel = readOption(args, '--instance');
+    const transport = readOption(args, '--transport');
+    const iterations = readPositiveIntegerOption(args, '--iterations', 50);
+    const timeoutMs = readPositiveIntegerOption(args, '--timeout-ms', 1000);
+    const result = await runTerminalRoundtripProbe({
+      runId,
+      instanceLabel,
+      transport,
+      iterations,
+      timeoutMs,
+    });
+    const counts = countProbeResults(result.results);
+
+    if (!result.supported) {
+      console.error(
+        'perf:probe requires interactive TTY stdin/stdout; wrote client.terminal_roundtrip error event.'
+      );
+      console.error(`Wrote terminal RTT probe events: ${result.filePath}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`Wrote terminal RTT probe events: ${result.filePath}`);
+    console.log(
+      `Results: success=${counts.success} timeout=${counts.timeout} error=${counts.error}`
+    );
+    if (result.results.some((probeResult) => probeResult.interrupted)) {
+      process.exitCode = 130;
+    }
+  } finally {
+    releaseProbeStdin();
+  }
+}
+
 function readRequiredOption(args: string[], name: string): string {
   const value = readOption(args, name);
   if (!value) {
@@ -71,6 +175,80 @@ function readOption(args: string[], name: string): string | undefined {
     return undefined;
   }
   return args[index + 1];
+}
+
+function readPositiveIntegerOption(args: string[], name: string, defaultValue: number): number {
+  const rawValue = readOption(args, name);
+  if (!rawValue) {
+    return defaultValue;
+  }
+  const value = Number(rawValue);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+function readOptionalPositiveIntegerOption(args: string[], name: string): number | undefined {
+  const rawValue = readOption(args, name);
+  if (!rawValue) {
+    return undefined;
+  }
+  const value = Number(rawValue);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+async function waitForClientWindow(durationMs: number | undefined): Promise<void> {
+  if (durationMs !== undefined) {
+    console.log(`Client sample window open for ${durationMs}ms.`);
+    await new Promise((resolve) => setTimeout(resolve, durationMs));
+    return;
+  }
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.log('No interactive TTY or --duration-ms provided; client sample window closed immediately.');
+    return;
+  }
+
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    await readline.question('Client sample window open. Navigate dmux now, then press Enter to stop. ');
+  } finally {
+    readline.close();
+  }
+}
+
+function countProbeResults(results: Array<{ result: 'success' | 'timeout' | 'error' }>): {
+  success: number;
+  timeout: number;
+  error: number;
+} {
+  return results.reduce(
+    (counts, result) => ({
+      ...counts,
+      [result.result]: counts[result.result] + 1,
+    }),
+    { success: 0, timeout: 0, error: 0 }
+  );
+}
+
+function releaseProbeStdin(): void {
+  try {
+    process.stdin.pause();
+  } catch {
+    // Releasing probe stdin must not hide the probe result.
+  }
+  try {
+    process.stdin.unref?.();
+  } catch {
+    // Some stdin implementations do not support unref.
+  }
 }
 
 if (isDirectRun()) {

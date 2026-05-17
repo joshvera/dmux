@@ -32,6 +32,28 @@ export interface DmuxPerfEventFields {
   metadata?: Record<string, unknown>;
 }
 
+export type DmuxPerfInputSurface = 'main' | 'hooks-prompt' | 'unknown';
+export type DmuxPerfKeyKind = 'printable' | 'enter' | 'escape' | 'arrow' | 'ctrl' | 'function' | 'unknown';
+export type DmuxPerfInputClassification = 'handled' | 'ignored' | 'noop' | 'unhandled';
+
+export interface DmuxPerfInputStartOptions {
+  surface?: DmuxPerfInputSurface;
+  keyKind?: DmuxPerfKeyKind;
+}
+
+export interface DmuxPerfInputClassificationFields {
+  classification: DmuxPerfInputClassification;
+  reason?: string;
+  actionKind?: string;
+  visibleStateChanged?: boolean;
+}
+
+export interface DmuxPerfInputSpan {
+  classify(fields: DmuxPerfInputClassificationFields): void;
+  armKeyToRender(): void;
+  finish(): void;
+}
+
 export interface DmuxPerfJsonEvent extends DmuxPerfEventFields {
   timestamp: string;
   monotonicMs: number;
@@ -64,8 +86,24 @@ let cachedLogPath: string | undefined;
 let metadata: DmuxPerfMetadata = {};
 let metadataSignature = '';
 let runtimeMonitorStop: (() => void) | undefined;
-const pendingInputMonotonicMs: number[] = [];
+const pendingInputSpans: PendingInputSpan[] = [];
 const patchedWritables = new WeakMap<object, () => void>();
+let nextInputSequence = 0;
+
+interface PendingInputSpan {
+  inputId: string;
+  startedAt: number;
+  surface: DmuxPerfInputSurface;
+  keyKind: DmuxPerfKeyKind;
+  classification?: DmuxPerfInputClassification;
+  reason?: string;
+  actionKind?: string;
+  visibleStateChanged?: boolean;
+  armed: boolean;
+  queuedForRender: boolean;
+  inputRecorded: boolean;
+  finished: boolean;
+}
 
 export function isDmuxPerfEnabled(): boolean {
   return process.env.DMUX_PERF === '1';
@@ -119,8 +157,15 @@ export function inferDmuxPerfTransport(): string {
 export function classifyTmuxCommand(command: string): string {
   if (/\bcapture-pane\b/.test(command)) return 'capture-pane';
   if (/\blist-panes\b/.test(command)) return 'list-panes';
+  if (/\blist-windows\b/.test(command)) return 'list-windows';
   if (/\bdisplay-message\b/.test(command)) return 'display-message';
   if (/\bsend-keys\b/.test(command)) return 'send-keys';
+  if (/\bselect-pane\b/.test(command)) return 'select-pane';
+  if (/\bselect-layout\b/.test(command)) return 'select-layout';
+  if (/\b(?:resize-pane|resize-window)\b/.test(command)) return 'resize';
+  if (/\b(?:split-window|join-pane|kill-pane|kill-window)\b/.test(command)) return 'pane-lifecycle';
+  if (/\b(?:set-buffer|load-buffer|paste-buffer|delete-buffer)\b/.test(command)) return 'buffer';
+  if (/\brefresh-client\b/.test(command)) return 'refresh-client';
   if (/\b(?:set-option|set-window-option|set)\b/.test(command)) return 'set-option';
   if (/\b(?:show-options|show)\b/.test(command)) return 'show-option';
   return 'other';
@@ -200,13 +245,82 @@ export async function timeDmuxPerfAsync<T>(
   }
 }
 
-export function recordDmuxPerfInput(): void {
+export function recordDmuxPerfInput(options: DmuxPerfInputStartOptions = {}): DmuxPerfInputSpan {
   if (!isDmuxPerfEnabled()) {
+    return noopInputSpan;
+  }
+
+  const span: PendingInputSpan = {
+    inputId: `input-${process.pid}-${++nextInputSequence}`,
+    startedAt: performance.now(),
+    surface: options.surface || 'unknown',
+    keyKind: options.keyKind || 'unknown',
+    armed: false,
+    queuedForRender: false,
+    inputRecorded: false,
+    finished: false,
+  };
+
+  const queueIfEligible = () => {
+    if (
+      span.armed
+      && !span.queuedForRender
+      && span.classification === 'handled'
+      && span.visibleStateChanged === true
+    ) {
+      span.queuedForRender = true;
+      pendingInputSpans.push(span);
+    }
+  };
+
+  return {
+    classify(fields: DmuxPerfInputClassificationFields): void {
+      if (span.finished) {
+        return;
+      }
+
+      span.classification = fields.classification;
+      span.reason = fields.reason;
+      span.actionKind = fields.actionKind;
+      span.visibleStateChanged = fields.visibleStateChanged === true;
+      recordInputSpan(span);
+      queueIfEligible();
+    },
+
+    armKeyToRender(): void {
+      if (span.finished) {
+        return;
+      }
+
+      span.armed = true;
+      queueIfEligible();
+    },
+
+    finish(): void {
+      if (span.finished) {
+        return;
+      }
+
+      span.finished = true;
+      if (!span.classification) {
+        span.classification = 'unhandled';
+        span.visibleStateChanged = false;
+      }
+      recordInputSpan(span);
+    },
+  };
+}
+
+function recordInputSpan(span: PendingInputSpan): void {
+  if (span.inputRecorded) {
     return;
   }
 
-  pendingInputMonotonicMs.push(performance.now());
-  recordDmuxPerfEvent('ui.input', { count: 1 });
+  span.inputRecorded = true;
+  recordDmuxPerfEvent('ui.input', {
+    count: 1,
+    metadata: buildInputMetadata(span),
+  });
 }
 
 export function recordDmuxPerfRender(): void {
@@ -217,15 +331,29 @@ export function recordDmuxPerfRender(): void {
   const now = performance.now();
   recordDmuxPerfEvent('ui.render', { count: 1 });
 
-  while (pendingInputMonotonicMs.length > 0) {
-    const inputAt = pendingInputMonotonicMs.shift();
-    if (inputAt !== undefined) {
+  while (pendingInputSpans.length > 0) {
+    const span = pendingInputSpans.shift();
+    if (span !== undefined) {
       recordDmuxPerfEvent('ui.key_to_render', {
-        durationMs: now - inputAt,
+        durationMs: now - span.startedAt,
         count: 1,
+        metadata: buildInputMetadata(span),
       });
     }
   }
+}
+
+export function normalizeDmuxPerfKeyKind(
+  input: string,
+  key: Record<string, unknown> = {}
+): DmuxPerfKeyKind {
+  if (key.return) return 'enter';
+  if (key.escape) return 'escape';
+  if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) return 'arrow';
+  if (key.ctrl) return 'ctrl';
+  if (Object.keys(key).some((name) => /^f\d+$/i.test(name) && key[name])) return 'function';
+  if (input.length > 0) return 'printable';
+  return 'unknown';
 }
 
 export function patchDmuxPerfWritable(writable: WritableLike | undefined): () => void {
@@ -339,11 +467,18 @@ export function resetDmuxPerfForTests(): void {
   cachedLogPath = undefined;
   metadata = {};
   metadataSignature = '';
-  pendingInputMonotonicMs.length = 0;
+  pendingInputSpans.length = 0;
+  nextInputSequence = 0;
   if (runtimeMonitorStop) {
     runtimeMonitorStop();
   }
 }
+
+const noopInputSpan: DmuxPerfInputSpan = {
+  classify(): void {},
+  armKeyToRender(): void {},
+  finish(): void {},
+};
 
 function writePerfEvent(
   event: string,
@@ -362,7 +497,7 @@ function writePerfEvent(
       lane: fields.lane || 'server-observed',
       sessionName: overrides.sessionName || metadata.sessionName,
       projectRootHash: overrides.projectRootHash || metadata.projectRootHash,
-      instanceLabel: overrides.instanceLabel || metadata.instanceLabel,
+      instanceLabel: overrides.instanceLabel || metadata.instanceLabel || process.env.DMUX_PERF_INSTANCE,
       transport: overrides.transport || metadata.transport || inferDmuxPerfTransport(),
       ...fields,
     };
@@ -391,6 +526,18 @@ function buildTimingEventFields(
             errorName: error instanceof Error ? error.name : 'unknown',
           },
         }),
+  };
+}
+
+function buildInputMetadata(span: PendingInputSpan): Record<string, unknown> {
+  return {
+    inputId: span.inputId,
+    surface: span.surface,
+    keyKind: span.keyKind,
+    classification: span.classification || 'unhandled',
+    ...(span.reason ? { reason: span.reason } : {}),
+    ...(span.actionKind ? { actionKind: span.actionKind } : {}),
+    visibleStateChanged: span.visibleStateChanged === true,
   };
 }
 

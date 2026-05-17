@@ -86,17 +86,130 @@ describe('dmux perf logging', () => {
     expect(typeof testEvent?.projectRootHash).toBe('string');
   });
 
+  it('uses perf environment labels for worker-thread events before metadata is configured', () => {
+    process.env.DMUX_PERF = '1';
+    process.env.DMUX_PERF_DIR = tempDir;
+    process.env.DMUX_PERF_RUN_ID = 'run-worker';
+    process.env.DMUX_PERF_INSTANCE = 'instance-worker';
+    process.env.DMUX_PERF_TRANSPORT = 'local-tmux';
+
+    recordDmuxPerfEvent('worker.capture', {
+      durationMs: 20,
+      tmuxPaneId: '%1',
+    });
+
+    expect(readEvents(tempDir)).toContainEqual(
+      expect.objectContaining({
+        runId: 'run-worker',
+        instanceLabel: 'instance-worker',
+        transport: 'local-tmux',
+        event: 'worker.capture',
+      })
+    );
+  });
+
   it('measures keypress-to-render latency without logging input contents', () => {
     process.env.DMUX_PERF = '1';
     process.env.DMUX_PERF_DIR = tempDir;
     process.env.DMUX_PERF_RUN_ID = 'run-input';
 
-    recordDmuxPerfInput();
+    const span = recordDmuxPerfInput({ surface: 'main', keyKind: 'printable' });
+    span.classify({
+      classification: 'handled',
+      reason: 'test-navigation',
+      actionKind: 'navigation',
+      visibleStateChanged: true,
+    });
+    span.armKeyToRender();
+    span.finish();
     recordDmuxPerfRender();
 
-    const keyToRender = readEvents(tempDir).find((event) => event.event === 'ui.key_to_render');
+    const events = readEvents(tempDir);
+    const input = events.find((event) => event.event === 'ui.input');
+    const keyToRender = events.find((event) => event.event === 'ui.key_to_render');
+    expect(input?.metadata).toMatchObject({
+      surface: 'main',
+      keyKind: 'printable',
+      classification: 'handled',
+      reason: 'test-navigation',
+      actionKind: 'navigation',
+      visibleStateChanged: true,
+    });
     expect(keyToRender?.durationMs).toBeGreaterThanOrEqual(0);
-    expect(keyToRender?.metadata).toBeUndefined();
+    expect(keyToRender?.metadata).toMatchObject({
+      keyKind: 'printable',
+      classification: 'handled',
+      visibleStateChanged: true,
+    });
+    expect(JSON.stringify(events)).not.toContain('literal-key');
+  });
+
+  it('does not measure ignored, noop, or unhandled inputs as key-to-render', () => {
+    process.env.DMUX_PERF = '1';
+    process.env.DMUX_PERF_DIR = tempDir;
+    process.env.DMUX_PERF_RUN_ID = 'run-classification';
+
+    const ignored = recordDmuxPerfInput({ surface: 'main', keyKind: 'escape' });
+    ignored.classify({
+      classification: 'ignored',
+      reason: 'busy',
+      visibleStateChanged: false,
+    });
+    ignored.finish();
+
+    const noop = recordDmuxPerfInput({ surface: 'main', keyKind: 'arrow' });
+    noop.classify({
+      classification: 'noop',
+      reason: 'navigation-boundary',
+      actionKind: 'navigation',
+      visibleStateChanged: false,
+    });
+    noop.finish();
+
+    recordDmuxPerfInput({ surface: 'main', keyKind: 'unknown' }).finish();
+    recordDmuxPerfRender();
+
+    const events = readEvents(tempDir);
+    expect(events.filter((event) => event.event === 'ui.input')).toHaveLength(3);
+    expect(events.some((event) => event.event === 'ui.key_to_render')).toBe(false);
+    expect(events.map((event) => event.metadata).filter(Boolean)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ classification: 'ignored' }),
+        expect.objectContaining({ classification: 'noop' }),
+        expect.objectContaining({ classification: 'unhandled' }),
+      ])
+    );
+  });
+
+  it('keeps input spans idempotent after finish', () => {
+    process.env.DMUX_PERF = '1';
+    process.env.DMUX_PERF_DIR = tempDir;
+    process.env.DMUX_PERF_RUN_ID = 'run-idempotent';
+
+    const span = recordDmuxPerfInput({ surface: 'main', keyKind: 'enter' });
+    span.classify({
+      classification: 'handled',
+      reason: 'first',
+      visibleStateChanged: false,
+    });
+    span.finish();
+    span.classify({
+      classification: 'handled',
+      reason: 'late',
+      visibleStateChanged: true,
+    });
+    span.armKeyToRender();
+    span.finish();
+    recordDmuxPerfRender();
+
+    const events = readEvents(tempDir);
+    expect(events.filter((event) => event.event === 'ui.input')).toHaveLength(1);
+    expect(events.some((event) => event.event === 'ui.key_to_render')).toBe(false);
+    expect(events[0].metadata).toMatchObject({
+      classification: 'handled',
+      reason: 'first',
+      visibleStateChanged: false,
+    });
   });
 
   it('writes client marker events separately from server instrumentation', () => {
@@ -128,6 +241,9 @@ describe('dmux perf logging', () => {
     expect(classifyTmuxCommand("tmux display-message -p '#{pid}'")).toBe('display-message');
     expect(classifyTmuxCommand("tmux set-option -p -t '%1' @dmux_title foo")).toBe('set-option');
     expect(classifyTmuxCommand('tmux send-keys -t %1 Enter')).toBe('send-keys');
+    expect(classifyTmuxCommand("tmux select-pane -t '%1'")).toBe('select-pane');
+    expect(classifyTmuxCommand('tmux resize-window -x 120 -y 40')).toBe('resize');
+    expect(classifyTmuxCommand("tmux paste-buffer -b 'dmux-test' -t '%1'")).toBe('buffer');
   });
 });
 

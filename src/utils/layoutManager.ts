@@ -1,4 +1,3 @@
-import { getWindowDimensions } from './tmux.js';
 import { TmuxService } from '../services/TmuxService.js';
 import { LogService } from '../services/LogService.js';
 import { TMUX_PANE_CREATION_DELAY, TMUX_SIDEBAR_SETTLE_DELAY } from '../constants/timing.js';
@@ -160,7 +159,7 @@ export async function recalculateAndApplyLayout(
     // Step 1: Filter out any existing spacer from content panes
     let existingSpacerId: string | null = null;
     try {
-      existingSpacerId = spacerManager.findSpacerPane();
+      existingSpacerId = await spacerManager.findSpacerPane();
     } catch (error) {
       if (!suppressLogs) {
         LogService.getInstance().debug(`Failed to find spacer pane: ${error}`, 'Layout');
@@ -172,7 +171,7 @@ export async function recalculateAndApplyLayout(
     const tmuxService = TmuxService.getInstance();
     let validContentPaneIds: string[];
     try {
-      const allTmuxPaneIds = tmuxService.getAllPaneIdsSync();
+      const allTmuxPaneIds = await tmuxService.getAllPaneIds();
       validContentPaneIds = contentPaneIds.filter(id => {
         if (id === existingSpacerId) return false; // Filter out spacer
         if (!allTmuxPaneIds.includes(id)) {
@@ -254,7 +253,7 @@ export async function recalculateAndApplyLayout(
   // Destroy existing spacer if present (we'll recreate if needed)
   if (existingSpacerId) {
     // LogService.getInstance().debug(`Destroying existing spacer for recreation: ${existingSpacerId}`, 'Layout');
-    spacerManager.destroySpacerPane(existingSpacerId);
+    await spacerManager.destroySpacerPane(existingSpacerId);
   }
 
   // Create new spacer if needed
@@ -264,7 +263,7 @@ export async function recalculateAndApplyLayout(
       if (!lastContentPaneId) {
         throw new Error('No content panes available to split from');
       }
-      spacerId = spacerManager.createSpacerPane(lastContentPaneId);
+      spacerId = await spacerManager.createSpacerPane(lastContentPaneId);
       // LogService.getInstance().debug(`Created fresh spacer pane: ${spacerId}`, 'Layout');
 
       // CRITICAL: Wait for tmux to fully register the new pane before applying layout
@@ -275,7 +274,7 @@ export async function recalculateAndApplyLayout(
       let paneVerified = false;
       for (let attempts = 0; attempts < 3; attempts++) {
         try {
-          const allPaneIds = tmuxService.getAllPaneIdsSync();
+          const allPaneIds = await tmuxService.getAllPaneIds();
 
           if (allPaneIds.includes(spacerId)) {
             paneVerified = true;
@@ -315,7 +314,7 @@ export async function recalculateAndApplyLayout(
   try {
     const tmuxService = TmuxService.getInstance();
     // Get pane index from tmux (pane_index format variable)
-    const indexOutput = tmuxService.listPanesSync('#{pane_id}=#{pane_index}');
+    const indexOutput = await tmuxService.listPanes('#{pane_id}=#{pane_index}');
     const indexLines = indexOutput.split('\n').filter(l => l.trim());
 
     indexLines.forEach(line => {
@@ -367,14 +366,12 @@ export async function recalculateAndApplyLayout(
   // The control pane ID may change after layout operations, so we need to find it by position
   // Note: tmuxService already declared above in Step 1
   let actualControlPaneId = controlPaneId;
-  try {
-    // First, verify the provided controlPaneId still exists
-    await tmuxService.paneExists(controlPaneId);
-  } catch {
+  const controlPaneExists = await tmuxService.paneExists(controlPaneId);
+  if (!controlPaneExists) {
     // Control pane ID is stale, find it by position (leftmost pane at x=0)
     // Use the smallest pane at x=0 as the sidebar (allows for slight width variations)
     try {
-      const positions = tmuxService.getPanePositionsSync();
+      const positions = await tmuxService.getPanePositions();
       let smallestPaneAtLeft: { id: string; width: number } | null = null;
 
       for (const pos of positions) {
@@ -416,10 +413,10 @@ export async function recalculateAndApplyLayout(
 
   // Step 8: Check window dimensions and resize if needed
   // Do this AFTER sidebar resize so sidebar width is locked
-  const currentWindowDims = getWindowDimensions();
+  const currentWindowDims = await tmuxService.getWindowDimensions();
 
   // Calculate target window height (accounting for status bar)
-  const statusBarHeight = tmuxService.getStatusBarHeightSync();
+  const statusBarHeight = await tmuxService.getStatusBarHeight();
   const targetWindowHeight = terminalHeight - statusBarHeight;
 
   const needsWindowResize =
@@ -431,7 +428,7 @@ export async function recalculateAndApplyLayout(
     //   `Resizing window: ${currentWindowDims.width}x${currentWindowDims.height} → ${finalLayout.windowWidth}x${targetWindowHeight}`,
     //   'Layout'
     // );
-    layoutApplier.setWindowDimensions(finalLayout.windowWidth, terminalHeight);
+    await layoutApplier.setWindowDimensions(finalLayout.windowWidth, terminalHeight);
 
     // Wait for tmux to complete the window resize
     await new Promise(resolve => setTimeout(resolve, TMUX_PANE_CREATION_DELAY));
@@ -460,7 +457,7 @@ export async function recalculateAndApplyLayout(
   // Re-check that all panes still exist to prevent "invalid layout" errors
   // that occur when panes are killed between layout calculation and application
   try {
-    const currentPaneIds = tmuxService.getAllPaneIdsSync();
+    const currentPaneIds = await tmuxService.getAllPaneIds();
     const validFinalPanes = finalContentPanes.filter(id => {
       if (!currentPaneIds.includes(id)) {
         if (!suppressLogs) {
@@ -493,12 +490,16 @@ export async function recalculateAndApplyLayout(
       return;
     }
 
-    layoutApplier.applyPaneLayout(actualControlPaneId, validFinalPanes, finalLayout, terminalHeight);
+    await layoutApplier.applyPaneLayout(actualControlPaneId, validFinalPanes, finalLayout, terminalHeight, {
+      spacerPaneId: spacerId,
+    });
   } catch (validationError) {
     if (!suppressLogs) {
       LogService.getInstance().debug(`Final validation failed: ${validationError}, attempting layout anyway`, 'Layout');
     }
-    layoutApplier.applyPaneLayout(actualControlPaneId, finalContentPanes, finalLayout, terminalHeight);
+    await layoutApplier.applyPaneLayout(actualControlPaneId, finalContentPanes, finalLayout, terminalHeight, {
+      spacerPaneId: spacerId,
+    });
   }
   } catch (error) {
     // Catch-all for any errors during layout recalculation
