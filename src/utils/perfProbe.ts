@@ -325,6 +325,7 @@ export function writeClientInputWindowEvent(options: ClientInputWindowEventOptio
       renderCount: summary.renderCount,
       dsrPreSupported: options.preProbe?.supported === true,
       dsrPostSupported: options.postProbe?.supported === true,
+      dsrSupported: dsrSupportCounts.supported > 0,
       dsrSupportedCount: dsrSupportCounts.supported,
       dsrUnsupportedCount: dsrSupportCounts.unsupported,
       dsrSuccessCount: dsrCounts.success,

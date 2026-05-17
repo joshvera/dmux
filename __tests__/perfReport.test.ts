@@ -507,10 +507,10 @@ describe('perfReport', () => {
     const instance = summary.instances[0];
 
     expect(instance.tmuxCommandBreakdown[0]?.label).toBe(
-      'display-message/async/source=focus-detection/target=pane/success=false/error=timeout'
+      'kind=display-message/sync=async/source=focus-detection/target=pane/success=false/error=timeout'
     );
     expect(formatPerfReport(summary)).toContain(
-      'tmux command breakdown: display-message/async/source=focus-detection/target=pane/success=false/error=timeout n=1'
+      'tmux command breakdown: kind=display-message/sync=async/source=focus-detection/target=pane/success=false/error=timeout n=1'
     );
   });
 

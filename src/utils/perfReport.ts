@@ -58,14 +58,6 @@ export interface TerminalRoundtripResults {
   unknown: number;
 }
 
-export interface KeyToRenderExclusionCounts {
-  orphaned: number;
-  mismatched: number;
-  duplicateExcess: number;
-  missingInputId: number;
-  invalidDuration: number;
-}
-
 export interface PerfInstanceSummary {
   runId: string;
   instanceLabel: string;
@@ -505,9 +497,9 @@ function commandBreakdownStats(
 
       const commandKind = event.commandKind || 'unknown';
       const syncKind = event.sync === false ? 'async' : 'sync';
-      const parts = [`${commandKind}/${syncKind}`];
-      const source = readStringMetadata(event, 'source');
-      const targetKind = readStringMetadata(event, 'targetKind');
+      const parts = [`kind=${commandKind}`, `sync=${syncKind}`];
+      const source = event.source || readStringMetadata(event, 'source');
+      const targetKind = event.targetKind || readStringMetadata(event, 'targetKind');
       if (source !== undefined) {
         parts.push(`source=${source}`);
       }
@@ -517,7 +509,7 @@ function commandBreakdownStats(
       if (typeof event.success === 'boolean') {
         parts.push(`success=${event.success ? 'true' : 'false'}`);
       }
-      const errorKind = readStringMetadata(event, 'errorKind');
+      const errorKind = event.errorKind || readStringMetadata(event, 'errorKind');
       if (errorKind !== undefined) {
         parts.push(`error=${errorKind}`);
       }
@@ -753,41 +745,6 @@ function analyzeKeyToRender(events: DmuxPerfJsonEvent[]): {
   };
 }
 
-function isHandledVisibleKeyToRender(event: DmuxPerfJsonEvent): boolean {
-  if (event.event !== 'ui.key_to_render') {
-    return false;
-  }
-
-  return {
-    handled: durationStats(handledDurations),
-    legacy: durationStats(legacyDurations),
-    exclusions,
-  };
-}
-
-function groupInputEventsById(events: DmuxPerfJsonEvent[]): Map<string, DmuxPerfJsonEvent[]> {
-  const groups = new Map<string, DmuxPerfJsonEvent[]>();
-  for (const event of events) {
-    if (event.event !== 'ui.input') {
-      continue;
-    }
-
-    const inputId = readStringMetadata(event, 'inputId');
-    if (!inputId) {
-      continue;
-    }
-
-    const group = groups.get(inputId) || [];
-    group.push(event);
-    groups.set(inputId, group);
-  }
-  return groups;
-}
-
-function isFiniteDuration(value: number | undefined): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
 function isLegacyRawKeyToRender(event: DmuxPerfJsonEvent): boolean {
   if (event.event !== 'ui.key_to_render') {
     return false;
@@ -863,7 +820,8 @@ function summarizeClientInputWindows(events: DmuxPerfJsonEvent[]): ClientInputWi
       handledVisibleInputCount: readNumberMetadata(event, 'handledVisibleInputCount') || 0,
       matchedKeyToRenderCount: readNumberMetadata(event, 'matchedKeyToRenderCount') || 0,
       renderCount: readNumberMetadata(event, 'renderCount') || 0,
-      dsrSupported: readBooleanMetadata(event, 'dsrSupported') === true,
+      dsrSupported: readBooleanMetadata(event, 'dsrSupported') === true
+        || (readNumberMetadata(event, 'dsrSupportedCount') || 0) > 0,
       dsrSuccessCount: readNumberMetadata(event, 'dsrSuccessCount')
         ?? readNumberMetadata(event, 'dsrSuccess')
         ?? 0,
@@ -997,10 +955,6 @@ function collectMissingMetrics(input: {
   for (const reason of formatKeyToRenderMissingReasons(input.keyToRenderExclusions)) {
     missing.push(reason);
   }
-  if (input.keyToRenderExclusions.mismatched > 0) missing.push(`mismatched key-to-render samples: ${input.keyToRenderExclusions.mismatched}`);
-  if ((input.keyToRenderExclusions.duplicateInput + input.keyToRenderExclusions.duplicateRender) > 0) missing.push(`duplicate key-to-render samples: ${input.keyToRenderExclusions.duplicateInput + input.keyToRenderExclusions.duplicateRender}`);
-  if (input.keyToRenderExclusions.missingInputId > 0) missing.push(`missing-input-id key-to-render samples: ${input.keyToRenderExclusions.missingInputId}`);
-  if (input.keyToRenderExclusions.invalidDuration > 0) missing.push(`invalid-duration key-to-render samples: ${input.keyToRenderExclusions.invalidDuration}`);
   if (
     input.handledVisibleInputCount > 0
     && input.handledKeyToRender.count > input.handledVisibleInputCount
@@ -1136,6 +1090,27 @@ function formatKeyToRenderExclusions(counts: KeyToRenderExclusionCounts): string
     `missing-input-id=${counts.missingInputId}`,
     `invalid-duration=${counts.invalidDuration}`,
   ].join(' ');
+}
+
+function formatKeyToRenderMissingReasons(counts: KeyToRenderExclusionCounts): string[] {
+  const reasons: string[] = [];
+  if (counts.orphan > 0) {
+    reasons.push(`orphaned handled key-to-render samples: ${counts.orphan}`);
+  }
+  if (counts.mismatched > 0) {
+    reasons.push(`mismatched key-to-render samples: ${counts.mismatched}`);
+  }
+  const duplicateCount = counts.duplicateInput + counts.duplicateRender;
+  if (duplicateCount > 0) {
+    reasons.push(`duplicate key-to-render samples: ${duplicateCount}`);
+  }
+  if (counts.missingInputId > 0) {
+    reasons.push(`missing-input-id key-to-render samples: ${counts.missingInputId}`);
+  }
+  if (counts.invalidDuration > 0) {
+    reasons.push(`invalid-duration key-to-render samples: ${counts.invalidDuration}`);
+  }
+  return reasons;
 }
 
 function formatTerminalRoundtripResults(results: TerminalRoundtripResults): string {

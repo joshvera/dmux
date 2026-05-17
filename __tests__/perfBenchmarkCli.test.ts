@@ -83,7 +83,7 @@ describe('perfBenchmarkCli collect-client', () => {
           matchedKeyToRenderCount: expect.any(Number),
           renderCount: expect.any(Number),
           dsrSupported: false,
-          dsrError: expect.any(Number),
+          dsrErrorCount: expect.any(Number),
         }),
       })
     );
