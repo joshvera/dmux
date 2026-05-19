@@ -18,10 +18,14 @@ function Harness({
   cleanExit = vi.fn(),
   setStatusMessage = vi.fn(),
   onQuitConfirmModeChange = vi.fn(),
+  ignoreInput = false,
+  recordInputEvent,
 }: {
   cleanExit?: ReturnType<typeof vi.fn>;
   setStatusMessage?: ReturnType<typeof vi.fn>;
   onQuitConfirmModeChange?: ReturnType<typeof vi.fn>;
+  ignoreInput?: boolean;
+  recordInputEvent?: ReturnType<typeof vi.fn>;
 }) {
   const [quitConfirmMode, setQuitConfirmModeState] = useState(false);
 
@@ -34,7 +38,7 @@ function Harness({
     runningCommand: false,
     isUpdating: false,
     isLoading: false,
-    ignoreInput: false,
+    ignoreInput,
     isDevMode: false,
     quitConfirmMode,
     setQuitConfirmMode: (value) => {
@@ -98,6 +102,7 @@ function Harness({
     projectRoot: '/repo',
     projectActionItems: [],
     findCardInDirection: vi.fn(() => null),
+    recordInputEvent,
   });
 
   return <Text>{quitConfirmMode ? 'armed' : 'idle'}</Text>;
@@ -203,6 +208,68 @@ describe('useInputHandling quit shortcuts', () => {
 
     expect(cleanExit).toHaveBeenCalledTimes(1);
     expect(tmuxServiceMock.enterDetachConfirmMode).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('classifies handled visible quit input without storing the raw key', async () => {
+    const span = {
+      classify: vi.fn(),
+      armKeyToRender: vi.fn(),
+      finish: vi.fn(),
+    };
+    const recordInputEvent = vi.fn(() => span);
+    delete process.env.TMUX;
+
+    const { stdin, unmount } = render(
+      <Harness recordInputEvent={recordInputEvent} />
+    );
+
+    await sleep(20);
+    stdin.write('q');
+    await sleep(20);
+
+    expect(recordInputEvent).toHaveBeenCalledWith({
+      surface: 'main',
+      keyKind: 'printable',
+    });
+    expect(span.classify).toHaveBeenCalledWith({
+      classification: 'handled',
+      reason: 'quit-shortcut',
+      actionKind: 'quit-confirm',
+      visibleStateChanged: true,
+    });
+    expect(span.armKeyToRender).toHaveBeenCalledTimes(1);
+    expect(span.finish).toHaveBeenCalledTimes(1);
+    expect(recordInputEvent.mock.calls[0][0]).not.toHaveProperty('input');
+    expect(span.classify.mock.calls[0][0]).not.toHaveProperty('input');
+
+    unmount();
+  });
+
+  it('classifies ignored inputs without arming key-to-render timing', async () => {
+    const span = {
+      classify: vi.fn(),
+      armKeyToRender: vi.fn(),
+      finish: vi.fn(),
+    };
+    const recordInputEvent = vi.fn(() => span);
+
+    const { stdin, unmount } = render(
+      <Harness ignoreInput recordInputEvent={recordInputEvent} />
+    );
+
+    await sleep(20);
+    stdin.write('q');
+    await sleep(20);
+
+    expect(span.classify).toHaveBeenCalledWith({
+      classification: 'ignored',
+      reason: 'ignore-input',
+      visibleStateChanged: false,
+    });
+    expect(span.armKeyToRender).not.toHaveBeenCalled();
+    expect(span.finish).toHaveBeenCalledTimes(1);
 
     unmount();
   });

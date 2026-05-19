@@ -68,10 +68,13 @@ import {
   getNextFooterTipIndex,
   getRandomFooterTipIndex,
 } from "./utils/footerTips.js"
+import {
+  setSessionOptionValueIfChanged,
+  type SessionOptionValueCacheEntry,
+} from "./utils/sessionOptionValueCache.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const ACTIVE_PANE_SYNC_INTERVAL_MS = 125
 import type {
   DmuxPane,
   DmuxAppProps,
@@ -108,12 +111,19 @@ import {
 } from "./utils/paneColors.js"
 import { DEFAULT_DMUX_THEME } from "./theme/themePalette.js"
 import {
-  getPaneTitlePrefixValue,
-  paneNeedsAnimatedTitlePrefix,
-  PANE_TITLE_BUSY_FRAMES,
+  getStablePaneTitlePrefixValue,
 } from "./utils/paneTitlePrefix.js"
 import { getPaneTmuxDisplayTitle } from "./utils/paneTitle.js"
 import { resolveControlPaneFocusSelection } from "./utils/controlPaneFocus.js"
+import {
+  configureDmuxPerfMetadata,
+  normalizeDmuxPerfKeyKind,
+  patchDmuxPerfWritable,
+  recordDmuxPerfInput,
+  recordDmuxPerfRender,
+  startDmuxPerfRuntimeMonitor,
+} from "./utils/perf.js"
+import { getActivePaneSyncIntervalMs } from "./utils/activePaneSync.js"
 
 const DmuxApp: React.FC<DmuxAppProps> = ({
   panesFile,
@@ -149,7 +159,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const paneTitlePrefixCacheRef = useRef(new Map<string, string>())
   const paneTitleLabelCacheRef = useRef(new Map<string, string>())
   const paneActiveBorderStyleCacheRef = useRef(new Map<string, string>())
-  const paneTitleSpinnerFrameRef = useRef(0)
+  const sessionActiveBorderStyleCacheRef = useRef<SessionOptionValueCacheEntry | null>(null)
 
   // Dialog state management
   const dialogState = useDialogState()
@@ -315,6 +325,26 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     controlPaneId,
     useHooks
   )
+
+  useEffect(() => {
+    return startDmuxPerfRuntimeMonitor()
+  }, [])
+
+  useEffect(() => {
+    return patchDmuxPerfWritable(stdout)
+  }, [stdout])
+
+  useEffect(() => {
+    configureDmuxPerfMetadata({
+      sessionName,
+      projectRoot: sessionProjectRoot,
+      paneCount: panes.length,
+    })
+  }, [sessionName, sessionProjectRoot, panes.length])
+
+  useEffect(() => {
+    recordDmuxPerfRender()
+  })
 
   // Check for tmux hooks preference on startup
   useEffect(() => {
@@ -706,6 +736,18 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       const cachedPrefixes = paneTitlePrefixCacheRef.current
       const cachedLabels = paneTitleLabelCacheRef.current
       const cachedActiveBorderStyles = paneActiveBorderStyleCacheRef.current
+      const setSessionActiveBorderStyleIfChanged = (style: string) => {
+        sessionActiveBorderStyleCacheRef.current = setSessionOptionValueIfChanged({
+          cached: sessionActiveBorderStyleCacheRef.current,
+          sessionName,
+          value: style,
+          setValue: () => tmuxService.setSessionOptionSync(
+            sessionName,
+            'pane-active-border-style',
+            style
+          ),
+        })
+      }
       const activePaneIds = new Set(panes.map((pane) => pane.paneId))
       const activeBorderStylePaneIds = new Set(activePaneIds)
       if (controlPaneId) {
@@ -737,11 +779,10 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
           sidebarProjects,
           sessionProjectRoot
         )
-        const prefixValue = getPaneTitlePrefixValue(
+        const prefixValue = getStablePaneTitlePrefixValue(
           pane,
           sidebarProjects,
-          sessionProjectRoot,
-          paneTitleSpinnerFrameRef.current
+          sessionProjectRoot
         )
         const labelValue = getPaneTmuxDisplayTitle(
           pane,
@@ -770,11 +811,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         }
 
         if (pane.paneId === activeBorderPaneId) {
-          tmuxService.setSessionOptionSync(
-            sessionName,
-            'pane-active-border-style',
-            activeBorderStyle
-          )
+          setSessionActiveBorderStyleIfChanged(activeBorderStyle)
         }
       }
 
@@ -788,35 +825,11 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       }
 
       if (!focusedPane) {
-        tmuxService.setSessionOptionSync(
-          sessionName,
-          'pane-active-border-style',
-          controlPaneActiveBorderStyle
-        )
+        setSessionActiveBorderStyleIfChanged(controlPaneActiveBorderStyle)
       }
     }
 
-    const hasAnimatedPrefix = panes.some(paneNeedsAnimatedTitlePrefix)
-    if (!hasAnimatedPrefix) {
-      paneTitleSpinnerFrameRef.current = 0
-    }
-
     syncPaneTitlePrefixes()
-
-    if (!hasAnimatedPrefix) {
-      return
-    }
-
-    const interval = setInterval(() => {
-      paneTitleSpinnerFrameRef.current = (
-        paneTitleSpinnerFrameRef.current + 1
-      ) % PANE_TITLE_BUSY_FRAMES.length
-      syncPaneTitlePrefixes()
-    }, 90)
-
-    return () => {
-      clearInterval(interval)
-    }
   }, [
     panes,
     sidebarProjects,
@@ -932,7 +945,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     }
 
     syncActivePane()
-    const interval = setInterval(syncActivePane, ACTIVE_PANE_SYNC_INTERVAL_MS)
+    const interval = setInterval(syncActivePane, getActivePaneSyncIntervalMs(eventMode))
     return () => {
       clearInterval(interval)
     }
@@ -1205,7 +1218,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     if (!isDevMode) return
 
     const tmuxService = TmuxService.getInstance()
-    const sourcePaneId = controlPaneId || await tmuxService.getCurrentPaneId()
+    const sourcePaneId = controlPaneId || await tmuxService.getCurrentPaneId('dmux-fallback')
     await tmuxService.respawnPane(
       sourcePaneId,
       buildDevWatchRespawnCommand(sourcePath)
@@ -1557,30 +1570,70 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   useInput(
     (input, key) => {
       if (!showHooksPrompt) return
+      const inputSpan = recordDmuxPerfInput({
+        surface: "hooks-prompt",
+        keyKind: normalizeDmuxPerfKeyKind(input, key),
+      })
+      const classifyHooksInput = (
+        classification: "handled" | "noop",
+        reason: string,
+        visibleStateChanged: boolean
+      ) => {
+        inputSpan.classify({
+          classification,
+          reason,
+          actionKind: "hooks-prompt",
+          visibleStateChanged,
+        })
+        if (classification === "handled" && visibleStateChanged) {
+          inputSpan.armKeyToRender()
+        }
+      }
 
-      if (key.upArrow || input === 'k') {
-        setHooksPromptIndex(Math.max(0, hooksPromptIndex - 1))
-      } else if (key.downArrow || input === 'j') {
-        setHooksPromptIndex(Math.min(1, hooksPromptIndex + 1))
-      } else if (input === 'y') {
-        // Yes - install hooks
-        setShowHooksPrompt(false)
-        setUseHooks(true)
-        settingsManager.updateSetting('useTmuxHooks', true, 'global')
-        refreshDmuxSettings()
-      } else if (input === 'n') {
-        // No - use polling
-        setShowHooksPrompt(false)
-        setUseHooks(false)
-        settingsManager.updateSetting('useTmuxHooks', false, 'global')
-        refreshDmuxSettings()
-      } else if (key.return) {
-        // Select current option
-        setShowHooksPrompt(false)
-        const selected = hooksPromptIndex === 0
-        setUseHooks(selected)
-        settingsManager.updateSetting('useTmuxHooks', selected, 'global')
-        refreshDmuxSettings()
+      try {
+        if (key.upArrow || input === 'k') {
+          const nextIndex = Math.max(0, hooksPromptIndex - 1)
+          classifyHooksInput(
+            nextIndex === hooksPromptIndex ? "noop" : "handled",
+            nextIndex === hooksPromptIndex ? "hooks-prompt-up-boundary" : "hooks-prompt-up",
+            nextIndex !== hooksPromptIndex
+          )
+          setHooksPromptIndex(nextIndex)
+        } else if (key.downArrow || input === 'j') {
+          const nextIndex = Math.min(1, hooksPromptIndex + 1)
+          classifyHooksInput(
+            nextIndex === hooksPromptIndex ? "noop" : "handled",
+            nextIndex === hooksPromptIndex ? "hooks-prompt-down-boundary" : "hooks-prompt-down",
+            nextIndex !== hooksPromptIndex
+          )
+          setHooksPromptIndex(nextIndex)
+        } else if (input === 'y') {
+          // Yes - install hooks
+          classifyHooksInput("handled", "hooks-prompt-enable", true)
+          setShowHooksPrompt(false)
+          setUseHooks(true)
+          settingsManager.updateSetting('useTmuxHooks', true, 'global')
+          refreshDmuxSettings()
+        } else if (input === 'n') {
+          // No - use polling
+          classifyHooksInput("handled", "hooks-prompt-disable", true)
+          setShowHooksPrompt(false)
+          setUseHooks(false)
+          settingsManager.updateSetting('useTmuxHooks', false, 'global')
+          refreshDmuxSettings()
+        } else if (key.return) {
+          // Select current option
+          classifyHooksInput("handled", "hooks-prompt-return", true)
+          setShowHooksPrompt(false)
+          const selected = hooksPromptIndex === 0
+          setUseHooks(selected)
+          settingsManager.updateSetting('useTmuxHooks', selected, 'global')
+          refreshDmuxSettings()
+        } else {
+          classifyHooksInput("noop", "hooks-prompt-unmatched", false)
+        }
+      } finally {
+        inputSpan.finish()
       }
     },
     { isActive: showHooksPrompt }
@@ -1657,6 +1710,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     projectActionItems: projectActionLayout.actionItems,
     findCardInDirection,
     presentationMode,
+    recordInputEvent: recordDmuxPerfInput,
   })
 
   // Calculate available height for content (terminal height - footer lines - active status messages)

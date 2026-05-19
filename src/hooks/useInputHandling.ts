@@ -40,6 +40,12 @@ import { resolveControlPaneSelection } from "../utils/controlPaneFocus.js"
 import { createShellPane, getNextDmuxId } from "../utils/shellPaneDetection.js"
 import type { AgentName } from "../utils/agentLaunch.js"
 import {
+  normalizeDmuxPerfKeyKind,
+  type DmuxPerfInputClassificationFields,
+  type DmuxPerfInputSpan,
+  type DmuxPerfInputStartOptions,
+} from "../utils/perf.js"
+import {
   getBulkVisibilityAction,
   getProjectVisibilityAction,
   partitionPanesByProject,
@@ -186,6 +192,7 @@ interface UseInputHandlingParams {
   activeProjectRoot?: string
   projectActionItems: ProjectActionItem[]
   presentationMode: "grid" | "focus"
+  recordInputEvent?: (options?: DmuxPerfInputStartOptions) => DmuxPerfInputSpan
 
   // Navigation
   findCardInDirection: (currentIndex: number, direction: "up" | "down" | "left" | "right") => number | null
@@ -269,6 +276,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     activeProjectRoot,
     projectActionItems,
     presentationMode,
+    recordInputEvent,
     findCardInDirection,
   } = params
 
@@ -286,6 +294,49 @@ export function useInputHandling(params: UseInputHandlingParams) {
   const selectedProjectRoot = selectedPane
     ? getPaneProjectRoot(selectedPane, projectRoot)
     : getProjectActionByIndex(projectActionItems, selectedIndex)?.projectRoot || projectRoot
+  const startInputSpan = (input: string, key: any): DmuxPerfInputSpan | undefined =>
+    recordInputEvent?.({
+      surface: "main",
+      keyKind: normalizeDmuxPerfKeyKind(input, key),
+    })
+  const classifyInput = (
+    span: DmuxPerfInputSpan | undefined,
+    fields: DmuxPerfInputClassificationFields
+  ) => {
+    if (!span) return
+    span.classify(fields)
+    if (fields.classification === "handled" && fields.visibleStateChanged) {
+      span.armKeyToRender()
+    }
+  }
+  const handledVisible = (
+    span: DmuxPerfInputSpan | undefined,
+    reason: string,
+    actionKind: string
+  ) => classifyInput(span, {
+    classification: "handled",
+    reason,
+    actionKind,
+    visibleStateChanged: true,
+  })
+  const ignoredInput = (
+    span: DmuxPerfInputSpan | undefined,
+    reason: string
+  ) => classifyInput(span, {
+    classification: "ignored",
+    reason,
+    visibleStateChanged: false,
+  })
+  const noopInput = (
+    span: DmuxPerfInputSpan | undefined,
+    reason: string,
+    actionKind?: string
+  ) => classifyInput(span, {
+    classification: "noop",
+    reason,
+    ...(actionKind ? { actionKind } : {}),
+    visibleStateChanged: false,
+  })
   const effectiveActiveProjectRoot = activeProjectRoot || selectedProjectRoot
 
   const layoutRefreshDebounceRef = useRef<NodeJS.Timeout | null>(null)
@@ -731,7 +782,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     try {
-      return await tmuxService.getCurrentPaneId()
+      return await tmuxService.getCurrentPaneId('input-handling')
     } catch {
       return null
     }
@@ -964,6 +1015,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
   const resolveEnterTarget = async (): Promise<
     | { kind: "project-action"; action: ProjectActionItem }
     | { kind: "pane"; pane: DmuxPane }
+    | { kind: "selection-corrected" }
     | { kind: "none" }
   > => {
     const selectedAction = getProjectActionByIndex(projectActionItems, selectedIndex)
@@ -987,6 +1039,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
           )
           if (resolvedIndex !== selectedIndex) {
             setSelectedIndex(resolvedIndex)
+            return { kind: "selection-corrected" }
           }
 
           return { kind: "none" }
@@ -1970,25 +2023,33 @@ export function useInputHandling(params: UseInputHandlingParams) {
   ])
 
   useInput(async (input: string, key: any) => {
+    const inputSpan = startInputSpan(input, key)
+
+    try {
+
     // Ignore input temporarily after popup operations (prevents buffered keys from being processed)
     if (ignoreInput) {
+      ignoredInput(inputSpan, "ignore-input")
       return
     }
 
     // Handle Ctrl+C for quit confirmation (must be first, before any other checks)
     if (key.ctrl && input === "c") {
+      handledVisible(inputSpan, "ctrl-c", "quit-confirm")
       await handleQuitShortcut()
       return
     }
 
     if (isCreatingPane || runningCommand || isUpdating || isLoading) {
       // Disable input while performing operations or loading
+      ignoredInput(inputSpan, "busy")
       return
     }
 
     // Handle quit confirm mode - ESC cancels it
     if (quitConfirmMode) {
       if (key.escape) {
+        handledVisible(inputSpan, "quit-confirm-escape", "quit-confirm")
         setQuitConfirmMode(false)
         return
       }
@@ -1997,6 +2058,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
 
     if (showFileCopyPrompt) {
       if (input === "y" || input === "Y") {
+        handledVisible(inputSpan, "file-copy-confirm", "file-copy-prompt")
         setShowFileCopyPrompt(false)
         const selectedPane = panes[selectedIndex]
         if (selectedPane && selectedPane.worktreePath && currentCommandType) {
@@ -2016,6 +2078,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
         }
         setCurrentCommandType(null)
       } else if (input === "n" || input === "N" || key.escape) {
+        handledVisible(inputSpan, "file-copy-decline", "file-copy-prompt")
         setShowFileCopyPrompt(false)
         const selectedPane = panes[selectedIndex]
         if (selectedPane && currentCommandType) {
@@ -2031,15 +2094,19 @@ export function useInputHandling(params: UseInputHandlingParams) {
           await runCommandInternal(currentCommandType, selectedPane)
         }
         setCurrentCommandType(null)
+      } else {
+        noopInput(inputSpan, "file-copy-prompt-unmatched", "file-copy-prompt")
       }
       return
     }
 
     if (showCommandPrompt) {
       if (key.escape) {
+        handledVisible(inputSpan, "command-prompt-escape", "command-prompt")
         setShowCommandPrompt(null)
         setCommandInput("")
       } else if (key.return) {
+        handledVisible(inputSpan, "command-prompt-return", "command-prompt")
         if (commandInput.trim() === "") {
           // If empty, suggest a default command based on package manager
           const suggested = await suggestCommand(showCommandPrompt)
@@ -2075,21 +2142,26 @@ export function useInputHandling(params: UseInputHandlingParams) {
             setCommandInput("")
           }
         }
+      } else {
+        noopInput(inputSpan, "command-prompt-unmatched", "command-prompt")
       }
       return
     }
 
     if (showInlineSettings) {
       if (key.escape) {
+        handledVisible(inputSpan, "inline-settings-escape", "inline-settings")
         closeInlineSettings()
         return
       }
 
       if (key.return) {
+        handledVisible(inputSpan, "inline-settings-submit", "inline-settings")
         await handleInlineSettingsSubmit()
         return
       }
 
+      noopInput(inputSpan, "inline-settings-unmatched", "inline-settings")
       return
     }
 
@@ -2108,8 +2180,11 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
 
       if (targetIndex !== null) {
+        handledVisible(inputSpan, "directional-navigation", "navigation")
         clearControlPaneSelectionPending()
         setSelectedIndex(targetIndex)
+      } else {
+        noopInput(inputSpan, "directional-navigation-boundary", "navigation")
       }
       return
     }
@@ -2118,32 +2193,40 @@ export function useInputHandling(params: UseInputHandlingParams) {
       selectedIndex < panes.length
       && ["a", "b", "f", "A", "m"].includes(input)
     ) {
+      handledVisible(inputSpan, "pane-shortcut", "pane-shortcut")
       await executePaneShortcut(input as RemotePaneActionShortcut, panes[selectedIndex])
       return
     } else if (input === "s") {
+      handledVisible(inputSpan, "settings-popup", "popup")
       await openSettingsPopupForProjectRoot(getActiveProjectRoot())
     } else if (input === "l") {
       // Open logs popup
+      handledVisible(inputSpan, "logs-popup", "popup")
       await popupManager.launchLogsPopup(getActiveProjectRoot())
     } else if (input === "h") {
       if (selectedIndex < panes.length) {
+        handledVisible(inputSpan, "toggle-pane-visibility", "pane-visibility")
         await togglePaneVisibility(panes[selectedIndex], {
           preserveControlFocus: true,
         })
       } else {
+        noopInput(inputSpan, "toggle-pane-visibility-no-selection", "pane-visibility")
         setStatusMessage("Select a pane to toggle visibility")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       }
     } else if (input === "H") {
       if (selectedIndex < panes.length) {
+        handledVisible(inputSpan, "toggle-other-panes-visibility", "pane-visibility")
         await toggleOtherPanesVisibility(panes[selectedIndex], {
           preserveControlFocus: true,
         })
       } else {
+        noopInput(inputSpan, "toggle-other-panes-no-selection", "pane-visibility")
         setStatusMessage("Select a pane to toggle the others")
         setTimeout(() => setStatusMessage(""), STATUS_MESSAGE_DURATION_SHORT)
       }
     } else if (input === "P") {
+      handledVisible(inputSpan, "toggle-project-panes", "pane-visibility")
       if (selectedIndex < panes.length) {
         await toggleProjectPanesVisibility(
           getPaneProjectRoot(panes[selectedIndex], projectRoot),
@@ -2156,6 +2239,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
     } else if (input === "?") {
       // Open keyboard shortcuts popup
+      handledVisible(inputSpan, "shortcuts-popup", "popup")
       const shortcutsAction = await popupManager.launchShortcutsPopup(
         !!controlPaneId,
         getActiveProjectRoot()
@@ -2165,6 +2249,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
     } else if (input === "L" && controlPaneId) {
       // Reset layout to sidebar configuration (Shift+L)
+      handledVisible(inputSpan, "layout-reset", "layout")
       try {
         await enforceControlPaneSizeFn(controlPaneId, SIDEBAR_WIDTH, { forceLayout: true })
         setStatusMessage("Layout reset")
@@ -2175,6 +2260,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
       }
     } else if (input === "T") {
       // Demo toasts (Shift+T) - cycles through different types
+      handledVisible(inputSpan, "demo-toasts", "toast")
       const stateManager = StateManager.getInstance()
       const demos = [
         { msg: "Pane created successfully", severity: "success" as const },
@@ -2185,12 +2271,15 @@ export function useInputHandling(params: UseInputHandlingParams) {
       // Queue all demo toasts
       demos.forEach(demo => stateManager.showToast(demo.msg, demo.severity))
     } else if (input === "q") {
+      handledVisible(inputSpan, "quit-shortcut", "quit-confirm")
       await handleQuitShortcut()
       return
     } else if (isDevMode && input === "S" && selectedIndex < panes.length) {
+      handledVisible(inputSpan, "set-dev-source", "pane-shortcut")
       await executePaneShortcut("S", panes[selectedIndex])
       return
     } else if (input === "r") {
+      handledVisible(inputSpan, "reopen-worktree", "worktree")
       await reopenClosedWorktreesInProject(getActiveProjectRoot())
       return
     } else if (
@@ -2201,31 +2290,46 @@ export function useInputHandling(params: UseInputHandlingParams) {
       )
     ) {
       // Add a project to the sidebar ([p], with Shift+N fallback)
+      handledVisible(inputSpan, "add-project-sidebar", "project-sidebar")
       await handleAddProjectToSidebar()
       return
     } else if (!isLoading && input === "R") {
+      handledVisible(inputSpan, "remove-project-sidebar", "project-sidebar")
       await handleRemoveProjectFromSidebar(getActiveProjectRoot())
       return
     } else if (!isLoading && input === "n") {
+      handledVisible(inputSpan, "create-agent-pane", "pane-create")
       await handleCreateAgentPane(getActiveProjectRoot())
       return
     } else if (!isLoading && input === "t") {
+      handledVisible(inputSpan, "create-terminal-pane", "pane-create")
       await handleCreateTerminalPane(getActiveProjectRoot())
       return
     } else if (!isLoading && key.return) {
       const target = await resolveEnterTarget()
       if (target.kind === "project-action") {
+        handledVisible(inputSpan, "enter-project-action", "navigation")
         await executeProjectAction(target.action)
       } else if (target.kind === "pane") {
+        handledVisible(inputSpan, "enter-pane", "navigation")
         await presentPaneFromSidebar(target.pane)
+      } else if (target.kind === "selection-corrected") {
+        handledVisible(inputSpan, "enter-selection-corrected", "navigation")
+      } else {
+        noopInput(inputSpan, "enter-no-target", "navigation")
       }
       return
     } else if (
       selectedIndex < panes.length
       && (input === "j" || input === "x")
     ) {
+      handledVisible(inputSpan, "pane-shortcut", "pane-shortcut")
       await executePaneShortcut(input as RemotePaneActionShortcut, panes[selectedIndex])
       return
+    }
+    noopInput(inputSpan, "unmatched-input")
+    } finally {
+      inputSpan?.finish()
     }
   })
 }

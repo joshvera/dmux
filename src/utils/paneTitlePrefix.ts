@@ -3,6 +3,7 @@ import { getDmuxThemeAccent } from '../theme/colors.js';
 import { getPaneColorTheme } from './paneColors.js';
 
 export const PANE_TITLE_BUSY_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
+export const PANE_TITLE_BUSY_MARKER = PANE_TITLE_BUSY_FRAMES[0];
 export const PANE_TITLE_IDLE_MARKER = '⠿';
 export const TMUX_PANE_TITLE_PREFIX_FORMAT = '#{?@dmux_title_prefix,#{@dmux_title_prefix} ,}';
 export const TMUX_PANE_TITLE_LABEL_FORMAT = '#{?@dmux_title_label,#{@dmux_title_label},#{s|__dmux__.*$||:pane_title}}';
@@ -21,9 +22,21 @@ export function getPaneTitlePrefixValue(
   const marker = isBusyPane(pane)
     ? PANE_TITLE_BUSY_FRAMES[spinnerFrameIndex % PANE_TITLE_BUSY_FRAMES.length]
     : PANE_TITLE_IDLE_MARKER;
-  return `#[fg=${getDmuxThemeAccent(themeName)}]${marker}#[default]`;
+  return formatPaneTitlePrefixValue(themeName, marker);
 }
 
-export function paneNeedsAnimatedTitlePrefix(pane: DmuxPane): boolean {
-  return isBusyPane(pane);
+export function getStablePaneTitlePrefixValue(
+  pane: DmuxPane,
+  sidebarProjects: SidebarProject[],
+  fallbackProjectRoot: string
+): string {
+  const themeName = getPaneColorTheme(pane, sidebarProjects, fallbackProjectRoot);
+  const marker = isBusyPane(pane)
+    ? PANE_TITLE_BUSY_MARKER
+    : PANE_TITLE_IDLE_MARKER;
+  return formatPaneTitlePrefixValue(themeName, marker);
+}
+
+function formatPaneTitlePrefixValue(themeName: string, marker: string): string {
+  return `#[fg=${getDmuxThemeAccent(themeName)}]${marker}#[default]`;
 }

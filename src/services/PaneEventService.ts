@@ -11,7 +11,7 @@
 
 import { EventEmitter } from 'events';
 import { Worker } from 'worker_threads';
-import { TmuxHookManager } from './TmuxHookManager.js';
+import { TmuxHookManager, type TmuxHookSignalEvent } from './TmuxHookManager.js';
 import { LogService } from './LogService.js';
 import { resolveDistPath } from '../utils/runtimePaths.js';
 
@@ -38,6 +38,60 @@ interface PaneEventConfig {
   controlPaneId?: string;
   pollInterval?: number; // Only used for polling mode
   preferHooks?: boolean; // User preference for hooks vs polling
+}
+
+type PaneEventFromHook = PaneChangeEvent | PaneFocusEvent;
+
+export function resolvePaneEventsFromHookSignals(
+  hookEvents: TmuxHookSignalEvent[],
+  fallbackTimestamp = Date.now()
+): PaneEventFromHook[] {
+  if (hookEvents.length === 0 || hookEvents.some((event) => event.type === 'fallback')) {
+    return [
+      {
+        type: 'panes-changed',
+        timestamp: fallbackTimestamp,
+        source: 'hooks',
+      },
+      {
+        type: 'pane-focus-changed',
+        timestamp: fallbackTimestamp,
+        source: 'hooks',
+      },
+    ];
+  }
+
+  const payloads = hookEvents.flatMap((event) =>
+    event.type === 'payload' ? [event.payload] : []
+  );
+  const panesChangedPayload = payloads
+    .filter((payload) => payload.eventType === 'panes-changed')
+    .at(-1);
+  if (panesChangedPayload) {
+    return [
+      {
+        type: 'panes-changed',
+        timestamp: panesChangedPayload.timestamp,
+        source: 'hooks',
+      },
+    ];
+  }
+
+  const latestFocusPayload = payloads
+    .filter((payload) => payload.eventType === 'pane-focus-changed')
+    .at(-1);
+  if (!latestFocusPayload) {
+    return [];
+  }
+
+  return [
+    {
+      type: 'pane-focus-changed',
+      activePaneId: latestFocusPayload.activePaneId,
+      timestamp: latestFocusPayload.timestamp,
+      source: 'hooks',
+    },
+  ];
 }
 
 /**
@@ -112,18 +166,10 @@ export class PaneEventService extends EventEmitter {
    */
   private startHookMode(): void {
     // Subscribe to hook events with debouncing
-    this.unsubscribeHook = this.hookManager.onHookTriggered(() => {
-      const timestamp = Date.now();
-      this.emit('panes-changed', {
-        type: 'panes-changed',
-        timestamp,
-        source: 'hooks',
-      } as PaneChangeEvent);
-      this.emit('pane-focus-changed', {
-        type: 'pane-focus-changed',
-        timestamp,
-        source: 'hooks',
-      } as PaneFocusEvent);
+    this.unsubscribeHook = this.hookManager.onHookTriggered((hookEvents) => {
+      for (const event of resolvePaneEventsFromHookSignals(hookEvents)) {
+        this.emit(event.type, event);
+      }
     }, 25); // Keep hook updates responsive while still coalescing rapid tmux signals.
   }
 

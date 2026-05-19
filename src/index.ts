@@ -273,7 +273,7 @@ class Dmux {
     if (inTmux && isDev && !isDevWatch) {
       try {
         const tmuxService = TmuxService.getInstance();
-        const currentPaneId = await tmuxService.getCurrentPaneId();
+        const currentPaneId = await tmuxService.getCurrentPaneId('startup-control');
         const preferredControlPaneId =
           this.resolveDevControlPane(sessionNameForCurrentTmux) || undefined;
         const targetPaneId = preferredControlPaneId || currentPaneId;
@@ -391,7 +391,7 @@ class Dmux {
     try {
       // Get current pane ID
       const tmuxService = TmuxService.getInstance();
-      controlPaneId = await tmuxService.getCurrentPaneId();
+      controlPaneId = await tmuxService.getCurrentPaneId('startup-control');
 
       // Load existing config
       const configContent = await fs.readFile(this.panesFile, 'utf-8');

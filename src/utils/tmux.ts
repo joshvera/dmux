@@ -2,7 +2,6 @@ import type { PanePosition } from '../types.js';
 import { LogService } from '../services/LogService.js';
 import { TmuxService } from '../services/TmuxService.js';
 import { recalculateAndApplyLayout } from './layoutManager.js';
-import { execSync } from 'child_process';
 
 // Layout configuration - adjust these to change layout behavior
 export const SIDEBAR_WIDTH = 40;
@@ -165,7 +164,8 @@ export const generateSidebarGridLayout = (
   windowWidth: number,
   windowHeight: number,
   columns: number,
-  maxComfortableWidth: number = MAX_COMFORTABLE_WIDTH
+  maxComfortableWidth: number = MAX_COMFORTABLE_WIDTH,
+  options?: { lastPaneIsSpacer?: boolean }
 ): string => {
   // Calculate grid dimensions for content panes
   const numContentPanes = contentPanes.length;
@@ -185,16 +185,16 @@ export const generateSidebarGridLayout = (
   const paneWidth = Math.floor(availableWidth / cols);
 
   // Check if last pane is a spacer
-  const tmuxService = TmuxService.getInstance();
-  const lastPaneIsSpacer = contentPanes.length > 0 && (() => {
+  const lastPaneIsSpacer = options?.lastPaneIsSpacer ?? (contentPanes.length > 0 && (() => {
     try {
+      const tmuxService = TmuxService.getInstance();
       const lastPaneId = contentPanes[contentPanes.length - 1];
       const title = tmuxService.getPaneTitleSync(lastPaneId);
       return title === 'dmux-spacer';
     } catch {
       return false;
     }
-  })();
+  })());
 
   // For height, account for borders between rows
   // If we have 2 rows with 1 border, total consumed = row1 + 1 + row2 = windowHeight
@@ -426,11 +426,10 @@ export const enforceControlPaneSize = async (
   width: number,
   options?: { forceLayout?: boolean; suppressLayoutLogs?: boolean; disableSpacer?: boolean }
 ): Promise<void> => {
-  const logService = LogService.getInstance();
   const tmuxService = TmuxService.getInstance();
 
   try {
-    const contentPanes = getContentPaneIds(controlPaneId);
+    const contentPanes = await tmuxService.getContentPaneIds(controlPaneId);
     // logService.debug(`enforceControlPaneSize called: ${contentPanes.length} content panes`, 'Layout');
 
     // If we only have the control pane, nothing to enforce
@@ -447,23 +446,23 @@ export const enforceControlPaneSize = async (
     // Check if we have only the welcome pane (should not be width-constrained)
     if (contentPanes.length === 1) {
       try {
-        const title = tmuxService.getPaneTitleSync(contentPanes[0]);
+        const title = await tmuxService.getPaneTitle(contentPanes[0]);
 
         if (title === 'Welcome') {
           // Welcome pane should use full terminal width, not be constrained
           // Get terminal dimensions and let window follow terminal
-          const termDims = getTerminalDimensions();
+          const termDims = await tmuxService.getTerminalDimensions(controlPaneId);
 
           // Calculate window height accounting for status bar to prevent scroll
-          const statusBarHeight = tmuxService.getStatusBarHeightSync();
+          const statusBarHeight = await tmuxService.getStatusBarHeight();
           const windowHeight = termDims.height - statusBarHeight;
 
           // Set window size to match terminal (manual mode but always tracking terminal)
-          tmuxService.setWindowOptionSync('window-size', 'manual');
+          await tmuxService.setWindowOption('window-size', 'manual');
           await tmuxService.resizeWindow({ width: termDims.width, height: windowHeight });
 
           // Apply main-vertical layout with fixed sidebar width
-          tmuxService.setWindowOptionSync('main-pane-width', String(width));
+          await tmuxService.setWindowOption('main-pane-width', String(width));
           await tmuxService.selectLayout('main-vertical');
           await tmuxService.refreshClient();
           return;
@@ -475,21 +474,9 @@ export const enforceControlPaneSize = async (
 
     // Use the new layout manager for regular content panes.
     // IMPORTANT: target control pane client dimensions, not popup/client-of-caller dimensions.
-    let dimensions = getTerminalDimensions();
+    let dimensions = await tmuxService.getTerminalDimensions();
     try {
-      const output = execSync(
-        `tmux display-message -t '${controlPaneId}' -p "#{client_width} #{client_height}"`,
-        { encoding: 'utf-8' }
-      ).trim();
-      const [targetWidth, targetHeight] = output.split(' ').map(n => parseInt(n, 10));
-      if (
-        Number.isFinite(targetWidth) &&
-        Number.isFinite(targetHeight) &&
-        targetWidth > 0 &&
-        targetHeight > 0
-      ) {
-        dimensions = { width: targetWidth, height: targetHeight };
-      }
+      dimensions = await tmuxService.getTerminalDimensions(controlPaneId);
     } catch {
       // Fall back to caller client dimensions.
     }
