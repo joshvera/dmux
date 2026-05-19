@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  normalizeDmuxPerfPaneOptionKind,
   normalizeDmuxPerfCurrentPaneContext,
   type DmuxPerfJsonEvent,
 } from './perf.js';
@@ -513,6 +514,11 @@ function commandBreakdownStats(
       if (event.operation === 'current-pane') {
         parts.push(`context=${normalizeDmuxPerfCurrentPaneContext(
           event.metadata?.currentPaneContext
+        )}`);
+      }
+      if (event.operation === 'tmux-option' && event.targetKind === 'pane') {
+        parts.push(`paneOption=${normalizeDmuxPerfPaneOptionKind(
+          event.metadata?.paneOptionKind
         )}`);
       }
       const source = event.source || readStringMetadata(event, 'source');

@@ -49,4 +49,54 @@ describe('TmuxService session options', () => {
       }),
     ]);
   });
+
+  it('records bounded pane option kinds at the service boundary', () => {
+    const service = TmuxService.getInstance();
+    const executeCalls: Array<{
+      command: string;
+      options: { operation?: string; metadata?: Record<string, unknown> };
+    }> = [];
+    const serviceWithPrivateExecute = service as unknown as {
+      execute: (
+        command: string,
+        options: { operation?: string; metadata?: Record<string, unknown> }
+      ) => string;
+      setPaneOptionSync: (paneId: string, option: string, value: string) => void;
+      unsetPaneOptionSync: (paneId: string, option: string) => void;
+    };
+    const originalExecute = serviceWithPrivateExecute.execute;
+
+    serviceWithPrivateExecute.execute = (command, options) => {
+      executeCalls.push({ command, options });
+      return '';
+    };
+    try {
+      serviceWithPrivateExecute.setPaneOptionSync('%1', '@dmux_title_prefix', '/Users/vera/raw-value');
+      serviceWithPrivateExecute.unsetPaneOptionSync('%1', 'window-style');
+      serviceWithPrivateExecute.setPaneOptionSync('%1', '@dmux_welcome_theme', 'cyan');
+      serviceWithPrivateExecute.setPaneOptionSync('%1', '/Users/vera/raw-option', 'value');
+    } finally {
+      serviceWithPrivateExecute.execute = originalExecute;
+    }
+
+    expect(executeCalls.map((call) => call.options)).toEqual([
+      expect.objectContaining({
+        operation: 'tmux-option',
+        metadata: { paneOptionKind: 'dmux-title-prefix' },
+      }),
+      expect.objectContaining({
+        operation: 'tmux-option',
+        metadata: { paneOptionKind: 'window-style' },
+      }),
+      expect.objectContaining({
+        operation: 'tmux-option',
+        metadata: { paneOptionKind: 'dmux-welcome-theme' },
+      }),
+      expect.objectContaining({
+        operation: 'tmux-option',
+        metadata: { paneOptionKind: 'other' },
+      }),
+    ]);
+    expect(JSON.stringify(executeCalls.map((call) => call.options))).not.toContain('/Users/vera');
+  });
 });

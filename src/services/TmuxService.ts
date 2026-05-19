@@ -17,6 +17,7 @@ import {
 } from '../utils/tmuxClient.js';
 import type { PanePosition, WindowDimensions } from '../types.js';
 import {
+  classifyDmuxPerfPaneOption,
   classifyTmuxCommand,
   classifyTmuxCommandTarget,
   type DmuxPerfCommandOperation,
@@ -1715,7 +1716,11 @@ export class TmuxService {
       const escapedValue = value.replace(/'/g, `'\\''`);
       this.execute(
         `tmux set-option -p -t '${paneId}' ${option} '${escapedValue}'`,
-        { silent: true }
+        {
+          silent: true,
+          operation: 'tmux-option',
+          metadata: { paneOptionKind: classifyDmuxPerfPaneOption(option) },
+        }
       );
     } catch (error) {
       this.logger.warn(`Failed to set pane option ${option} for ${paneId}`, 'TmuxService');
@@ -1727,7 +1732,14 @@ export class TmuxService {
    */
   unsetPaneOptionSync(paneId: string, option: string): void {
     try {
-      this.execute(`tmux set-option -u -p -t '${paneId}' ${option}`, { silent: true });
+      this.execute(
+        `tmux set-option -u -p -t '${paneId}' ${option}`,
+        {
+          silent: true,
+          operation: 'tmux-option',
+          metadata: { paneOptionKind: classifyDmuxPerfPaneOption(option) },
+        }
+      );
     } catch (error) {
       this.logger.warn(`Failed to unset pane option ${option} for ${paneId}`, 'TmuxService');
     }

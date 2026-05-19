@@ -624,6 +624,45 @@ describe('perfReport', () => {
     expect(report).not.toContain('/Users/vera/project');
   });
 
+  it('adds bounded pane option kinds to tmux option breakdowns', () => {
+    const summary = summarizePerfEvents([
+      event({
+        event: 'tmux.command',
+        commandKind: 'set-option',
+        operation: 'tmux-option',
+        durationMs: 12,
+        sync: true,
+        source: 'tmux-service',
+        targetKind: 'pane',
+        metadata: {
+          paneOptionKind: 'dmux-title-prefix',
+        },
+      }),
+      event({
+        event: 'tmux.command',
+        commandKind: 'set-option',
+        operation: 'tmux-option',
+        durationMs: 14,
+        sync: true,
+        source: 'tmux-service',
+        targetKind: 'pane',
+        metadata: {
+          paneOptionKind: '/Users/vera/raw-option',
+          option: '/Users/vera/raw-option',
+          value: 'secret-value',
+          paneId: '%99',
+        },
+      }),
+    ]);
+    const report = formatPerfReport(summary);
+
+    expect(report).toContain('paneOption=dmux-title-prefix');
+    expect(report).toContain('paneOption=other');
+    expect(report).not.toContain('/Users/vera/raw-option');
+    expect(report).not.toContain('secret-value');
+    expect(report).not.toContain('%99');
+  });
+
   it('summarizes client input windows even when terminal DSR is unsupported', () => {
     const summary = summarizePerfEvents([
       event({

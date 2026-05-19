@@ -67,6 +67,14 @@ export type DmuxPerfCurrentPaneContext =
   | 'spacer-manager'
   | 'dmux-fallback'
   | 'unknown';
+export type DmuxPerfPaneOptionKind =
+  | 'dmux-title-prefix'
+  | 'dmux-title-label'
+  | 'dmux-active-border-style'
+  | 'dmux-attention'
+  | 'dmux-welcome-theme'
+  | 'window-style'
+  | 'other';
 export type DmuxPerfErrorKind =
   | 'exit'
   | 'invalid-command'
@@ -337,6 +345,48 @@ export function normalizeDmuxPerfCurrentPaneContext(
   value: unknown
 ): DmuxPerfCurrentPaneContext {
   return isDmuxPerfCurrentPaneContext(value) ? value : 'unknown';
+}
+
+export function classifyDmuxPerfPaneOption(option: string): DmuxPerfPaneOptionKind {
+  switch (option) {
+    case '@dmux_title_prefix':
+      return 'dmux-title-prefix';
+    case '@dmux_title_label':
+      return 'dmux-title-label';
+    case '@dmux_active_border_style':
+      return 'dmux-active-border-style';
+    case '@dmux_attention':
+      return 'dmux-attention';
+    case '@dmux_welcome_theme':
+      return 'dmux-welcome-theme';
+    case 'window-style':
+      return 'window-style';
+    default:
+      return 'other';
+  }
+}
+
+export function isDmuxPerfPaneOptionKind(
+  value: unknown
+): value is DmuxPerfPaneOptionKind {
+  switch (value) {
+    case 'dmux-title-prefix':
+    case 'dmux-title-label':
+    case 'dmux-active-border-style':
+    case 'dmux-attention':
+    case 'dmux-welcome-theme':
+    case 'window-style':
+    case 'other':
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function normalizeDmuxPerfPaneOptionKind(
+  value: unknown
+): DmuxPerfPaneOptionKind {
+  return isDmuxPerfPaneOptionKind(value) ? value : 'other';
 }
 
 export function configureDmuxPerfMetadata(nextMetadata: DmuxPerfMetadata): void {

@@ -111,9 +111,7 @@ import {
 } from "./utils/paneColors.js"
 import { DEFAULT_DMUX_THEME } from "./theme/themePalette.js"
 import {
-  getPaneTitlePrefixValue,
-  paneNeedsAnimatedTitlePrefix,
-  PANE_TITLE_BUSY_FRAMES,
+  getStablePaneTitlePrefixValue,
 } from "./utils/paneTitlePrefix.js"
 import { getPaneTmuxDisplayTitle } from "./utils/paneTitle.js"
 import { resolveControlPaneFocusSelection } from "./utils/controlPaneFocus.js"
@@ -162,7 +160,6 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const paneTitleLabelCacheRef = useRef(new Map<string, string>())
   const paneActiveBorderStyleCacheRef = useRef(new Map<string, string>())
   const sessionActiveBorderStyleCacheRef = useRef<SessionOptionValueCacheEntry | null>(null)
-  const paneTitleSpinnerFrameRef = useRef(0)
 
   // Dialog state management
   const dialogState = useDialogState()
@@ -782,11 +779,10 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
           sidebarProjects,
           sessionProjectRoot
         )
-        const prefixValue = getPaneTitlePrefixValue(
+        const prefixValue = getStablePaneTitlePrefixValue(
           pane,
           sidebarProjects,
-          sessionProjectRoot,
-          paneTitleSpinnerFrameRef.current
+          sessionProjectRoot
         )
         const labelValue = getPaneTmuxDisplayTitle(
           pane,
@@ -833,27 +829,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       }
     }
 
-    const hasAnimatedPrefix = panes.some(paneNeedsAnimatedTitlePrefix)
-    if (!hasAnimatedPrefix) {
-      paneTitleSpinnerFrameRef.current = 0
-    }
-
     syncPaneTitlePrefixes()
-
-    if (!hasAnimatedPrefix) {
-      return
-    }
-
-    const interval = setInterval(() => {
-      paneTitleSpinnerFrameRef.current = (
-        paneTitleSpinnerFrameRef.current + 1
-      ) % PANE_TITLE_BUSY_FRAMES.length
-      syncPaneTitlePrefixes()
-    }, 90)
-
-    return () => {
-      clearInterval(interval)
-    }
   }, [
     panes,
     sidebarProjects,

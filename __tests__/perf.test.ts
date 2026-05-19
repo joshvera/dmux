@@ -3,10 +3,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  classifyDmuxPerfPaneOption,
   classifyDmuxPerfErrorKind,
   classifyTmuxCommand,
   classifyTmuxCommandTarget,
   configureDmuxPerfMetadata,
+  normalizeDmuxPerfPaneOptionKind,
   normalizeDmuxPerfCurrentPaneContext,
   recordDmuxPerfEvent,
   recordDmuxPerfInput,
@@ -289,6 +291,18 @@ describe('dmux perf logging', () => {
     expect(
       classifyDmuxPerfErrorKind(Object.assign(new Error('operation timeout'), { killed: true }))
     ).toBe('timeout');
+  });
+
+  it('classifies pane option metadata with a bounded enum', () => {
+    expect(classifyDmuxPerfPaneOption('@dmux_title_prefix')).toBe('dmux-title-prefix');
+    expect(classifyDmuxPerfPaneOption('@dmux_title_label')).toBe('dmux-title-label');
+    expect(classifyDmuxPerfPaneOption('@dmux_active_border_style')).toBe('dmux-active-border-style');
+    expect(classifyDmuxPerfPaneOption('@dmux_attention')).toBe('dmux-attention');
+    expect(classifyDmuxPerfPaneOption('@dmux_welcome_theme')).toBe('dmux-welcome-theme');
+    expect(classifyDmuxPerfPaneOption('window-style')).toBe('window-style');
+    expect(classifyDmuxPerfPaneOption('/Users/vera/raw-option')).toBe('other');
+    expect(normalizeDmuxPerfPaneOptionKind('dmux-title-prefix')).toBe('dmux-title-prefix');
+    expect(normalizeDmuxPerfPaneOptionKind('/Users/vera/raw-option')).toBe('other');
   });
 
   it('records failed tmux timings with coarse errorKind instead of raw error metadata', () => {
