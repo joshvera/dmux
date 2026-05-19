@@ -782,7 +782,7 @@ export function useInputHandling(params: UseInputHandlingParams) {
     }
 
     try {
-      return await tmuxService.getCurrentPaneId()
+      return await tmuxService.getCurrentPaneId('input-handling')
     } catch {
       return null
     }

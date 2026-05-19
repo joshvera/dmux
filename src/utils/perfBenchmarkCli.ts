@@ -4,6 +4,7 @@ import { createInterface } from 'readline/promises';
 import { pathToFileURL } from 'url';
 import { writeDmuxPerfClientMarker } from './perf.js';
 import { runTerminalRoundtripProbe, writeClientInputWindowEvent } from './perfProbe.js';
+import { importEternalTerminalKeepaliveLog } from './perfTransportImport.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -21,6 +22,11 @@ async function main(): Promise<void> {
 
   if (command === 'collect-client') {
     await runCollectClient(args.slice(1));
+    return;
+  }
+
+  if (command === 'import-transport') {
+    await runImportTransport(args.slice(1));
     return;
   }
 
@@ -49,15 +55,60 @@ export function buildPerfBenchmarkGuide(runId: string, transport: string): strin
     `  pnpm perf:probe -- --run-id ${runId} --instance instance-a --transport ${transport} --iterations 50 --timeout-ms 1000`,
     `  pnpm perf:probe -- --run-id ${runId} --instance instance-b --transport ${transport} --iterations 50 --timeout-ms 1000`,
     `  pnpm perf:collect-client -- --run-id ${runId} --instance instance-a --transport ${transport} --label navigation`,
+    `  pnpm --silent perf:import-transport -- --source eternal-terminal --log ETCLIENT_LOG_PATH --run-id ${runId} --instance instance-a --transport ${transport}`,
     '',
     `  pnpm perf:mark -- --run-id ${runId} --instance instance-a --transport ${transport} --label navigation-start`,
     `  pnpm perf:mark -- --run-id ${runId} --instance instance-b --transport ${transport} --label navigation-start`,
     `  pnpm perf:mark -- --run-id ${runId} --instance instance-a --transport ${transport} --label navigation-stop`,
     `  pnpm perf:mark -- --run-id ${runId} --instance instance-b --transport ${transport} --label navigation-stop`,
     '',
+    'Automated agent-session stress harness:',
+    '  TERM=xterm-256color DMUX_E2E=1 DMUX_E2E_RUNNER=pnpm-build-dist pnpm exec vitest run __tests__/dmux.perfStress.e2e.test.ts',
+    '  DMUX_E2E_REAL_CODEX=1 also enables the opt-in real Codex activity probe in __tests__/dmux.realCodexPerf.e2e.test.ts.',
+    '',
+    'Minimum useful stress sample:',
+    '  - handled visible key-to-render samples >= 30',
+    '  - client input window, client markers, tmux command breakdown, worker capture breakdown, and worker count metadata present',
+    '  - live ET/SSH comparisons should additionally include perf:collect-client and perf:import-transport samples from the same transport class',
+    '',
     'Report:',
     `  pnpm perf:report -- --run-id ${runId}`,
   ].join('\n');
+}
+
+export async function runImportTransport(args: string[]): Promise<void> {
+  const source = readRequiredOption(args, '--source');
+  const logPath = readRequiredOption(args, '--log');
+  const runId = readRequiredOption(args, '--run-id');
+  const instanceLabel = readOption(args, '--instance');
+  const transport = readOption(args, '--transport');
+  const since = readOption(args, '--since');
+  const until = readOption(args, '--until');
+
+  if (source !== 'eternal-terminal') {
+    throw new Error('only --source eternal-terminal is supported');
+  }
+
+  const result = await importEternalTerminalKeepaliveLog({
+    source,
+    logPath,
+    runId,
+    instanceLabel,
+    transport,
+    since,
+    until,
+  });
+
+  console.log(
+    [
+      `Imported transport RTT samples: ${result.counts.samples}`,
+      `unmatched-writes=${result.counts.unmatchedWrites}`,
+      `unmatched-reads=${result.counts.unmatchedReads}`,
+      `malformed-timestamps=${result.counts.malformedTimestampLines}`,
+      `invalid-durations=${result.counts.invalidDurationSamples}`,
+      `filtered=${result.counts.filteredSamples}`,
+    ].join(' ')
+  );
 }
 
 function writeMarker(args: string[]): void {

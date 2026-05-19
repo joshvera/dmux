@@ -31,6 +31,42 @@ export type DmuxPerfCommandTargetKind =
   | 'session'
   | 'window'
   | 'unknown';
+export type DmuxPerfCommandOperation =
+  | 'buffer'
+  | 'client-key-table'
+  | 'client-refresh'
+  | 'client-tty'
+  | 'current-pane'
+  | 'current-window'
+  | 'layout'
+  | 'pane-content'
+  | 'pane-count'
+  | 'pane-current-command'
+  | 'pane-exists'
+  | 'pane-info'
+  | 'pane-lifecycle'
+  | 'pane-resize'
+  | 'pane-select'
+  | 'pane-send-keys'
+  | 'pane-title'
+  | 'pane-window'
+  | 'session-pane-list'
+  | 'status-height'
+  | 'terminal-dimensions'
+  | 'tmux-option'
+  | 'window-dimensions'
+  | 'window-lifecycle'
+  | 'window-option'
+  | 'window-pane-list'
+  | 'zoom';
+export type DmuxPerfCurrentPaneContext =
+  | 'startup-control'
+  | 'pane-runner'
+  | 'worktree-actions'
+  | 'input-handling'
+  | 'spacer-manager'
+  | 'dmux-fallback'
+  | 'unknown';
 export type DmuxPerfErrorKind =
   | 'exit'
   | 'invalid-command'
@@ -60,6 +96,7 @@ export interface DmuxPerfEventFields {
   paneId?: string;
   tmuxPaneId?: string;
   commandKind?: DmuxPerfCommandKind;
+  operation?: DmuxPerfCommandOperation;
   source?: DmuxPerfCommandSource;
   targetKind?: DmuxPerfCommandTargetKind;
   errorKind?: DmuxPerfErrorKind;
@@ -277,6 +314,29 @@ export function classifyDmuxPerfErrorKind(error: unknown): DmuxPerfErrorKind {
     return 'exit';
   }
   return 'unknown';
+}
+
+export function isDmuxPerfCurrentPaneContext(
+  value: unknown
+): value is DmuxPerfCurrentPaneContext {
+  switch (value) {
+    case 'startup-control':
+    case 'pane-runner':
+    case 'worktree-actions':
+    case 'input-handling':
+    case 'spacer-manager':
+    case 'dmux-fallback':
+    case 'unknown':
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function normalizeDmuxPerfCurrentPaneContext(
+  value: unknown
+): DmuxPerfCurrentPaneContext {
+  return isDmuxPerfCurrentPaneContext(value) ? value : 'unknown';
 }
 
 export function configureDmuxPerfMetadata(nextMetadata: DmuxPerfMetadata): void {
@@ -570,6 +630,49 @@ export function writeDmuxPerfClientMarker(options: {
   return filePath;
 }
 
+export function writeDmuxPerfTransportRttEvent(options: {
+  runId: string;
+  durationMs: number;
+  sequence: number;
+  instanceLabel?: string;
+  transport?: string;
+  source?: 'eternal-terminal';
+  parser?: 'keepalive-log';
+  timestamp?: string;
+}): string {
+  if (!Number.isFinite(options.durationMs) || options.durationMs <= 0) {
+    throw new Error('transport RTT duration must be a positive finite number');
+  }
+
+  const filePath = path.join(
+    getDmuxPerfDir(),
+    `dmux-client-${sanitizePathSegment(options.runId)}-${Date.now()}.jsonl`
+  );
+
+  writePerfEvent(
+    'client.transport_rtt',
+    {
+      lane: 'client-observed',
+      durationMs: options.durationMs,
+      count: 1,
+      metadata: {
+        source: options.source || 'eternal-terminal',
+        parser: options.parser || 'keepalive-log',
+        sequence: options.sequence,
+      },
+    },
+    filePath,
+    {
+      runId: options.runId,
+      instanceLabel: options.instanceLabel,
+      transport: options.transport || inferDmuxPerfTransport(),
+      ...(options.timestamp ? { timestamp: options.timestamp } : {}),
+    }
+  );
+
+  return filePath;
+}
+
 export function resetDmuxPerfForTests(): void {
   cachedRunId = undefined;
   cachedLogPath = undefined;
@@ -597,8 +700,8 @@ function writePerfEvent(
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const payload: DmuxPerfJsonEvent = {
-      timestamp: new Date().toISOString(),
-      monotonicMs: performance.now(),
+      timestamp: overrides.timestamp ?? new Date().toISOString(),
+      monotonicMs: overrides.monotonicMs ?? performance.now(),
       runId: overrides.runId || getDmuxPerfRunId(),
       pid: process.pid,
       event,

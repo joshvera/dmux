@@ -62,6 +62,7 @@
     "perf:mark": "tsx src/utils/perfBenchmarkCli.ts marker",
     "perf:probe": "tsx src/utils/perfBenchmarkCli.ts probe",
     "perf:collect-client": "tsx src/utils/perfBenchmarkCli.ts collect-client",
+    "perf:import-transport": "tsx src/utils/perfBenchmarkCli.ts import-transport",
     "perf:report": "tsx src/utils/perfReportCli.ts",
     "prepack": "pnpm run build:macos-helper",
     "start": "node dist/index.js",

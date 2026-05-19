@@ -75,7 +75,7 @@ export class SpacerManager {
       // Store the currently active pane
       let originalPaneId: string;
       try {
-        originalPaneId = await this.tmuxService.getCurrentPaneId();
+        originalPaneId = await this.tmuxService.getCurrentPaneId('spacer-manager');
       } catch {
         // If we can't get current pane, use the last content pane as fallback
         originalPaneId = lastContentPaneId;

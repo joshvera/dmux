@@ -5,7 +5,7 @@ import * as fsp from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 import { PopupManager, type PopupManagerConfig } from "../../src/services/PopupManager.js"
-import type { DmuxConfig, DmuxPane, PresentationMode } from "../../src/types.js"
+import type { DmuxConfig, DmuxPane, PresentationMode, DmuxSettings } from "../../src/types.js"
 
 export interface DmuxRunner {
   cmd: string
@@ -578,6 +578,7 @@ export class DmuxRuntimeHarness {
       width?: number
       height?: number
       sessionName?: string
+      env?: NodeJS.ProcessEnv
     } = {}
   ) {
     this.runner = runner
@@ -592,8 +593,14 @@ export class DmuxRuntimeHarness {
       ...process.env,
       HOME: path.join(rootDir, "home"),
       PATH: `${this.wrapperDir}:${process.env.PATH || ""}`,
+      TERM: process.env.TERM && process.env.TERM !== "dumb"
+        ? process.env.TERM
+        : "xterm-256color",
       OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || "dmux-e2e-key",
+      ...options.env,
     }
+    this.env.PATH = `${this.wrapperDir}:${this.env.PATH || process.env.PATH || ""}`
+    this.env.HOME = this.env.HOME || path.join(rootDir, "home")
     this.clientHarness = new AttachedTmuxClientHarness(
       this.sessionName,
       this.width,
@@ -624,6 +631,10 @@ export class DmuxRuntimeHarness {
     ])
   }
 
+  async writeExecutable(name: string, body: string): Promise<string> {
+    return await writeExecutableScript(this.wrapperDir, name, body)
+  }
+
   async cleanup(): Promise<void> {
     for (const harness of this.additionalClientHarnesses.splice(0)) {
       await harness.cleanup()
@@ -636,6 +647,7 @@ export class DmuxRuntimeHarness {
     options: {
       presentationMode?: PresentationMode
       initialFiles?: Record<string, string>
+      settings?: Partial<DmuxSettings>
     } = {}
   ): Promise<RuntimeProject> {
     const root = path.join(this.tmpDir, "projects", name)
@@ -682,10 +694,16 @@ export class DmuxRuntimeHarness {
     })
 
     await fsp.mkdir(dmuxDir, { recursive: true })
+    const settings: Partial<DmuxSettings> = {
+      ...options.settings,
+    }
     if (options.presentationMode) {
+      settings.presentationMode = options.presentationMode
+    }
+    if (Object.keys(settings).length > 0) {
       await fsp.writeFile(
         settingsPath,
-        JSON.stringify({ presentationMode: options.presentationMode })
+        JSON.stringify(settings, null, 2)
       )
     }
 
@@ -879,12 +897,13 @@ export class DmuxRuntimeHarness {
   async waitForPaneState(
     project: RuntimeProject,
     predicate: (config: DmuxConfig) => boolean,
-    description: string
+    description: string,
+    timeoutMs: number = 15000
   ): Promise<DmuxConfig> {
     return await poll(
       async () => await this.readConfig(project),
       (config): config is DmuxConfig => !!config && predicate(config),
-      15000,
+      timeoutMs,
       description
     )
   }
@@ -1145,6 +1164,7 @@ export async function withDmuxRuntimeHarness(
     width?: number
     height?: number
     sessionName?: string
+    env?: NodeJS.ProcessEnv
   } = {}
 ) {
   const runner = detectDmuxRunner()

@@ -7,11 +7,13 @@ import {
   classifyTmuxCommand,
   classifyTmuxCommandTarget,
   configureDmuxPerfMetadata,
+  normalizeDmuxPerfCurrentPaneContext,
   recordDmuxPerfEvent,
   recordDmuxPerfInput,
   recordDmuxPerfRender,
   resetDmuxPerfForTests,
   timeDmuxPerfSync,
+  writeDmuxPerfTransportRttEvent,
   writeDmuxPerfClientMarker,
 } from '../src/utils/perf.js';
 
@@ -238,6 +240,35 @@ describe('dmux perf logging', () => {
     );
   });
 
+  it('writes sanitized client transport RTT events separately from server instrumentation', () => {
+    process.env.DMUX_PERF_DIR = tempDir;
+    delete process.env.DMUX_PERF;
+
+    writeDmuxPerfTransportRttEvent({
+      runId: 'run-transport',
+      instanceLabel: 'instance-a',
+      transport: 'eternal-terminal',
+      durationMs: 101,
+      sequence: 7,
+    });
+
+    const event = readEvents(tempDir).find((candidate) => candidate.event === 'client.transport_rtt');
+    expect(event).toMatchObject({
+      runId: 'run-transport',
+      instanceLabel: 'instance-a',
+      transport: 'eternal-terminal',
+      lane: 'client-observed',
+      durationMs: 101,
+      metadata: {
+        source: 'eternal-terminal',
+        parser: 'keepalive-log',
+        sequence: 7,
+      },
+    });
+    expect(JSON.stringify(event)).not.toContain('/Users/vera');
+    expect(JSON.stringify(event)).not.toContain('finn');
+  });
+
   it('classifies tmux commands without storing full command text', () => {
     expect(classifyTmuxCommand("tmux list-panes -F '#{pane_id}'")).toBe('list-panes');
     expect(classifyTmuxCommand("tmux capture-pane -t '%1' -p")).toBe('capture-pane');
@@ -289,6 +320,61 @@ describe('dmux perf logging', () => {
     });
     expect(tmuxEvent?.metadata).toBeUndefined();
     expect(JSON.stringify(tmuxEvent)).not.toContain('%99');
+  });
+
+  it('records finite tmux operation labels without raw commands', () => {
+    process.env.DMUX_PERF = '1';
+    process.env.DMUX_PERF_DIR = tempDir;
+    process.env.DMUX_PERF_RUN_ID = 'run-tmux-operation';
+
+    timeDmuxPerfSync(
+      'tmux.command',
+      {
+        commandKind: 'display-message',
+        operation: 'pane-window',
+        source: 'tmux-service',
+        targetKind: 'pane',
+        sync: true,
+      },
+      () => 'ok'
+    );
+
+    const tmuxEvent = readEvents(tempDir).find((event) => event.event === 'tmux.command');
+    expect(tmuxEvent).toMatchObject({
+      commandKind: 'display-message',
+      operation: 'pane-window',
+    });
+    expect(JSON.stringify(tmuxEvent)).not.toContain('display-message -t');
+  });
+
+  it('keeps current-pane caller context bounded', () => {
+    expect(normalizeDmuxPerfCurrentPaneContext('input-handling')).toBe('input-handling');
+    expect(normalizeDmuxPerfCurrentPaneContext('/Users/vera/project')).toBe('unknown');
+
+    process.env.DMUX_PERF = '1';
+    process.env.DMUX_PERF_DIR = tempDir;
+    process.env.DMUX_PERF_RUN_ID = 'run-current-pane-context';
+
+    timeDmuxPerfSync(
+      'tmux.command',
+      {
+        commandKind: 'display-message',
+        operation: 'current-pane',
+        source: 'tmux-service',
+        targetKind: 'server',
+        sync: true,
+        metadata: { currentPaneContext: 'input-handling' },
+      },
+      () => 'ok'
+    );
+
+    const tmuxEvent = readEvents(tempDir).find((event) => event.event === 'tmux.command');
+    expect(tmuxEvent).toMatchObject({
+      commandKind: 'display-message',
+      operation: 'current-pane',
+      metadata: { currentPaneContext: 'input-handling' },
+    });
+    expect(JSON.stringify(tmuxEvent)).not.toContain('/Users/vera');
   });
 });
 

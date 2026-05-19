@@ -1,7 +1,10 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import type { DmuxPerfJsonEvent } from './perf.js';
+import {
+  normalizeDmuxPerfCurrentPaneContext,
+  type DmuxPerfJsonEvent,
+} from './perf.js';
 
 export interface PerfParseResult {
   events: DmuxPerfJsonEvent[];
@@ -77,6 +80,7 @@ export interface PerfInstanceSummary {
   inputClassifications: InputClassificationCounts;
   terminalRoundtrip: MetricStats;
   terminalRoundtripResults: TerminalRoundtripResults;
+  transportRtt: MetricStats;
   eventLoopLag: MetricStats;
   eventLoopOutliers: EventLoopOutlierSummary;
   tmuxCommand: MetricStats;
@@ -134,6 +138,8 @@ export interface ClientInputWindowSummary {
   handledVisibleInputCount: number;
   matchedKeyToRenderCount: number;
   renderCount: number;
+  tmuxCommand: MetricStats;
+  tmuxCommandBreakdown: MetricBreakdown[];
   dsrSupported: boolean;
   dsrSuccessCount: number;
   dsrTimeoutCount: number;
@@ -263,6 +269,7 @@ export function formatPerfReport(summary: PerfReportSummary): string {
       lines.push(`  orphaned key-to-render: ${instance.orphanedKeyToRenderCount}`);
     }
     lines.push(`  terminal roundtrip: ${formatStats(instance.terminalRoundtrip)} (${formatTerminalRoundtripResults(instance.terminalRoundtripResults)})`);
+    lines.push(`  transport RTT: ${formatStats(instance.transportRtt)}`);
     lines.push(`  event-loop lag: ${formatStats(instance.eventLoopLag)}`);
     lines.push(`  event-loop outliers >${instance.eventLoopOutliers.thresholdMs}ms: ${formatEventLoopOutliers(instance.eventLoopOutliers)}`);
     lines.push(`  tmux commands: ${formatStats(instance.tmuxCommand)} (${formatNumber(instance.commandRatePerSecond)}/s)`);
@@ -317,6 +324,7 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
     isTerminalRoundtripStatsSample
   );
   const terminalRoundtripResults = countTerminalRoundtripResults(terminalRoundtripEvents);
+  const transportRtt = metricStats(clientEvents, 'client.transport_rtt');
   const eventLoopLag = metricStats(serverEvents, 'runtime.event_loop_lag');
   const eventLoopOutliers = summarizeEventLoopOutliers(serverEvents);
   const tmuxCommand = metricStats(serverEvents, 'tmux.command');
@@ -357,7 +365,7 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
     .filter((event) => event.event === 'client.marker')
     .map((event) => readStringMetadata(event, 'marker'))
     .filter((value): value is string => value !== undefined);
-  const clientInputWindows = summarizeClientInputWindows(clientEvents);
+  const clientInputWindows = summarizeClientInputWindows(clientEvents, serverEvents);
   const metadata = summarizeMetadata(events);
   const missing = collectMissingMetrics({
     handledKeyToRender,
@@ -388,6 +396,7 @@ function summarizeGroup(events: DmuxPerfJsonEvent[]): PerfInstanceSummary {
     inputClassifications,
     terminalRoundtrip,
     terminalRoundtripResults,
+    transportRtt,
     eventLoopLag,
     eventLoopOutliers,
     tmuxCommand,
@@ -498,6 +507,14 @@ function commandBreakdownStats(
       const commandKind = event.commandKind || 'unknown';
       const syncKind = event.sync === false ? 'async' : 'sync';
       const parts = [`kind=${commandKind}`, `sync=${syncKind}`];
+      if (event.operation !== undefined) {
+        parts.push(`operation=${event.operation}`);
+      }
+      if (event.operation === 'current-pane') {
+        parts.push(`context=${normalizeDmuxPerfCurrentPaneContext(
+          event.metadata?.currentPaneContext
+        )}`);
+      }
       const source = event.source || readStringMetadata(event, 'source');
       const targetKind = event.targetKind || readStringMetadata(event, 'targetKind');
       if (source !== undefined) {
@@ -648,6 +665,22 @@ function readBooleanMetadata(event: DmuxPerfJsonEvent, key: string): boolean | u
 function readNumberMetadata(event: DmuxPerfJsonEvent, key: string): number | undefined {
   const value = event.metadata?.[key];
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readDateMetadata(event: DmuxPerfJsonEvent, key: string): Date | undefined {
+  const value = readStringMetadata(event, key);
+  if (value === undefined) {
+    return undefined;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp) : undefined;
+}
+
+function eventTimestampInRange(event: DmuxPerfJsonEvent, startedAt: Date, stoppedAt: Date): boolean {
+  const timestamp = Date.parse(event.timestamp);
+  return Number.isFinite(timestamp)
+    && timestamp >= startedAt.getTime()
+    && timestamp <= stoppedAt.getTime();
 }
 
 function hasMetadataKey(event: DmuxPerfJsonEvent, key: string): boolean {
@@ -809,29 +842,46 @@ function countTerminalRoundtripResults(events: DmuxPerfJsonEvent[]): TerminalRou
   return counts;
 }
 
-function summarizeClientInputWindows(events: DmuxPerfJsonEvent[]): ClientInputWindowSummary[] {
+function summarizeClientInputWindows(
+  events: DmuxPerfJsonEvent[],
+  serverEvents: DmuxPerfJsonEvent[]
+): ClientInputWindowSummary[] {
   return events
     .filter((event) => event.event === 'client.input_window')
-    .map((event) => ({
-      label: readStringMetadata(event, 'label') || 'unknown',
-      durationMs: typeof event.durationMs === 'number' && Number.isFinite(event.durationMs)
+    .map((event) => {
+      const startedAt = readDateMetadata(event, 'startedAt');
+      const stoppedAt = readDateMetadata(event, 'stoppedAt');
+      const inWindowTmuxEvents = startedAt && stoppedAt
+        ? serverEvents.filter((candidate) =>
+            candidate.event === 'tmux.command'
+              && eventTimestampInRange(candidate, startedAt, stoppedAt)
+          )
+        : [];
+      const durationMs = typeof event.durationMs === 'number' && Number.isFinite(event.durationMs)
         ? event.durationMs
-        : 0,
-      handledVisibleInputCount: readNumberMetadata(event, 'handledVisibleInputCount') || 0,
-      matchedKeyToRenderCount: readNumberMetadata(event, 'matchedKeyToRenderCount') || 0,
-      renderCount: readNumberMetadata(event, 'renderCount') || 0,
-      dsrSupported: readBooleanMetadata(event, 'dsrSupported') === true
-        || (readNumberMetadata(event, 'dsrSupportedCount') || 0) > 0,
-      dsrSuccessCount: readNumberMetadata(event, 'dsrSuccessCount')
-        ?? readNumberMetadata(event, 'dsrSuccess')
-        ?? 0,
-      dsrTimeoutCount: readNumberMetadata(event, 'dsrTimeoutCount')
-        ?? readNumberMetadata(event, 'dsrTimeout')
-        ?? 0,
-      dsrErrorCount: readNumberMetadata(event, 'dsrErrorCount')
-        ?? readNumberMetadata(event, 'dsrError')
-        ?? 0,
-    }));
+        : 0;
+
+      return {
+        label: readStringMetadata(event, 'label') || 'unknown',
+        durationMs,
+        handledVisibleInputCount: readNumberMetadata(event, 'handledVisibleInputCount') || 0,
+        matchedKeyToRenderCount: readNumberMetadata(event, 'matchedKeyToRenderCount') || 0,
+        renderCount: readNumberMetadata(event, 'renderCount') || 0,
+        tmuxCommand: metricStats(inWindowTmuxEvents, 'tmux.command'),
+        tmuxCommandBreakdown: commandBreakdownStats(inWindowTmuxEvents, durationMs / 1000),
+        dsrSupported: readBooleanMetadata(event, 'dsrSupported') === true
+          || (readNumberMetadata(event, 'dsrSupportedCount') || 0) > 0,
+        dsrSuccessCount: readNumberMetadata(event, 'dsrSuccessCount')
+          ?? readNumberMetadata(event, 'dsrSuccess')
+          ?? 0,
+        dsrTimeoutCount: readNumberMetadata(event, 'dsrTimeoutCount')
+          ?? readNumberMetadata(event, 'dsrTimeout')
+          ?? 0,
+        dsrErrorCount: readNumberMetadata(event, 'dsrErrorCount')
+          ?? readNumberMetadata(event, 'dsrError')
+          ?? 0,
+      };
+    });
 }
 
 function readTerminalRoundtripResult(event: DmuxPerfJsonEvent): keyof TerminalRoundtripResults {
@@ -917,6 +967,7 @@ function formatEventLabel(event: DmuxPerfJsonEvent): string {
   if (event.event === 'tmux.command') {
     const syncKind = event.sync === false ? 'async' : 'sync';
     return `${event.event}:kind=${event.commandKind || 'unknown'}/sync=${syncKind}`
+      + `${event.operation ? `/operation=${event.operation}` : ''}`
       + `/source=${event.source || 'unknown'}/target=${event.targetKind || 'unknown'}`;
   }
   if (event.event === 'ui.stdout_write') {
@@ -1125,9 +1176,16 @@ function formatTerminalRoundtripResults(results: TerminalRoundtripResults): stri
 function formatClientInputWindows(windows: ClientInputWindowSummary[]): string {
   return windows
     .map((window) =>
-      `${window.label} ${formatNumber(window.durationMs)}ms inputs=${window.handledVisibleInputCount} matchedKeyToRender=${window.matchedKeyToRenderCount} renders=${window.renderCount} dsr=${window.dsrSupported ? 'supported' : 'unsupported'} success=${window.dsrSuccessCount} timeout=${window.dsrTimeoutCount} error=${window.dsrErrorCount}`
+      `${window.label} ${formatNumber(window.durationMs)}ms inputs=${window.handledVisibleInputCount} matchedKeyToRender=${window.matchedKeyToRenderCount} renders=${window.renderCount} tmux=${formatStats(window.tmuxCommand)} tmuxBreakdown=${formatClientWindowTmuxBreakdowns(window.tmuxCommandBreakdown)} dsr=${window.dsrSupported ? 'supported' : 'unsupported'} success=${window.dsrSuccessCount} timeout=${window.dsrTimeoutCount} error=${window.dsrErrorCount}`
     )
     .join('; ');
+}
+
+function formatClientWindowTmuxBreakdowns(breakdowns: MetricBreakdown[]): string {
+  if (breakdowns.length === 0) {
+    return 'none';
+  }
+  return formatBreakdowns(breakdowns.slice(0, 3));
 }
 
 function formatEventLoopOutliers(summary: EventLoopOutlierSummary): string {

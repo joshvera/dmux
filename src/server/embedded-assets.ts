@@ -935,7 +935,7 @@ class Dmux {
         try {
             // Get current pane ID
             const tmuxService = TmuxService.getInstance();
-            controlPaneId = await tmuxService.getCurrentPaneId();
+            controlPaneId = await tmuxService.getCurrentPaneId('startup-control');
             // Load existing config
             const configContent = await fs.readFile(this.panesFile, 'utf-8');
             const config = JSON.parse(configContent);

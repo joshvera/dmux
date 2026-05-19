@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildHookPayloadNotificationCommand,
   buildPaneExitedHookCommandForSession,
   buildPaneFocusHookCommandForSession,
+  DMUX_HOOK_MARKER_V2,
 } from '../src/utils/tmuxHookCommands.js';
 
 describe('tmuxHookCommands', () => {
@@ -27,9 +29,34 @@ describe('tmuxHookCommands', () => {
     const command = buildPaneFocusHookCommandForSession('my"session$`x\\y', 99);
 
     expect(command).toContain('if-shell -F "#{!=:#{@dmux_active_border_style},}"');
-    expect(command).toContain('set-option -F -t \\"my\\"session\\$\\`x\\\\y\\" pane-active-border-style');
+    expect(command).toContain('set-option -q -F -t \\"my\\"session\\$\\`x\\\\y\\" pane-active-border-style');
     expect(command).toContain('#{@dmux_active_border_style}');
     expect(command).toContain('run-shell -b "kill -USR2 99 2>/dev/null || true # dmux-hook"');
     expect(command).not.toContain('show-options -p -v');
+  });
+
+  it('builds v2 payload notifications for structural hooks', () => {
+    const command = buildHookPayloadNotificationCommand({
+      eventLogPath: '/tmp/dmux hooks/events.jsonl',
+      eventType: 'panes-changed',
+      pid: 4321,
+      sessionName: 'dmux-test',
+    });
+
+    expect(command).toContain('tmuxHookPayloadWriter.js');
+    expect(command).toContain('--event-type panes-changed');
+    expect(command).toContain('--pid 4321');
+    expect(command).toContain(DMUX_HOOK_MARKER_V2);
+    expect(command).not.toContain('--active-pane-id');
+  });
+
+  it('builds v2 focus notifications with active pane id payloads', () => {
+    const command = buildPaneFocusHookCommandForSession('dmux-test', 99, '/tmp/hooks.jsonl');
+
+    expect(command).toContain('if-shell -F "#{!=:#{@dmux_active_border_style},}"');
+    expect(command).toContain('tmuxHookPayloadWriter.js');
+    expect(command).toContain('--event-type pane-focus-changed');
+    expect(command).toContain("--active-pane-id '#{pane_id}'");
+    expect(command).toContain(DMUX_HOOK_MARKER_V2);
   });
 });

@@ -68,10 +68,13 @@ import {
   getNextFooterTipIndex,
   getRandomFooterTipIndex,
 } from "./utils/footerTips.js"
+import {
+  setSessionOptionValueIfChanged,
+  type SessionOptionValueCacheEntry,
+} from "./utils/sessionOptionValueCache.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const ACTIVE_PANE_SYNC_INTERVAL_MS = 125
 import type {
   DmuxPane,
   DmuxAppProps,
@@ -122,6 +125,7 @@ import {
   recordDmuxPerfRender,
   startDmuxPerfRuntimeMonitor,
 } from "./utils/perf.js"
+import { getActivePaneSyncIntervalMs } from "./utils/activePaneSync.js"
 
 const DmuxApp: React.FC<DmuxAppProps> = ({
   panesFile,
@@ -157,6 +161,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
   const paneTitlePrefixCacheRef = useRef(new Map<string, string>())
   const paneTitleLabelCacheRef = useRef(new Map<string, string>())
   const paneActiveBorderStyleCacheRef = useRef(new Map<string, string>())
+  const sessionActiveBorderStyleCacheRef = useRef<SessionOptionValueCacheEntry | null>(null)
   const paneTitleSpinnerFrameRef = useRef(0)
 
   // Dialog state management
@@ -734,6 +739,18 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       const cachedPrefixes = paneTitlePrefixCacheRef.current
       const cachedLabels = paneTitleLabelCacheRef.current
       const cachedActiveBorderStyles = paneActiveBorderStyleCacheRef.current
+      const setSessionActiveBorderStyleIfChanged = (style: string) => {
+        sessionActiveBorderStyleCacheRef.current = setSessionOptionValueIfChanged({
+          cached: sessionActiveBorderStyleCacheRef.current,
+          sessionName,
+          value: style,
+          setValue: () => tmuxService.setSessionOptionSync(
+            sessionName,
+            'pane-active-border-style',
+            style
+          ),
+        })
+      }
       const activePaneIds = new Set(panes.map((pane) => pane.paneId))
       const activeBorderStylePaneIds = new Set(activePaneIds)
       if (controlPaneId) {
@@ -798,11 +815,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
         }
 
         if (pane.paneId === activeBorderPaneId) {
-          tmuxService.setSessionOptionSync(
-            sessionName,
-            'pane-active-border-style',
-            activeBorderStyle
-          )
+          setSessionActiveBorderStyleIfChanged(activeBorderStyle)
         }
       }
 
@@ -816,11 +829,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
       }
 
       if (!focusedPane) {
-        tmuxService.setSessionOptionSync(
-          sessionName,
-          'pane-active-border-style',
-          controlPaneActiveBorderStyle
-        )
+        setSessionActiveBorderStyleIfChanged(controlPaneActiveBorderStyle)
       }
     }
 
@@ -960,7 +969,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     }
 
     syncActivePane()
-    const interval = setInterval(syncActivePane, ACTIVE_PANE_SYNC_INTERVAL_MS)
+    const interval = setInterval(syncActivePane, getActivePaneSyncIntervalMs(eventMode))
     return () => {
       clearInterval(interval)
     }
@@ -1233,7 +1242,7 @@ const DmuxApp: React.FC<DmuxAppProps> = ({
     if (!isDevMode) return
 
     const tmuxService = TmuxService.getInstance()
-    const sourcePaneId = controlPaneId || await tmuxService.getCurrentPaneId()
+    const sourcePaneId = controlPaneId || await tmuxService.getCurrentPaneId('dmux-fallback')
     await tmuxService.respawnPane(
       sourcePaneId,
       buildDevWatchRespawnCommand(sourcePath)

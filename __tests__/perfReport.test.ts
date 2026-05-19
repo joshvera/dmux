@@ -133,6 +133,16 @@ describe('perfReport', () => {
           result: 'timeout',
         },
       }),
+      event({
+        event: 'client.transport_rtt',
+        lane: 'client-observed',
+        durationMs: 105,
+        metadata: {
+          source: 'eternal-terminal',
+          parser: 'keepalive-log',
+          sequence: 1,
+        },
+      }),
     ];
 
     const summary = summarizePerfEvents(events);
@@ -157,10 +167,14 @@ describe('perfReport', () => {
     });
     expect(instance.handledVisibleInputCount).toBe(30);
     expect(instance.orphanedKeyToRenderCount).toBe(0);
-    expect(instance.clientEventCount).toBe(4);
+    expect(instance.clientEventCount).toBe(5);
     expect(instance.clientMarkers).toEqual(['navigation-start']);
     expect(instance.terminalRoundtrip.count).toBe(2);
     expect(instance.terminalRoundtrip.p95).toBe(42);
+    expect(instance.transportRtt).toMatchObject({
+      count: 1,
+      max: 105,
+    });
     expect(instance.terminalRoundtripResults).toEqual({
       success: 2,
       timeout: 1,
@@ -177,7 +191,32 @@ describe('perfReport', () => {
     expect(report).toContain('handled key-to-render: n=30');
     expect(report).toContain('legacy raw key-to-render: n=1');
     expect(report).toContain('terminal roundtrip: n=2');
+    expect(report).toContain('transport RTT: n=1');
     expect(report).toContain('success=2 timeout=1 error=0 unknown=0');
+  });
+
+  it('keeps transport RTT out of missing metrics and bottleneck inference', () => {
+    const summary = summarizePerfEvents([
+      event({
+        event: 'client.transport_rtt',
+        lane: 'client-observed',
+        durationMs: 120,
+        metadata: {
+          source: 'eternal-terminal',
+          parser: 'keepalive-log',
+          sequence: 1,
+        },
+      }),
+      event({ event: 'runtime.event_loop_lag', durationMs: 5 }),
+    ]);
+
+    const instance = summary.instances[0];
+    expect(instance.transportRtt.count).toBe(1);
+    expect(instance.terminalRoundtrip.count).toBe(0);
+    expect(instance.missing).toContain('terminal roundtrip timings');
+    expect(instance.likelyBottleneck).toBe(
+      'inconclusive: fewer than 30 handled visible key-to-render samples'
+    );
   });
 
   it('marks insufficient handled-visible key samples as inconclusive', () => {
@@ -316,6 +355,51 @@ describe('perfReport', () => {
     expect(report).toContain('render burst count/100ms: n=1 p50=2.00');
     expect(report).toContain('orphaned key-to-render: 1');
     expect(report).toContain('orphaned handled key-to-render samples: 1');
+  });
+
+  it('keeps client-window tmux summaries separate from full-run outliers', () => {
+    const summary = summarizePerfEvents([
+      event({
+        event: 'client.input_window',
+        lane: 'client-observed',
+        durationMs: 200,
+        metadata: {
+          label: 'navigation',
+          startedAt: '2026-05-17T00:00:00.100Z',
+          stoppedAt: '2026-05-17T00:00:00.300Z',
+        },
+      }),
+      event({
+        event: 'tmux.command',
+        commandKind: 'display-message',
+        operation: 'pane-window',
+        source: 'tmux-service',
+        targetKind: 'pane',
+        sync: false,
+        durationMs: 25,
+        timestamp: '2026-05-17T00:00:00.200Z',
+      }),
+      event({
+        event: 'tmux.command',
+        commandKind: 'display-message',
+        operation: 'pane-window',
+        source: 'tmux-service',
+        targetKind: 'pane',
+        sync: false,
+        durationMs: 700,
+        timestamp: '2026-05-17T00:00:01.000Z',
+      }),
+    ]);
+    const instance = summary.instances[0];
+
+    expect(instance.tmuxCommand.max).toBe(700);
+    expect(instance.clientInputWindows[0]?.tmuxCommand.max).toBe(25);
+    expect(instance.clientInputWindows[0]?.tmuxCommandBreakdown[0]?.label).toBe(
+      'kind=display-message/sync=async/operation=pane-window/source=tmux-service/target=pane'
+    );
+    expect(formatPerfReport(summary)).toContain(
+      'client input windows: navigation 200.00ms inputs=0 matchedKeyToRender=0 renders=0 tmux=n=1'
+    );
   });
 
 
@@ -514,6 +598,32 @@ describe('perfReport', () => {
     );
   });
 
+  it('adds bounded current-pane context to tmux command breakdowns', () => {
+    const summary = summarizePerfEvents([
+      event({
+        event: 'tmux.command',
+        commandKind: 'display-message',
+        operation: 'current-pane',
+        durationMs: 45,
+        sync: false,
+        source: 'tmux-service',
+        targetKind: 'server',
+        metadata: {
+          currentPaneContext: 'input-handling',
+          ignoredRawCaller: '/Users/vera/project/src/DmuxApp.tsx',
+        },
+      }),
+    ]);
+    const instance = summary.instances[0];
+
+    expect(instance.tmuxCommandBreakdown[0]?.label).toBe(
+      'kind=display-message/sync=async/operation=current-pane/context=input-handling/source=tmux-service/target=server'
+    );
+    const report = formatPerfReport(summary);
+    expect(report).toContain('context=input-handling');
+    expect(report).not.toContain('/Users/vera/project');
+  });
+
   it('summarizes client input windows even when terminal DSR is unsupported', () => {
     const summary = summarizePerfEvents([
       event({
@@ -548,7 +658,7 @@ describe('perfReport', () => {
 
     const report = formatPerfReport(summary);
     expect(report).toContain(
-      'client input windows: navigation 250.00ms inputs=3 matchedKeyToRender=2 renders=4 dsr=unsupported success=0 timeout=0 error=1'
+      'client input windows: navigation 250.00ms inputs=3 matchedKeyToRender=2 renders=4 tmux=n=0 tmuxBreakdown=none dsr=unsupported success=0 timeout=0 error=1'
     );
     expect(report).toContain('terminal roundtrip: n=0 (success=0 timeout=0 error=1 unknown=0)');
   });
@@ -563,6 +673,10 @@ describe('perfReport', () => {
     expect(guide).toContain('--instance instance-a --transport eternal-terminal --label navigation-stop');
     expect(guide).toContain('--instance instance-b --transport eternal-terminal --label navigation-stop');
     expect(guide).toContain('pnpm perf:collect-client -- --run-id guide-run --instance instance-a --transport eternal-terminal --label navigation');
+    expect(guide).toContain('__tests__/dmux.perfStress.e2e.test.ts');
+    expect(guide).toContain('Minimum useful stress sample');
+    expect(guide).toContain('handled visible key-to-render samples >= 30');
+    expect(guide).toContain('__tests__/dmux.realCodexPerf.e2e.test.ts');
     expect(guide).toContain('overlap');
   });
 });

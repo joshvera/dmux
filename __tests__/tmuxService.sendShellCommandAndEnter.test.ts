@@ -18,7 +18,8 @@ describe('TmuxService sendShellCommandAndEnter', () => {
 
     expect(executeSpy).toHaveBeenCalledTimes(1);
     expect(executeSpy).toHaveBeenCalledWith(
-      `tmux send-keys -t '%1' ${shellQuote(command)} Enter`
+      `tmux send-keys -t '%1' ${shellQuote(command)} Enter`,
+      { operation: 'pane-send-keys' }
     );
   });
 });

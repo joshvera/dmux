@@ -1,10 +1,67 @@
 import { resolveDistPath } from './runtimePaths.js';
 
+export const DMUX_HOOK_MARKER_V2 = '# dmux-hook:v2';
+
+type HookPayloadEventType = 'panes-changed' | 'pane-focus-changed';
+
 /**
  * Escape a value for inclusion in a shell double-quoted string.
  */
 function escapeForDoubleQuotes(value: string): string {
   return value.replace(/[\\$"`]/g, '\\$&');
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function base64Encode(value: string): string {
+  return Buffer.from(value, 'utf-8').toString('base64');
+}
+
+export function buildHookPayloadNotificationCommand(options: {
+  eventLogPath: string;
+  eventType: HookPayloadEventType;
+  pid: number;
+  sessionName: string;
+  activePaneIdFormat?: string;
+}): string {
+  const writerScriptPath = resolveDistPath('utils', 'tmuxHookPayloadWriter.js');
+  const args = [
+    'node',
+    shellQuote(writerScriptPath),
+    '--event-log-b64',
+    base64Encode(options.eventLogPath),
+    '--event-type',
+    options.eventType,
+    '--pid',
+    String(options.pid),
+    '--session-b64',
+    base64Encode(options.sessionName),
+  ];
+
+  if (options.activePaneIdFormat) {
+    args.push('--active-pane-id', shellQuote(options.activePaneIdFormat));
+  }
+
+  return [
+    args.join(' '),
+    '>/dev/null 2>&1;',
+    `kill -USR2 ${options.pid} 2>/dev/null || true ${DMUX_HOOK_MARKER_V2}`,
+  ].join(' ');
+}
+
+export function buildHookPayloadRunShellCommand(options: {
+  eventLogPath: string;
+  eventType: HookPayloadEventType;
+  pid: number;
+  sessionName: string;
+}): string {
+  return `run-shell "${escapeForDoubleQuotes(buildHookPayloadNotificationCommand(options))}"`;
+}
+
+function buildLegacyNotificationCommand(pid: number): string {
+  return `kill -USR2 ${pid} 2>/dev/null || true # dmux-hook`;
 }
 
 /**
@@ -17,7 +74,7 @@ function escapeForDoubleQuotes(value: string): string {
 export function buildPaneExitedHookCommand(pid: number): string {
   const recoveryScriptPath = resolveDistPath('utils', 'controlPaneRecovery.js');
   const escapedScriptPath = escapeForDoubleQuotes(recoveryScriptPath);
-  return `run-shell "DMUX_RECOVERY_EXITED_PANE=#{hook_pane} node \\"${escapedScriptPath}\\" >/dev/null 2>&1; kill -USR2 ${pid} 2>/dev/null || true # dmux-hook"`;
+  return `run-shell "DMUX_RECOVERY_EXITED_PANE=#{hook_pane} node \\"${escapedScriptPath}\\" >/dev/null 2>&1; ${buildLegacyNotificationCommand(pid)}"`;
 }
 
 /**
@@ -26,13 +83,22 @@ export function buildPaneExitedHookCommand(pid: number): string {
  */
 export function buildPaneExitedHookCommandForSession(
   pid: number,
-  sessionName: string
+  sessionName: string,
+  eventLogPath?: string
 ): string {
   const recoveryScriptPath = resolveDistPath('utils', 'controlPaneRecovery.js');
   const escapedScriptPath = escapeForDoubleQuotes(recoveryScriptPath);
-  const encodedSessionName = Buffer.from(sessionName, 'utf-8').toString('base64');
+  const encodedSessionName = base64Encode(sessionName);
+  const notificationCommand = eventLogPath
+    ? buildHookPayloadNotificationCommand({
+      eventLogPath,
+      eventType: 'panes-changed',
+      pid,
+      sessionName,
+    })
+    : buildLegacyNotificationCommand(pid);
 
-  return `run-shell "DMUX_RECOVERY_SESSION_B64=${encodedSessionName} DMUX_RECOVERY_EXITED_PANE=#{hook_pane} node \\"${escapedScriptPath}\\" >/dev/null 2>&1; kill -USR2 ${pid} 2>/dev/null || true # dmux-hook"`;
+  return `run-shell "DMUX_RECOVERY_SESSION_B64=${encodedSessionName} DMUX_RECOVERY_EXITED_PANE=#{hook_pane} node \\"${escapedScriptPath}\\" >/dev/null 2>&1; ${escapeForDoubleQuotes(notificationCommand)}"`;
 }
 
 /**
@@ -42,12 +108,23 @@ export function buildPaneExitedHookCommandForSession(
  */
 export function buildPaneFocusHookCommandForSession(
   sessionName: string,
-  pid?: number
+  pid?: number,
+  eventLogPath?: string
 ): string {
   const escapedSessionName = escapeForDoubleQuotes(sessionName);
-  const notifyController = typeof pid === 'number'
-    ? `; run-shell -b "kill -USR2 ${pid} 2>/dev/null || true # dmux-hook"`
-    : '';
+  let notifyController = '';
+  if (typeof pid === 'number') {
+    const notificationCommand = eventLogPath
+      ? buildHookPayloadNotificationCommand({
+        eventLogPath,
+        eventType: 'pane-focus-changed',
+        pid,
+        sessionName,
+        activePaneIdFormat: '#{pane_id}',
+      })
+      : buildLegacyNotificationCommand(pid);
+    notifyController = `; run-shell -b "${escapeForDoubleQuotes(notificationCommand)}"`;
+  }
 
-  return `if-shell -F "#{!=:#{@dmux_active_border_style},}" "set-option -F -t \\"${escapedSessionName}\\" pane-active-border-style \\"#{@dmux_active_border_style}\\""${notifyController}`;
+  return `if-shell -F "#{!=:#{@dmux_active_border_style},}" "set-option -q -F -t \\"${escapedSessionName}\\" pane-active-border-style \\"#{@dmux_active_border_style}\\""${notifyController}`;
 }

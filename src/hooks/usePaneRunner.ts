@@ -145,7 +145,7 @@ export default function usePaneRunner({ panes, savePanes, projectSettings, setSt
       await tmuxService.joinPane(windowId, true);
       // Don't apply global layouts - just enforce sidebar width
       try {
-        const controlPaneId = await tmuxService.getCurrentPaneId();
+        const controlPaneId = await tmuxService.getCurrentPaneId('pane-runner');
         enforceControlPaneSize(controlPaneId, SIDEBAR_WIDTH);
       } catch {}
       await tmuxService.selectPane('{last}');

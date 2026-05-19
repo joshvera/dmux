@@ -35,7 +35,7 @@ export default function useWorktreeActions({ panes, savePanes, setStatusMessage,
       await tmuxService.killPane(pane.paneId);
       // Don't apply global layouts - just enforce sidebar width
       try {
-        const controlPaneId = await tmuxService.getCurrentPaneId();
+        const controlPaneId = await tmuxService.getCurrentPaneId('worktree-actions');
         enforceControlPaneSize(controlPaneId, SIDEBAR_WIDTH);
       } catch {}
 

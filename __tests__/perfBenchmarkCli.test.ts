@@ -89,10 +89,79 @@ describe('perfBenchmarkCli collect-client', () => {
     );
   });
 
+  it('imports Eternal Terminal keepalive RTT samples with sanitized output', () => {
+    const logPath = path.join(tempDir, 'etclient-vera-finn.log');
+    fs.writeFileSync(logPath, [
+      '[INFO 2026-05-17 16:26:42,000 /Users/vera/secret.cc:1] Writing keepalive packet',
+      '[INFO 2026-05-17 16:26:42,125 finn.example /Users/vera/secret.cc:1] Got a keepalive',
+      '[INFO 2026-05-17 16:26:43,000 finn.example /Users/vera/secret.cc:1] Got a keepalive',
+    ].join('\n'));
+
+    const result = runImportTransport([
+      '--source',
+      'eternal-terminal',
+      '--log',
+      logPath,
+      '--run-id',
+      'run-import',
+      '--instance',
+      'instance-a',
+      '--transport',
+      'eternal-terminal',
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Imported transport RTT samples: 1');
+    expect(result.stdout).toContain('unmatched-reads=1');
+    expect(result.stdout).not.toContain(logPath);
+    expect(result.stdout).not.toContain('vera');
+    expect(result.stdout).not.toContain('finn');
+
+    expect(readEvents()).toContainEqual(
+      expect.objectContaining({
+        event: 'client.transport_rtt',
+        lane: 'client-observed',
+        durationMs: 125,
+        metadata: {
+          source: 'eternal-terminal',
+          parser: 'keepalive-log',
+          sequence: 1,
+        },
+      })
+    );
+  });
+
+  it('does not print the raw transport log path when import fails', () => {
+    const missingLogPath = path.join(tempDir, 'etclient-vera-finn-missing.log');
+    const result = runImportTransport([
+      '--source',
+      'eternal-terminal',
+      '--log',
+      missingLogPath,
+      '--run-id',
+      'run-missing-import',
+    ]);
+
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(result.status).toBe(1);
+    expect(output).toContain('failed to read transport log');
+    expect(output).not.toContain(missingLogPath);
+    expect(output).not.toContain('vera');
+    expect(output).not.toContain('finn');
+  });
+
   function runCollectClient(args: string[]): ReturnType<typeof spawnSync> {
+    return runPerfBenchmarkCli('collect-client', args);
+  }
+
+  function runImportTransport(args: string[]): ReturnType<typeof spawnSync> {
+    return runPerfBenchmarkCli('import-transport', args);
+  }
+
+  function runPerfBenchmarkCli(command: string, args: string[]): ReturnType<typeof spawnSync> {
     return spawnSync(
       'pnpm',
-      ['exec', 'tsx', 'src/utils/perfBenchmarkCli.ts', 'collect-client', ...args],
+      ['exec', 'tsx', 'src/utils/perfBenchmarkCli.ts', command, ...args],
       {
         cwd: process.cwd(),
         encoding: 'utf8',
